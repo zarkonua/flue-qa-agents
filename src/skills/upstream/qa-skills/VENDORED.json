@@ -1,0 +1,23 @@
+﻿{
+    "resolvedCommit":  "b3bb61bd268b147476252c6ed5a0440c87b97441",
+    "fetchedAtUtc":  "2026-09-20T16:22:09.6057223Z",
+    "refRequested":  "main",
+    "selectedSkills":  [
+                           "qa-project-context",
+                           "exploratory-testing",
+                           "agentic-browser-testing",
+                           "test-planning",
+                           "risk-based-testing",
+                           "test-case-management",
+                           "ai-test-generation",
+                           "qa-project-bootstrap",
+                           "playwright-automation",
+                           "test-data-management",
+                           "ai-qa-review",
+                           "test-reliability",
+                           "selector-drift-recovery",
+                           "bug-reproduction",
+                           "ai-bug-triage"
+                       ],
+    "repository":  "https://github.com/petrkindlmann/qa-skills.git"
+}

@@ -1,0 +1,1089 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flue QA Architecture</title>
+<style>
+:root {
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #f0efec;
+  --text: #1d1d1b;
+  --muted: #5f5e5a;
+  --faint: #8a8984;
+  --line: #d9d7d1;
+  --edge: #b9b6ae;
+  --focus: #2458d6;
+
+  --agent: #6d4bd1;
+  --agent-bg: #f2eefd;
+  --gate: #a45a00;
+  --gate-bg: #fdf3e4;
+  --store: #0f7a55;
+  --store-bg: #e7f6ef;
+  --runtime: #1f63c2;
+  --runtime-bg: #e8f0fc;
+  --blocked: #b3261e;
+  --blocked-bg: #fdecea;
+  --entry: #4b4a46;
+  --entry-bg: #efeeea;
+  --human: #0e7490;
+  --human-bg: #e4f5f8;
+
+  --main: #26251f;
+  --loop: #c2410c;
+  --plan: #a3a19a;
+  --dotgrid: #e3e1db;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #151514; --surface: #1e1e1c; --surface-2: #262624;
+    --text: #ecebe6; --muted: #aeaca5; --faint: #85837c;
+    --line: #3a3936; --edge: #57554f; --focus: #7ea2ff;
+    --agent: #b29cff; --agent-bg: #2a2440;
+    --gate: #f0b35c; --gate-bg: #372a17;
+    --store: #5fd3a3; --store-bg: #16322a;
+    --runtime: #7fb0ff; --runtime-bg: #1a2a44;
+    --blocked: #ff8f86; --blocked-bg: #3d1f1d;
+    --entry: #cfcdc6; --entry-bg: #2b2a28;
+    --human: #6fd6e8; --human-bg: #14333a;
+    --main: #ecebe6; --loop: #ff9a5c; --plan: #6d6b65; --dotgrid: #252523;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #151514; --surface: #1e1e1c; --surface-2: #262624;
+  --text: #ecebe6; --muted: #aeaca5; --faint: #85837c;
+  --line: #3a3936; --edge: #57554f; --focus: #7ea2ff;
+  --agent: #b29cff; --agent-bg: #2a2440;
+  --gate: #f0b35c; --gate-bg: #372a17;
+  --store: #5fd3a3; --store-bg: #16322a;
+  --runtime: #7fb0ff; --runtime-bg: #1a2a44;
+  --blocked: #ff8f86; --blocked-bg: #3d1f1d;
+  --entry: #cfcdc6; --entry-bg: #2b2a28;
+  --human: #6fd6e8; --human-bg: #14333a;
+  --main: #ecebe6; --loop: #ff9a5c; --plan: #6d6b65; --dotgrid: #252523;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+code, .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace; font-size: 0.86em; }
+main { max-width: 1320px; margin: 0 auto; padding: 32px 24px 64px; }
+header h1 { font-size: 1.6rem; margin: 0 0 6px; letter-spacing: -0.01em; }
+header p { margin: 0; color: var(--muted); max-width: 78ch; }
+header .verified { margin-top: 8px; font-size: 0.8rem; color: var(--faint); }
+h2 { font-size: 1.15rem; margin: 48px 0 4px; }
+.lede { margin: 0 0 16px; color: var(--muted); max-width: 84ch; }
+
+/* ============================================================
+   Execution chain
+   ============================================================ */
+.clegend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 0.78rem; color: var(--muted); align-items: center; margin: 6px 0 0; }
+.clegend > span { display: inline-flex; align-items: center; gap: 7px; }
+.clegend .grp { font-weight: 700; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; font-size: 0.66rem; margin-right: -6px; }
+.clegend svg { flex: none; }
+.sw { display: inline-block; flex: none; }
+.sw-agent { width: 22px; height: 13px; border-radius: 4px; border: 1.5px solid var(--agent); background: var(--surface); }
+.sw-host  { width: 22px; height: 13px; border-radius: 4px; border: 1.5px solid var(--gate); background: var(--gate-bg); }
+.sw-human { width: 22px; height: 13px; border-radius: 4px; border: 1.5px solid var(--human); background: var(--human-bg); }
+.sw-art   { width: 26px; height: 12px; border-radius: 999px; background: var(--store-bg); border: 1px solid var(--store); }
+.sw-gate  { width: 26px; height: 13px; border-radius: 3px; border: 2px solid var(--main);
+            background: repeating-linear-gradient(135deg, var(--gate) 0 4px, var(--gate-bg) 4px 8px); }
+.sw-plan  { width: 22px; height: 13px; border-radius: 4px; border: 1.5px dashed var(--plan); }
+
+.board {
+  margin-top: 16px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background-color: var(--surface);
+  background-image: radial-gradient(var(--dotgrid) 1px, transparent 1.2px);
+  background-size: 18px 18px;
+  padding: 22px 22px 26px;
+  overflow: hidden;
+}
+
+/* columns: rail | retry lane | spine | gutter | artifacts | gutter | browser */
+.flow {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px 28px minmax(330px, 440px) 56px minmax(210px, 1fr) 46px minmax(210px, 270px);
+  row-gap: 26px;
+  align-items: center;
+}
+.flow > * { position: relative; z-index: 2; min-width: 0; }
+
+.hd {
+  grid-row: 1; align-self: end; margin-bottom: -6px;
+  font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--faint);
+}
+.hd-spine { grid-column: 3; }
+.hd-art { grid-column: 5; color: var(--store); }
+.hd-br  { grid-column: 7; color: var(--runtime); }
+
+/* zones (drawn behind everything) */
+.zone {
+  z-index: 0 !important; align-self: stretch; margin: -13px -10px;
+  border: 1.5px dashed var(--line); border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  pointer-events: none;
+}
+.zone > span {
+  position: absolute; top: -10px; left: 12px; padding: 0 7px;
+  font-size: 0.66rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); background: var(--surface); border-radius: 4px; white-space: nowrap;
+}
+.z-p1   { grid-column: 1 / 4; grid-row: 3 / 13; border-color: color-mix(in srgb, var(--gate) 45%, var(--line)); }
+.z-p1 > span { color: var(--gate); }
+.z-art  { grid-column: 5; grid-row: 5 / 12; border-color: color-mix(in srgb, var(--store) 40%, var(--line)); background: color-mix(in srgb, var(--store-bg) 45%, transparent); }
+.z-art > span { color: var(--store); }
+.z-br   { grid-column: 7; grid-row: 3 / 6; border-color: color-mix(in srgb, var(--runtime) 45%, var(--line)); background: color-mix(in srgb, var(--runtime-bg) 45%, transparent); }
+.z-br > span { color: var(--runtime); }
+.z-rev  { grid-column: 2 / 8; grid-row: 14; border-color: color-mix(in srgb, var(--human) 45%, var(--line)); background: color-mix(in srgb, var(--human-bg) 40%, transparent); }
+.z-rev > span { color: var(--human); }
+.z-p2   { grid-column: 1 / 8; grid-row: 16 / 18; border-color: var(--plan); background: transparent; }
+.z-p2 > span { color: var(--muted); left: auto; right: 16px; }
+.z-p2 > span b { color: var(--blocked); font-weight: 800; }
+
+/* host rail */
+.rail {
+  grid-column: 1; grid-row: 3 / 13; align-self: stretch; justify-self: center;
+  width: 22px; border-radius: 11px; margin: 4px 0;
+  background: repeating-linear-gradient(180deg, var(--gate-bg) 0 10px, color-mix(in srgb, var(--gate) 16%, var(--gate-bg)) 10px 20px);
+  border: 1.5px solid var(--gate);
+  display: flex; align-items: center; justify-content: center;
+}
+.rail span {
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  font-size: 0.66rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gate); white-space: nowrap;
+}
+.rail span code { text-transform: none; letter-spacing: 0; font-weight: 700; }
+
+/* cards */
+.c {
+  grid-column: 3;
+  background: var(--surface);
+  border: 1.5px solid var(--main);
+  border-radius: 10px;
+  padding: 10px 12px 11px;
+  box-shadow: 2px 3px 0 color-mix(in srgb, var(--main) 14%, transparent);
+}
+.c .t { font-weight: 700; font-size: 0.95rem; line-height: 1.25; display: flex; align-items: center; gap: 8px; }
+.c .s { font-size: 0.8rem; color: var(--muted); margin-top: 3px; line-height: 1.42; }
+.c .s code { color: var(--text); }
+.c .s + .s { margin-top: 5px; }
+.num {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  display: inline-grid; place-items: center; font-size: 0.74rem; font-weight: 800;
+  background: var(--main); color: var(--surface);
+}
+.who {
+  font-size: 0.62rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase;
+  padding: 1px 7px; border-radius: 999px; margin-left: auto; white-space: nowrap;
+}
+.pill {
+  font-size: 0.66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+  background: var(--runtime-bg); color: var(--runtime);
+}
+.pill.none { background: var(--surface-2); color: var(--muted); }
+
+.c.entry { border-color: var(--entry); }
+.c.entry .num { background: var(--entry); }
+.c.entry .who { background: var(--entry-bg); color: var(--entry); }
+
+.c.host { border-color: var(--gate); background: var(--gate-bg); box-shadow: 2px 3px 0 color-mix(in srgb, var(--gate) 20%, transparent); }
+.c.host .who { background: var(--gate); color: var(--surface); }
+
+.c.agent { border-color: var(--agent); border-width: 2px; box-shadow: 3px 4px 0 color-mix(in srgb, var(--agent) 24%, transparent); }
+.c.agent .num { background: var(--agent); }
+.c.agent .who { background: var(--agent-bg); color: var(--agent); }
+.c.agent .t { font-size: 1rem; }
+
+.c.human { border-color: var(--human); border-width: 2px; background: var(--human-bg); box-shadow: 3px 4px 0 color-mix(in srgb, var(--human) 22%, transparent); }
+.c.human .num { background: var(--human); }
+.c.human .who { background: var(--human); color: var(--surface); }
+
+.c.optional { grid-column: 5; border: 1.5px dashed var(--agent); box-shadow: none; background: var(--surface); }
+.c.optional .who { background: var(--surface-2); color: var(--muted); }
+.c.optional .t { font-size: 0.9rem; }
+
+.c.plan { border: 1.5px dashed var(--plan); box-shadow: none; background: transparent; }
+.c.plan .t { color: var(--muted); }
+.c.plan .num { background: var(--plan); }
+.c.plan .who { background: var(--surface-2); color: var(--muted); border: 1px dashed var(--plan); }
+
+.c.stop { border: 2px solid var(--main); background: var(--surface-2); text-align: center; padding: 7px 12px; box-shadow: none; }
+.c.stop .t { justify-content: center; font-size: 0.86rem; letter-spacing: .02em; }
+.c.stop .t::before { content: ""; width: 11px; height: 11px; background: var(--blocked); border-radius: 2px; display: inline-block; }
+
+/* host check chip on the spine */
+.check {
+  grid-column: 3; justify-self: center;
+  background: var(--gate-bg); border: 1.5px solid var(--gate); border-radius: 8px;
+  padding: 3px 11px; font-size: 0.72rem; color: var(--gate); font-weight: 700;
+  white-space: nowrap; text-align: center;
+}
+.check .k { color: var(--gate); font-weight: 800; letter-spacing: .06em; font-size: 0.62rem; margin-right: 5px; }
+.check .d { color: var(--muted); font-weight: 500; }
+.check .rt { color: var(--loop); font-weight: 800; margin-left: 8px; padding-left: 8px; border-left: 1px dotted var(--line); white-space: nowrap; }
+
+/* skills */
+.skills { margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--line); display: flex; flex-wrap: wrap; gap: 4px 5px; align-items: baseline; }
+.skills .lbl { font-size: 0.62rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-right: 2px; }
+.sk { font-family: ui-monospace, Menlo, monospace; font-size: 0.7rem; line-height: 1.55; padding: 0 6px; border-radius: 4px; white-space: nowrap; }
+.sk.own { background: var(--gate-bg); color: var(--gate); }
+.sk.up { border: 1px solid color-mix(in srgb, var(--runtime) 55%, transparent); color: var(--runtime); background: var(--surface); }
+.sk.up::before { content: "↑ "; opacity: .7; }
+.sk .warn { color: var(--blocked); font-weight: 800; margin-left: 3px; }
+.skills .nosk { font-size: 0.74rem; color: var(--muted); font-style: italic; }
+
+/* artifacts */
+.art {
+  grid-column: 5; justify-self: stretch;
+  background: var(--store-bg); border: 1.5px solid var(--store); border-radius: 999px;
+  padding: 5px 14px 6px; text-align: center;
+}
+.art b { display: block; font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem; color: var(--store); overflow-wrap: anywhere; }
+.art small { display: block; font-size: 0.68rem; color: var(--muted); line-height: 1.35; margin-top: 1px; }
+.art small code { color: var(--text); font-size: 0.95em; }
+.art.opt { grid-column: 7; border-style: dashed; background: var(--surface); }
+.art.big { border-radius: 14px; text-align: left; padding: 8px 12px; }
+.art.big .kv { display: grid; grid-template-columns: max-content 1fr; gap: 1px 8px; margin-top: 4px; font-size: 0.7rem; color: var(--muted); text-align: left; }
+.art.big .kv code { color: var(--text); }
+.art .no { display: inline-block; margin-top: 3px; font-size: 0.66rem; font-weight: 700; color: var(--blocked); background: var(--blocked-bg); border-radius: 4px; padding: 0 5px; }
+
+/* browser lane */
+.xc {
+  grid-column: 7;
+  background: var(--surface); border: 1.5px solid var(--runtime); border-radius: 10px;
+  padding: 9px 11px; font-size: 0.78rem;
+  box-shadow: 2px 3px 0 color-mix(in srgb, var(--runtime) 18%, transparent);
+}
+.xc .t { font-weight: 700; font-size: 0.88rem; }
+.xc .s { color: var(--muted); margin-top: 2px; line-height: 1.4; }
+.xc .s code { color: var(--text); }
+.xc .never { color: var(--blocked); }
+.xc.app { border-color: var(--entry); box-shadow: 2px 3px 0 color-mix(in srgb, var(--entry) 16%, transparent); }
+
+/* approval gate band */
+.gateband {
+  grid-column: 1 / 8; grid-row: 15;
+  border: 2.5px solid var(--main); border-radius: 12px;
+  background: var(--surface);
+  display: grid; grid-template-columns: 56px 1fr minmax(240px, 330px); gap: 0 16px; align-items: center;
+  padding: 12px 16px 12px 0; position: relative; overflow: hidden;
+  box-shadow: 3px 4px 0 color-mix(in srgb, var(--main) 20%, transparent);
+}
+.gateband::before, .gateband::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 7px;
+  background: repeating-linear-gradient(135deg, var(--gate) 0 9px, var(--main) 9px 18px);
+}
+.gateband::before { top: 0; }
+.gateband::after { bottom: 0; }
+.gateband .lock { justify-self: center; align-self: center; margin-left: 10px; }
+.gateband .gt { font-size: 1.12rem; font-weight: 800; letter-spacing: .02em; display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.gateband .gt .num { background: var(--main); }
+.gateband .gt .who { margin-left: 0; background: var(--gate); color: var(--surface); }
+.gateband .gs { font-size: 0.8rem; color: var(--muted); margin-top: 3px; line-height: 1.45; }
+.gateband .gs code { color: var(--text); }
+.gateband .gs b { color: var(--blocked); }
+.gateband .art { grid-column: auto; border-radius: 12px; text-align: left; padding: 8px 12px; }
+
+.side { grid-column: 5 / 8; font-size: 0.76rem; color: var(--muted); border: 1px dashed var(--plan); border-radius: 10px; padding: 8px 11px; background: var(--surface); }
+.side b { color: var(--text); }
+
+/* edges */
+svg.cedges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; overflow: visible; }
+svg.cedges path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+svg.cedges path.control   { stroke: var(--main); stroke-width: 3; }
+svg.cedges path.artifact  { stroke: var(--store); stroke-width: 1.5; }
+svg.cedges path.artopt    { stroke: var(--store); stroke-width: 1.4; stroke-dasharray: 5 4; }
+svg.cedges path.browser   { stroke: var(--runtime); stroke-width: 1.6; }
+svg.cedges path.optional  { stroke: var(--muted); stroke-width: 1.6; stroke-dasharray: 6 4; }
+svg.cedges path.retry     { stroke: var(--loop); stroke-width: 1.6; stroke-dasharray: 4 3; }
+svg.cedges path.planned   { stroke: var(--plan); stroke-width: 2; stroke-dasharray: 2 5; }
+svg.cedges text { font-size: 10.5px; font-weight: 700; paint-order: stroke; stroke: var(--surface); stroke-width: 5px; stroke-linejoin: round; }
+svg.cedges text.control  { fill: var(--main); }
+svg.cedges text.artifact, svg.cedges text.artopt { fill: var(--store); }
+svg.cedges text.browser  { fill: var(--runtime); }
+svg.cedges text.optional { fill: var(--muted); }
+svg.cedges text.retry    { fill: var(--loop); }
+svg.cedges text.planned  { fill: var(--muted); }
+svg.cedges marker path { stroke: none; }
+
+.chain-notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px 28px; font-size: 0.82rem; color: var(--muted); margin-top: 20px; }
+.chain-notes p { margin: 0; }
+.chain-notes b { color: var(--text); }
+.note-card { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 10px 13px; }
+.note-card h3 { margin: 0 0 6px; font-size: 0.8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.note-card ul { margin: 0; padding-left: 18px; }
+.note-card li { margin: 2px 0; }
+.note-card.exp { border-style: dashed; }
+
+/* ============================================================
+   Topology (who can reach what) — interaction unchanged
+   ============================================================ */
+.topo-wrap { position: relative; margin-top: 20px; padding-top: 22px; }
+.topo {
+  position: relative; display: grid;
+  grid-template-columns: minmax(160px, 0.85fr) minmax(0, 2.5fr) minmax(210px, 1.15fr);
+  gap: 56px; align-items: start;
+}
+.cp {
+  display: grid; grid-template-columns: minmax(200px, 1fr) minmax(200px, 1fr); gap: 56px;
+  border: 1.5px dashed var(--line); border-radius: 14px; padding: 36px 16px 16px; position: relative;
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+}
+.zone-label { position: absolute; top: 10px; left: 16px; right: 16px; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.zone-label .mono { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.col-title { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); margin: 0 0 2px; }
+.col-sub { font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin: 6px 0 -4px; }
+.cp-foot { grid-column: 1 / -1; display: flex; gap: 10px; align-items: flex-start; border-top: 1px solid var(--line); padding-top: 12px; margin-top: 4px; font-size: 0.82rem; color: var(--muted); }
+.cp-foot .x { flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--blocked-bg); color: var(--blocked); display: grid; place-items: center; font-weight: 700; font-size: 0.8rem; }
+.node {
+  appearance: none; text-align: left; font: inherit; color: inherit; display: block; width: 100%;
+  background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--k, var(--line));
+  border-radius: 8px; padding: 8px 10px 9px; cursor: pointer; position: relative; z-index: 2;
+  transition: opacity .15s, box-shadow .15s, border-color .15s;
+}
+.node:hover { box-shadow: 0 1px 0 var(--line), 0 2px 10px rgba(0,0,0,.06); }
+.node:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.node .t { font-weight: 600; font-size: 0.9rem; display: block; line-height: 1.3; }
+.node .s { display: block; font-size: 0.76rem; color: var(--muted); margin-top: 2px; line-height: 1.35; overflow-wrap: anywhere; }
+.node .tag { display: inline-block; font-size: 0.66rem; font-weight: 600; padding: 1px 6px; border-radius: 999px; margin-top: 5px; background: var(--kb, var(--surface-2)); color: var(--k, var(--muted)); }
+.k-agent { --k: var(--agent); --kb: var(--agent-bg); }
+.k-gate { --k: var(--gate); --kb: var(--gate-bg); }
+.k-store { --k: var(--store); --kb: var(--store-bg); }
+.k-runtime { --k: var(--runtime); --kb: var(--runtime-bg); }
+.k-entry { --k: var(--entry); --kb: var(--entry-bg); }
+.k-human { --k: var(--human); --kb: var(--human-bg); }
+.node.planned, .node.exp { border-style: dashed; border-left-style: solid; }
+.node[aria-pressed="true"] { background: var(--kb); box-shadow: 0 0 0 2px var(--k); }
+.topo.has-sel .node:not(.lit) { opacity: 0.32; }
+.topo.has-sel .group:not(.lit) > .group-label { opacity: 0.45; }
+.group { border: 1px solid var(--line); border-radius: 10px; padding: 26px 8px 8px; position: relative; display: flex; flex-direction: column; gap: 8px; background: var(--surface-2); }
+.group-label { position: absolute; top: 6px; left: 10px; right: 10px; font-size: 0.66rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.chain { font-size: 0.74rem; color: var(--muted); text-align: center; line-height: 1.3; }
+svg.edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; overflow: visible; }
+svg.edges path { fill: none; stroke: var(--edge); stroke-width: 1.4; transition: opacity .15s, stroke .15s; }
+svg.edges path.dash { stroke-dasharray: 5 4; }
+svg.edges.has-sel path:not(.lit) { opacity: 0.12; }
+svg.edges path.lit { stroke: var(--focus); stroke-width: 2.2; }
+svg.edges marker path { fill: var(--edge); stroke: none; }
+svg.edges marker#arr-lit path { fill: var(--focus); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0 0; font-size: 0.82rem; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; background: var(--k); display: inline-block; }
+.btn { appearance: none; font: inherit; font-size: 0.8rem; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btn[hidden] { display: none; }
+.detail { margin-top: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-height: 92px; }
+.detail h3 { margin: 0 0 2px; font-size: 1rem; }
+.detail .path { color: var(--muted); font-size: 0.8rem; }
+.detail p { margin: 8px 0 0; max-width: 90ch; }
+.detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 12px 0 0; font-size: 0.86rem; }
+.detail dt { color: var(--muted); }
+.detail dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.chip { display: inline-block; background: var(--surface-2); border-radius: 4px; padding: 0 5px; margin: 0 4px 3px 0; font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem; }
+.chip.no { background: var(--blocked-bg); color: var(--blocked); text-decoration: line-through; }
+.hint { color: var(--muted); margin: 0; }
+
+/* ============================================================
+   Matrix
+   ============================================================ */
+.matrix-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table.matrix { border-collapse: collapse; width: 100%; min-width: 900px; font-size: 0.82rem; }
+.matrix th, .matrix td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: center; }
+.matrix thead th { font-weight: 600; font-size: 0.72rem; color: var(--muted); vertical-align: bottom; }
+.matrix thead tr.grp th { border-bottom: none; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gate); font-size: 0.66rem; padding-bottom: 0; }
+.matrix thead tr.grp th + th { border-left: 1px solid var(--line); }
+.matrix th.tn { font-family: ui-monospace, Menlo, monospace; font-weight: 500; font-size: 0.7rem; color: var(--text); }
+.matrix th.tn.unused { color: var(--faint); }
+.matrix tbody th { text-align: left; font-weight: 600; white-space: nowrap; }
+.matrix tbody th small { display: block; font-weight: 400; color: var(--muted); font-size: 0.72rem; }
+.matrix tbody tr.sep th, .matrix tbody tr.sep td { border-top: 2px solid var(--line); }
+.matrix td.g0 { border-left: 1px solid var(--line); }
+.matrix .own { font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; color: var(--store); background: var(--store-bg); border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--agent); }
+.numv { font-weight: 600; color: var(--runtime); }
+.none { color: var(--line); }
+.matrix tfoot td { text-align: left; color: var(--muted); font-size: 0.78rem; border-bottom: none; padding: 10px 12px; }
+.matrix tbody tr:hover { background: var(--surface-2); }
+
+footer { margin-top: 40px; font-size: 0.8rem; color: var(--faint); }
+
+/* ============================================================
+   Narrow: stacked reading order, no drawn edges
+   ============================================================ */
+@media (max-width: 1120px) {
+  main { padding: 24px 16px 48px; }
+  .board { padding: 16px 12px 18px; }
+  .flow { display: flex; flex-direction: column; align-items: stretch; gap: 22px; }
+  .flow .hd, .zone, .rail, svg.cedges { display: none; }
+  .check, .art { align-self: center; max-width: 100%; }
+  .flow > .m + .m::before {
+    content: "↓"; position: absolute; top: -21px; left: 50%; transform: translateX(-50%);
+    font-weight: 800; color: var(--main); font-size: 1rem; line-height: 1;
+  }
+  .flow > .m.art + .m::before { color: var(--store); }
+  .xc, .c.optional, .art.opt, .side { margin-left: 24px; }
+  /* lane markers use ::after — ::before already carries the stacked ↓ arrow */
+  .xc::after, .c.optional::after, .art.opt::after {
+    position: absolute; top: -19px; left: 0; font-size: 0.68rem; font-weight: 800;
+  }
+  .xc::after { content: "↳ browser"; color: var(--runtime); }
+  .xc.app::after { content: "↳ target"; color: var(--entry); }
+  .c.optional::after { content: "↳ optional"; color: var(--muted); }
+  .art.opt::after { content: "↳ writes"; color: var(--store); }
+  /* the ↓ before a side-lane card would imply control flow: hide it there */
+  .flow > .m.xc::before, .flow > .m.optional::before, .flow > .m.art.opt::before, .flow > .m.side::before { content: none; }
+  .gateband { grid-template-columns: 44px 1fr; padding-right: 12px; }
+  .gateband .art { grid-column: 1 / -1; margin: 10px 0 0 12px; }
+  .topo, .cp { grid-template-columns: 1fr; gap: 20px; }
+  .cp { padding-top: 40px; }
+  svg.edges { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Flue QA Agents — architecture</h1>
+  <p>A local, Ollama-backed QA workflow in two phases with a human approval gate between them. Host code sequences every stage; each AI agent runs as its own process, holds only narrow tools, and can write only its own schema- and semantically-validated JSON artifact.</p>
+  <p class="verified">Verified against the source on 2026-09-22: <code>scripts/qa-manual.mjs</code>, <code>scripts/lib/runtime.mjs</code>, <code>src/agents/*.ts</code> (<code>useSkill()</code> / <code>useTool()</code> calls), <code>src/lib/phase1-gate.ts</code>, <code>src/lib/qa-artifacts.ts</code>, <code>package.json</code>.</p>
+</header>
+
+<section aria-labelledby="h-chain">
+  <h2 id="h-chain">Execution chain</h2>
+  <p class="lede">Read top to bottom along the thick line. Every transition between two agents passes through an amber <b>host check</b>: the orchestrator, not an agent, decides whether the next stage runs. Green shows the artifacts each stage writes and the next one reads.</p>
+
+  <div class="clegend" aria-label="Legend">
+    <span class="grp">Flow</span>
+    <span><svg width="34" height="10" aria-hidden="true"><line x1="1" y1="5" x2="26" y2="5" stroke="var(--main)" stroke-width="3" stroke-linecap="round"/><path d="M25,1 L33,5 L25,9 z" fill="var(--main)"/></svg>Control</span>
+    <span><svg width="34" height="10" aria-hidden="true"><line x1="1" y1="5" x2="27" y2="5" stroke="var(--store)" stroke-width="1.5"/><path d="M26,2 L33,5 L26,8 z" fill="var(--store)"/></svg>Artifact</span>
+    <span><svg width="34" height="10" aria-hidden="true"><line x1="1" y1="5" x2="27" y2="5" stroke="var(--runtime)" stroke-width="1.6"/><path d="M26,2 L33,5 L26,8 z" fill="var(--runtime)"/></svg>Browser call</span>
+    <span><svg width="34" height="10" aria-hidden="true"><line x1="1" y1="5" x2="27" y2="5" stroke="var(--muted)" stroke-width="1.6" stroke-dasharray="6 4"/><path d="M26,2 L33,5 L26,8 z" fill="var(--muted)"/></svg>Optional</span>
+    <span><svg width="34" height="10" aria-hidden="true"><line x1="1" y1="5" x2="27" y2="5" stroke="var(--loop)" stroke-width="1.6" stroke-dasharray="4 3"/><path d="M26,2 L33,5 L26,8 z" fill="var(--loop)"/></svg>Retry</span>
+    <span><svg width="34" height="10" aria-hidden="true"><line x1="1" y1="5" x2="27" y2="5" stroke="var(--plan)" stroke-width="2" stroke-dasharray="2 5" stroke-linecap="round"/><path d="M26,2 L33,5 L26,8 z" fill="var(--plan)"/></svg>Planned</span>
+    <span class="grp">Nodes</span>
+    <span><i class="sw sw-host"></i>Host code</span>
+    <span><i class="sw sw-agent"></i>AI agent</span>
+    <span><i class="sw sw-human"></i>Person</span>
+    <span><i class="sw sw-gate"></i>Approval gate</span>
+    <span><i class="sw sw-art"></i>Artifact</span>
+    <span><i class="sw sw-plan"></i>Not built</span>
+    <span class="grp">Skills</span>
+    <span><span class="sk own">skill</span>project</span>
+    <span><span class="sk up">skill</span>vendored</span>
+  </div>
+
+  <div class="board">
+    <div class="flow" id="chain">
+      <svg class="cedges" id="cedges" aria-hidden="true"><defs></defs></svg>
+
+      <div class="hd hd-spine" aria-hidden="true">Mandatory path</div>
+      <div class="hd hd-art" aria-hidden="true">Artifacts</div>
+      <div class="hd hd-br" aria-hidden="true">Browser · target</div>
+
+      <div class="zone z-p1" aria-hidden="true"><span>Phase 1 — Manual QA design · host-orchestrated</span></div>
+      <div class="zone z-art" aria-hidden="true"><span><code>~/projects/qa-workspace/.qa/</code></span></div>
+      <div class="zone z-br" aria-hidden="true"><span>Outside the control plane</span></div>
+      <div class="zone z-rev" aria-hidden="true"><span>Human review — edits and optional AI review</span></div>
+      <div class="zone z-p2" aria-hidden="true"><span>Phase 2 — Automation engineering · status: <b>entry gate only · not built yet</b></span></div>
+
+      <div class="rail" aria-hidden="true"><span>Host · <code>scripts/qa-manual.mjs</code> · each stage its own process</span></div>
+
+      <!-- 1 -->
+      <div class="c entry m" data-c="entry" style="grid-row:2">
+        <div class="t"><span class="num">1</span>Target application<span class="who">input</span></div>
+        <div class="s"><code>export TARGET_URL=…</code> then <code>npm run qa:manual</code> — the only required setting</div>
+      </div>
+
+      <!-- host preflight -->
+      <div class="c host m" data-c="pre" style="grid-row:3">
+        <div class="t">Preflight<span class="who">host code</span></div>
+        <div class="s">validates <code>TARGET_URL</code> · archives the previous run · starts a confined MCP server if none · opens the target once</div>
+      </div>
+
+      <!-- 2 -->
+      <div class="c agent m" data-c="s1" style="grid-row:4">
+        <div class="t"><span class="num">2</span>Product Discovery<span class="pill">5 browser tools</span></div>
+        <div class="s">Browses the real app and records what it observed, each fact labelled CONFIRMED · OBSERVED · INFERRED.</div>
+        <div class="skills"><span class="lbl">Skills</span><span class="nosk">none mounted — evidence rules are inlined to fit the 8192-token budget</span></div>
+      </div>
+
+      <div class="xc m" data-c="mcp" style="grid-row:3 / 5; align-self:stretch">
+        <div class="t">Playwright MCP server</div>
+        <div class="s"><code>localhost:8931</code> · headless Chromium · <code>--isolated</code></div>
+        <div class="s">cwd and output confined to <code>~/projects/qa-workspace/.mcp-output</code> — browser writes cannot reach the project</div>
+        <div class="s never">never mounted: <code>browser_evaluate</code>, <code>browser_run_code_unsafe</code>, <code>browser_file_upload</code></div>
+      </div>
+      <div class="xc app m" data-c="app" style="grid-row:5; align-self:start">
+        <div class="t">Application under test</div>
+        <div class="s"><code>TARGET_URL</code>, e.g. <code>http://localhost:4444/</code></div>
+      </div>
+
+      <div class="check m" data-c="k1" style="grid-row:5"><span class="k">HOST</span>✓ fresh · schema · semantic <span class="d">→ start next</span><span class="rt">↻ ≤4</span></div>
+      <div class="art m" data-c="a1" style="grid-row:5"><b>discovered-behavior.json</b><small>areas · behaviors with evidence status</small></div>
+
+      <!-- 3 -->
+      <div class="c agent m" data-c="s2" style="grid-row:6">
+        <div class="t"><span class="num">3</span>Behavior Analyst<span class="pill none">no browser</span></div>
+        <div class="s">Turns observations into acceptance points, rules and risks. Every point cites the behavior IDs that support it.</div>
+        <div class="skills"><span class="lbl">Skills</span><span class="sk own">agent-handoff</span><span class="sk own">capability-security</span><span class="sk own">product-evidence-policy</span><span class="sk up">test-planning</span><span class="sk up">risk-based-testing</span></div>
+      </div>
+      <div class="check m" data-c="k2" style="grid-row:7"><span class="k">HOST</span>✓ fresh · schema · semantic <span class="d">→ start next</span><span class="rt">↻ ≤4</span></div>
+      <div class="art m" data-c="a2" style="grid-row:7"><b>requirements-analysis.json</b><small>acceptance points · rules · risks · open questions</small></div>
+
+      <!-- 4 -->
+      <div class="c agent m" data-c="s3" style="grid-row:8">
+        <div class="t"><span class="num">4</span>Test Designer<span class="pill none">no browser</span></div>
+        <div class="s">Designs the manual test suite. Unknown data stays a placeholder; no automation code.</div>
+        <div class="skills"><span class="lbl">Skills</span><span class="sk own">agent-handoff</span><span class="sk own">capability-security</span><span class="sk own">product-evidence-policy</span><span class="sk own">test-case-contract</span><span class="sk up">risk-based-testing</span><span class="sk up" title="Its worked example (user@example.com / Passw0rd!) was copied verbatim into a bad run; semantic validation now blocks it.">test-case-management<span class="warn">⚠</span></span><span class="sk up">ai-test-generation</span></div>
+      </div>
+      <div class="check m" data-c="k3" style="grid-row:9"><span class="k">HOST</span>✓ fresh · schema · semantic <span class="d">→ start next</span><span class="rt">↻ ≤4</span></div>
+      <div class="art m" data-c="a3" style="grid-row:9"><b>test-cases.json</b><small>the manual suite · <code>priority</code> P0–P3 = product risk</small></div>
+
+      <!-- 5 -->
+      <div class="c agent m" data-c="s4" style="grid-row:10">
+        <div class="t"><span class="num">5</span>Automation Prioritizer<span class="pill none">no browser</span></div>
+        <div class="s">Classifies every test case once. Removes and edits none: its tool can write only its own artifact.</div>
+        <div class="skills"><span class="lbl">Skills</span><span class="nosk">none mounted — criteria are inline</span></div>
+      </div>
+      <div class="check m" data-c="k4" style="grid-row:11"><span class="k">HOST</span>✓ fresh · schema · semantic <span class="d">→ stop</span><span class="rt">↻ ≤4</span></div>
+      <div class="art big m" data-c="a4" style="grid-row:11">
+        <b>automation-prioritization.json</b>
+        <div class="kv"><span>executionMode</span><span><code>AUTOMATION</code> · <code>MANUAL</code></span><span>automationPriority</span><span><code>HIGH</code> · <code>MEDIUM</code> · <code>LOW</code> · <code>NONE</code></span></div>
+        <small style="text-align:left">separate from P0–P3 · every case exactly once · MANUAL cases stay in the suite</small>
+      </div>
+
+      <!-- stop -->
+      <div class="c stop m" data-c="stop" style="grid-row:12">
+        <div class="t">STOP — Phase 1 ends, no automation code</div>
+        <div class="s">host stops the MCP server it started · run log <code>phase1-run.json</code></div>
+      </div>
+
+      <!-- 6 -->
+      <div class="c human m" data-c="human" style="grid-row:14">
+        <div class="t"><span class="num">6</span>Review &amp; optional edits<span class="who">person</span></div>
+        <div class="s">Read <code>test-cases.json</code> and <code>automation-prioritization.json</code>; edit them by hand if needed.</div>
+        <div class="s">Edited cases? <code>npm run qa:prioritize</code> re-runs ⑤ only.</div>
+      </div>
+      <div class="c optional m" data-c="rev" style="grid-row:14">
+        <div class="t">Test Case Reviewer<span class="who">optional · AI</span></div>
+        <div class="s"><code>npm run qa:review</code> — reads all four artifacts and proposes changes.</div>
+        <div class="skills"><span class="lbl">Skills</span><span class="nosk">none mounted</span></div>
+      </div>
+      <div class="art opt m" data-c="rp" style="grid-row:14"><b>test-cases-review.json</b><small>status · issues · suggested changes — proposals only</small><span class="no">✕ cannot write test-cases.json</span></div>
+
+      <!-- 7 -->
+      <div class="gateband m" data-c="gate">
+        <svg class="lock" width="34" height="40" viewBox="0 0 34 40" aria-hidden="true"><path d="M9,17 V11 a8,8 0 0 1 16,0 V17" fill="none" stroke="var(--main)" stroke-width="3.2" stroke-linecap="round"/><rect x="3" y="16" width="28" height="21" rx="4" fill="var(--gate)" stroke="var(--main)" stroke-width="2.4"/><circle cx="17" cy="25" r="3" fill="var(--main)"/><rect x="15.6" y="26" width="2.8" height="6" rx="1.2" fill="var(--main)"/></svg>
+        <div>
+          <div class="gt"><span class="num">7</span>Human approval gate<span class="who">host code — not an AI</span></div>
+          <div class="gs"><code>npm run qa:approve</code> records who approved and the SHA-256 of all four Phase 1 artifacts. Change any of them afterwards and the approval is <b>stale</b>. Structural errors can never be approved; deliberate hand edits that trip semantic checks need <code>--accept-findings</code> and are recorded.</div>
+        </div>
+        <div class="art" data-c="appr"><b>🔒 phase1-approval.json</b><small>SHA-256 of discovered-behavior · requirements-analysis · test-cases · automation-prioritization</small></div>
+      </div>
+
+      <!-- 8 -->
+      <div class="c host m" data-c="p2g" style="grid-row:16">
+        <div class="t"><span class="num" style="background:var(--gate)">8</span>Phase 2 entry gate<span class="who">host code · built</span></div>
+        <div class="s"><code>npm run qa:automation</code> refuses unless: test cases valid · prioritization valid · approval exists · status APPROVED · every hash matches · ≥1 AUTOMATION case.</div>
+        <div class="s">Open → lists the AUTOMATION cases and <b>stops</b>. Refused → exit 4.</div>
+      </div>
+
+      <!-- 9 -->
+      <div class="c plan m" data-c="ra" style="grid-row:17">
+        <div class="t"><span class="num">9</span>Repo Analyzer<span class="who">planned · next</span></div>
+        <div class="s">First Phase 2 stage. Its read-only repo tools exist; the agent, schema and wiring do not.</div>
+      </div>
+      <div class="side m" data-c="notwired" style="grid-row:16 / 18; align-self:center">
+        <b>In the repo, not wired to any command:</b> UI Explorer and Automation Generator are built but have never run live, and <code>qa:automation</code> does not call them. Automation-code Reviewer, Test Runner and Failure Analyzer are not built.
+      </div>
+    </div>
+  </div>
+
+  <div class="chain-notes">
+    <div class="note-card">
+      <h3>Retry and recovery</h3>
+      <p>Each Phase 1 stage gets up to <b>4 attempts</b>. Even attempts continue the same conversation with a correction naming what went wrong; odd attempts start fresh. A stage passes only if its artifact was written <em>during that attempt</em> and re-validates from disk. After the last failed attempt the run stops, keeps what succeeded, and prints <code>npm run qa:manual -- --from &lt;stage&gt;</code>.</p>
+    </div>
+    <div class="note-card">
+      <h3>Skills — what the badges mean</h3>
+      <ul>
+        <li>Badges are the skills each agent <b>mounts</b> with <code>useSkill()</code>. Mounting costs one catalog line; the text loads only if the model calls <code>activate_skill</code>.</li>
+        <li><b>Activated in recorded runs</b> (all agents combined — the run log does not record which agent): product-evidence-policy, test-case-contract, risk-based-testing, test-case-management. <b>Never observed activated:</b> agent-handoff, capability-security, test-planning, ai-test-generation.</li>
+        <li><span style="color:var(--blocked);font-weight:800">⚠</span> <code>test-case-management</code>: its worked example (<code>user@example.com</code> / <code>Passw0rd!</code>) was copied verbatim into a bad run. Semantic validation blocks it now.</li>
+      </ul>
+    </div>
+    <div class="note-card">
+      <h3>Not runtime skills</h3>
+      <ul>
+        <li>Vendored but mounted by <b>no agent</b>: ai-bug-triage, ai-qa-review, bug-reproduction, exploratory-testing, qa-project-bootstrap, qa-project-context, selector-drift-recovery, test-reliability.</li>
+        <li>Claude Code operator skills in <code>.claude/skills/</code> — playwright-cli, mermaid-diagram-skill, diagramming-architecture — and documentation-authoring skills are tooling for the person building this system. No runtime agent loads them.</li>
+      </ul>
+    </div>
+    <div class="note-card exp">
+      <h3>Experimental — not the default path</h3>
+      <p><code>npm run qa:agentic</code> runs the <b>QA Manager</b>, which delegates to specialists with <code>useSubagent</code> and lets the model decide the order. It is kept for experiments; the approval gate does not apply to it. Its skills: <span class="sk own">agent-handoff</span> <span class="sk own">capability-security</span> <span class="sk own">product-evidence-policy</span></p>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="h-topo">
+  <h2 id="h-topo">Who can reach what</h2>
+  <p class="lede">Left to right: the commands, the agents they start, the trusted host code those agents may call, and what lies behind it. Select any box to trace its connections. <kbd>Esc</kbd> clears the selection.</p>
+
+  <div class="toolbar">
+    <div class="legend" aria-label="Legend">
+      <span class="k-entry"><i></i>Command</span>
+      <span class="k-agent"><i></i>AI agent</span>
+      <span class="k-gate"><i></i>Trusted host code</span>
+      <span class="k-runtime"><i></i>Runtime service</span>
+      <span class="k-store"><i></i>Data root</span>
+    </div>
+    <button class="btn" id="clear" type="button" hidden>Clear selection</button>
+  </div>
+
+  <div class="topo-wrap">
+    <div class="topo" id="topo">
+      <svg class="edges" id="edges" aria-hidden="true">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="arr-lit" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+      </svg>
+
+      <div class="col" aria-label="Commands">
+        <div class="col-title">Commands</div>
+        <button class="node k-entry" data-id="e-manual" type="button"><span class="t">npm run qa:manual</span><span class="s mono">scripts/qa-manual.mjs</span><span class="tag">Phase 1 · default</span></button>
+        <button class="node k-entry" data-id="e-review" type="button"><span class="t">npm run qa:review</span><span class="s mono">scripts/qa-review.mjs</span><span class="tag">optional</span></button>
+        <button class="node k-entry" data-id="e-gate" type="button"><span class="t">qa:approve · qa:automation</span><span class="s mono">scripts/qa-approve.mjs · qa-automation.mjs</span><span class="tag">no agent involved</span></button>
+        <button class="node k-entry exp" data-id="e-agentic" type="button"><span class="t">npm run qa:agentic</span><span class="s mono">scripts/qa-agentic.mjs</span><span class="tag">experimental</span></button>
+        <button class="node k-entry" data-id="e-flue" type="button"><span class="t">flue run &lt;agent&gt;</span><span class="s mono">any src/agents/*.ts</span></button>
+      </div>
+
+      <div class="cp" aria-label="Control plane">
+        <div class="zone-label">Control plane · <span class="mono">~/projects/flue-qa-agents</span></div>
+
+        <div class="col" id="agents-col" aria-label="Agents">
+          <div class="col-title">Agents · src/agents</div>
+          <div class="col-sub">Phase 1</div>
+          <button class="node k-agent" data-id="a-pd" type="button"><span class="t">Product Discovery</span><span class="s">Records observed behavior</span><span class="tag">browser</span></button>
+          <button class="node k-agent" data-id="a-ba" type="button"><span class="t">Behavior Analyst</span><span class="s">Evidence → acceptance points</span></button>
+          <button class="node k-agent" data-id="a-td" type="button"><span class="t">Test Designer</span><span class="s">Manual test suite</span></button>
+          <button class="node k-agent" data-id="a-ap" type="button"><span class="t">Automation Prioritizer</span><span class="s">AUTOMATION / MANUAL per case</span></button>
+          <div class="col-sub">Optional · experimental</div>
+          <button class="node k-agent exp" data-id="a-tcr" type="button"><span class="t">Test Case Reviewer</span><span class="s">Proposes changes only</span></button>
+          <button class="node k-agent exp" data-id="a-qm" type="button"><span class="t">QA Manager</span><span class="s">Model-driven delegation</span></button>
+          <div class="col-sub">Phase 2 · built, not wired</div>
+          <button class="node k-agent planned" data-id="a-ue" type="button"><span class="t">UI Explorer</span><span class="s">Locator evidence</span><span class="tag">browser</span></button>
+          <button class="node k-agent planned" data-id="a-ag" type="button"><span class="t">Automation Generator</span><span class="s">Writes and runs Playwright TS</span></button>
+        </div>
+
+        <div class="col" aria-label="Trusted host code">
+          <div class="col-title">Trusted host code · src/</div>
+          <button class="node k-gate" data-id="g-mcp" type="button"><span class="t">Playwright MCP connection</span><span class="s mono">connections/playwright-mcp.ts</span><span class="tag">per-role allowlist</span></button>
+          <button class="node k-gate" data-id="g-art" type="button"><span class="t">QA artifact tools</span><span class="s mono">tools/qa-artifacts.ts → lib/qa-artifacts.ts</span><span class="tag">own artifact only · schema + semantic</span></button>
+          <button class="node k-gate" data-id="g-repo" type="button"><span class="t">Repo read tools</span><span class="s mono">tools/repo.ts → lib/trusted-roots.ts</span><span class="tag">read-only, relative paths</span></button>
+          <button class="node k-gate" data-id="g-test" type="button"><span class="t">Test-code tools</span><span class="s mono">tools/test-code.ts</span><span class="tag">host-built argv</span></button>
+          <button class="node k-gate" data-id="g-gate" type="button"><span class="t">Phase 1 gate</span><span class="s mono">lib/phase1-gate.ts</span><span class="tag">no agent can call it</span></button>
+          <button class="node k-gate" data-id="g-prov" type="button"><span class="t">Ollama provider</span><span class="s mono">providers/ollama.ts</span><span class="tag">every agent · reasoning filter</span></button>
+        </div>
+
+        <div class="cp-foot"><span class="x" aria-hidden="true">✕</span><span><span class="mono">.claude/</span>, <span class="mono">.git</span>, <span class="mono">.env</span>, key files and this source tree: no tool resolves a path here, and the MCP server's working directory is outside it. Every root must be absolute and outside the control plane, or the module throws at load time.</span></div>
+      </div>
+
+      <div class="col" aria-label="Runtime services and data">
+        <div class="col-title">Behind the host code</div>
+        <div class="group" data-group="browser">
+          <div class="group-label">Browser stack · WSL2</div>
+          <button class="node k-runtime" data-id="x-pwmcp" type="button"><span class="t">@playwright/mcp</span><span class="s mono">localhost:8931 · cwd qa-workspace/.mcp-output</span></button>
+          <button class="node k-runtime planned" data-id="x-pwtest" type="button"><span class="t">@playwright/test 1.63</span><span class="s">Phase 2 execution</span></button>
+          <div class="chain">both drive bundled Chromium → <span class="mono">TARGET_URL</span></div>
+        </div>
+        <div class="group" data-group="ws">
+          <div class="group-label">~/projects/qa-workspace</div>
+          <button class="node k-store" data-id="x-qa" type="button"><span class="t">.qa/</span><span class="s mono">QA_ARTIFACT_ROOT</span><span class="s">artifacts · approval · archive</span></button>
+          <button class="node k-store planned" data-id="x-repo" type="button"><span class="t">target-repo/</span><span class="s mono">QA_TARGET_REPO_ROOT</span><span class="tag">not yet populated</span></button>
+        </div>
+        <div class="group" data-group="win">
+          <div class="group-label">Model host</div>
+          <button class="node k-runtime" data-id="x-ollama" type="button"><span class="t">Ollama · qwen3:14b</span><span class="s mono">127.0.0.1:11434/v1</span><span class="s">8192 ctx declared · 2048 max output</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail" id="detail" aria-live="polite">
+    <p class="hint">Select a box above. Agents show their tools, browser actions, artifacts and skills; host code shows what it enforces.</p>
+  </div>
+</section>
+
+<section aria-labelledby="h-matrix">
+  <h2 id="h-matrix">Capability matrix</h2>
+  <p class="lede">What each agent mounts with <code>useTool()</code>, read from <code>src/agents/*.ts</code>. The write column names the <em>only</em> artifact that agent's write tool accepts.</p>
+  <div class="matrix-scroll">
+    <table class="matrix">
+      <thead>
+        <tr class="grp"><th></th><th colspan="2">QA artifacts</th><th colspan="3">Repo</th><th colspan="4">Test code</th><th>MCP</th><th>Flue</th></tr>
+        <tr>
+          <th style="text-align:left">Agent</th>
+          <th class="tn">read_qa_<br>artifact</th><th class="tn">write_qa_artifact<br>(only)</th>
+          <th class="tn unused">list_repo_<br>directory</th><th class="tn">read_repo_<br>file</th><th class="tn">search_<br>repo</th>
+          <th class="tn">write_test_<br>file</th><th class="tn">run_playwright_<br>test</th><th class="tn">run_<br>typecheck</th><th class="tn unused">read_test_<br>results</th>
+          <th class="tn">browser_*</th><th class="tn">subagents</th>
+        </tr>
+      </thead>
+      <tbody id="mbody"></tbody>
+      <tfoot><tr><td colspan="12"><span class="mono">list_repo_directory</span> and <span class="mono">read_test_results</span> exist but are mounted on no agent. <span class="mono">browser_evaluate</span>, <span class="mono">browser_run_code_unsafe</span> and <span class="mono">browser_file_upload</span> are never mounted: they amount to arbitrary code or local-file access behind a browser tool. No agent can read or write <span class="mono">phase1-approval.json</span>.</td></tr></tfoot>
+    </table>
+  </div>
+</section>
+
+<footer>Generated from the source on 2026-09-22. Execution chain from <span class="mono">scripts/qa-manual.mjs</span> (stage allowlist, retry policy, host checks) and <span class="mono">src/lib/phase1-gate.ts</span>; skills and tools from the <span class="mono">useSkill()</span> / <span class="mono">useTool()</span> calls in <span class="mono">src/agents/*.ts</span>; skill activations from Flue's run database.</footer>
+</main>
+
+<script>
+// ============================================================
+// Data — every entry verified against src/ on 2026-09-22
+// ============================================================
+const DISC = ['browser_navigate','browser_snapshot','browser_click','browser_type','browser_press_key'];
+const UIX = ['browser_navigate','browser_navigate_back','browser_snapshot','browser_find','browser_click','browser_type','browser_fill_form','browser_select_option','browser_press_key','browser_wait_for','browser_take_screenshot','browser_close'];
+const FORBID = ['browser_evaluate','browser_run_code_unsafe','browser_file_upload'];
+
+const AG = {
+  'a-pd': { name:'Product Discovery', path:'src/agents/product-discovery.ts', phase:1,
+    role:'Navigates the target first, verifies the Page URL of every snapshot, explores with real controls, and records only what it observed. Replies BLOCKED instead of describing an unverified page.',
+    tools:[], writes:'discovered-behavior', browser:DISC, reads:[], skills:[] , noskills:'none mounted — evidence rules inlined to fit the 8192-token budget' },
+  'a-ba': { name:'Behavior Analyst', path:'src/agents/behavior-analyst.ts', phase:1,
+    role:'Converts discovered behavior into acceptance points, business rules, risks and open questions. Every point must cite the behavior IDs that support it.',
+    tools:['read_qa_artifact'], writes:'requirements-analysis', browser:null, reads:['discovered-behavior'],
+    skills:['agent-handoff','capability-security','product-evidence-policy','test-planning ↑','risk-based-testing ↑'] },
+  'a-td': { name:'Test Designer', path:'src/agents/test-designer.ts', phase:1,
+    role:'Designs the risk-based manual test suite from the requirements and discovery. Extra coverage only as variations of observed behavior; placeholders for all unknown data; no automation code.',
+    tools:['read_qa_artifact'], writes:'test-cases', browser:null, reads:['requirements-analysis','discovered-behavior'],
+    skills:['agent-handoff','capability-security','product-evidence-policy','test-case-contract','risk-based-testing ↑','test-case-management ↑ ⚠','ai-test-generation ↑'] },
+  'a-ap': { name:'Automation Prioritizer', path:'src/agents/automation-prioritizer.ts', phase:1,
+    role:'Assigns every test case exactly one executionMode (AUTOMATION / MANUAL) and automationPriority (HIGH / MEDIUM / LOW / NONE), independent of P0–P3. Cannot change a test case.',
+    tools:['read_qa_artifact'], writes:'automation-prioritization', browser:null, reads:['test-cases','requirements-analysis','discovered-behavior'], skills:[], noskills:'none mounted — criteria are inline' },
+  'a-tcr': { name:'Test Case Reviewer', path:'src/agents/test-case-reviewer.ts', phase:'optional',
+    role:'Optional (npm run qa:review). Reviews all four Phase 1 artifacts and proposes issues and changes. Cannot write test-cases.json; the command hashes the inputs before and after to prove it. Its verdict is advisory, never approval.',
+    tools:['read_qa_artifact'], writes:'test-cases-review', browser:null, reads:['all four Phase 1 artifacts'], skills:[], noskills:'none mounted' },
+  'a-qm': { name:'QA Manager', path:'src/agents/qa-manager.ts', phase:'experimental',
+    role:'Experimental (npm run qa:agentic). Lets the model choose the workflow and delegate with useSubagent. Off the default path; the approval gate does not apply to it.',
+    tools:['read_qa_artifact'], writes:null, browser:null, reads:['any (progress checks)'],
+    subs:['product-discovery','behavior-analyst','test-designer','ui-explorer*','automation-generator*'],
+    skills:['agent-handoff','capability-security','product-evidence-policy'] },
+  'a-ue': { name:'UI Explorer', path:'src/agents/ui-explorer.ts', phase:'built, not wired',
+    role:'Built, never run live, not called by qa:automation. For specific test cases, would walk the real UI and record stable locator evidence.',
+    tools:['read_qa_artifact','read_repo_file'], writes:'ui-exploration', browser:UIX, reads:['test-cases'],
+    skills:['agent-handoff','capability-security','product-evidence-policy','locator-policy','agentic-browser-testing ↑'] },
+  'a-ag': { name:'Automation Generator', path:'src/agents/automation-generator.ts', phase:'built, not wired',
+    role:'Built, never run live, not called by qa:automation. Would write Playwright TypeScript from test cases and locator evidence, then type-check and run it through host-built commands.',
+    tools:['read_qa_artifact','read_repo_file','search_repo','write_test_file','run_playwright_test','run_typecheck'], writes:'automation-plan', browser:null, reads:['test-cases','ui-exploration'],
+    skills:['agent-handoff','capability-security','locator-policy','playwright-automation ↑','test-data-management ↑'] },
+};
+
+const OTHER = {
+  'e-manual': { name:'npm run qa:manual', path:'scripts/qa-manual.mjs', body:'Phase 1. Runs Product Discovery → Behavior Analyst → Test Designer → Automation Prioritizer in fixed order from a closed allowlist, each as its own flue run process, verifying each artifact from disk before starting the next, then stops. Up to 4 attempts per stage. Alias: npm run qa.' },
+  'e-review': { name:'npm run qa:review', path:'scripts/qa-review.mjs', body:'Optional. Runs the Test Case Reviewer once Phase 1 artifacts exist. Hashes the four Phase 1 artifacts before and after and fails loudly if the reviewer changed any of them.' },
+  'e-gate': { name:'qa:approve · qa:automation', path:'scripts/qa-approve.mjs · scripts/qa-automation.mjs', body:'Host code only; no agent runs. qa:approve writes phase1-approval.json with SHA-256 hashes of all four Phase 1 artifacts. qa:automation applies the six Phase 2 entry checks and stops.' },
+  'e-agentic': { name:'npm run qa:agentic', path:'scripts/qa-agentic.mjs', body:'Experimental model-driven orchestration through the QA Manager. Not the default path.' },
+  'e-flue': { name:'flue run <agent>', path:'@flue/cli 2.1', body:'Any agent can run standalone. Each agent module imports the Ollama provider for its side effect because flue run loads only that module.' },
+  'g-mcp': { name:'Playwright MCP connection', path:'src/connections/playwright-mcp.ts', body:'browserTools() connects once and returns adapted tools each agent mounts with useTool() — it works in root and delegate renders alike. The server exposes about 25 tools; each role gets its own allowlist:', extra:() => `<dl><dt>Discovery</dt><dd>${chips(DISC)}</dd><dt>UI Explorer</dt><dd>${chips(UIX)}</dd><dt>Never mounted</dt><dd>${chips(FORBID,'no')}</dd></dl>` },
+  'g-art': { name:'QA artifact tools', path:'src/tools/qa-artifacts.ts → src/lib/qa-artifacts.ts · semantic-validate.ts', body:'read_qa_artifact(name) and writeQaArtifactToolFor([name]). Each agent’s write tool accepts only its own artifact name, enforced by its input schema. Every write is checked against its JSON schema and then semantically against the upstream artifacts on disk; a rejected write changes nothing and returns grouped errors.', extra:() => `<dl><dt>Names</dt><dd>${chips(['discovered-behavior','requirements-analysis','test-cases','automation-prioritization','test-cases-review','ui-exploration','automation-plan'])}</dd><dt>Not a tool name</dt><dd>${chips(['phase1-approval'],'no')}</dd></dl>` },
+  'g-repo': { name:'Repo read tools', path:'src/tools/repo.ts → src/lib/trusted-roots.ts', body:'list_repo_directory, read_repo_file and search_repo. Paths are relative and go through resolveInsideRoot(), which rejects absolute or Windows paths, .. escapes, .claude / .git / .env / key files at any depth, and symlinks that leave the root.' },
+  'g-test': { name:'Test-code tools', path:'src/tools/test-code.ts', body:'write_test_file writes only .ts/.tsx inside QA_TEST_WRITE_ROOTS. run_playwright_test builds `npx playwright test <validated path>` itself and takes no command input. run_typecheck takes no arguments. Mounted only on the not-yet-wired Automation Generator.' },
+  'g-gate': { name:'Phase 1 gate', path:'src/lib/phase1-gate.ts', body:'approvePhase1() and checkPhase2Gate(). Called only by the qa:approve and qa:automation scripts; not mounted as a tool, and no agent can name its file. Approval is bound to the SHA-256 of the exact bytes of all four Phase 1 artifacts.' },
+  'g-prov': { name:'Ollama provider', path:'src/providers/ollama.ts', body:'A custom Flue provider pointed at Ollama’s OpenAI-compatible endpoint. Strips Qwen’s historical reasoning from each request via Pi’s onPayload hook (OLLAMA_REPLAY_REASONING=true to disable) and pins low-variance sampling. @earendil-works/pi-ai must stay at ^0.83.0 to match @flue/runtime.' },
+  'x-pwmcp': { name:'@playwright/mcp', path:'scripts/mcp-server.mjs · localhost:8931', body:'Always launched with its working directory and output confined to ~/projects/qa-workspace/.mcp-output, because snapshot and screenshot tools write a model-chosen filename relative to it. A running server is reused only if its cwd is proven to be outside the control plane. Started and stopped as a process group.' },
+  'x-pwtest': { name:'@playwright/test 1.63', path:'devDependency', body:'Phase 2 execution interface, reached only through run_playwright_test and run_typecheck with host-built argv. Not used by any current command.' },
+  'x-qa': { name:'qa-workspace/.qa', path:'QA_ARTIFACT_ROOT', body:'Holds the Phase 1 artifacts, the optional review, phase1-approval.json, the host run log phase1-run.json, and archive/ with every previous run. A sibling of the project, never inside it.' },
+  'x-repo': { name:'qa-workspace/target-repo', path:'QA_TARGET_REPO_ROOT', body:'The product repository for Phase 2. Not populated yet, so the repo and test-code tools have nothing real to act on.' },
+  'x-ollama': { name:'Ollama · qwen3:14b', path:'127.0.0.1:11434/v1 (configurable)', body:'Reached over its OpenAI-compatible HTTP endpoint, so it can run on this machine or another one; OLLAMA_BASE_URL selects it. Flue is told 8192 tokens of context with 2048 output tokens.' },
+};
+
+// [from, to, label, dashed]
+const EDGES = [
+  ['e-manual','a-pd','runs ①'], ['e-manual','a-ba','runs ②'], ['e-manual','a-td','runs ③'], ['e-manual','a-ap','runs ④'],
+  ['e-review','a-tcr','runs'],
+  ['e-gate','g-gate','calls'],
+  ['e-agentic','a-qm','runs'],
+  ['a-qm','g-art','read'],
+  ['a-pd','g-mcp','5 tools'], ['a-pd','g-art','writes own'],
+  ['a-ba','g-art','read · write own'], ['a-td','g-art','read · write own'], ['a-ap','g-art','read · write own'], ['a-tcr','g-art','read · write own'],
+  ['a-ue','g-mcp','12 tools'], ['a-ue','g-art','read · write own'], ['a-ue','g-repo','read file'],
+  ['a-ag','g-art','read · write own'], ['a-ag','g-repo','read · search'], ['a-ag','g-test','write · run'],
+  ['agents-col','g-prov','every turn'],
+  ['g-mcp','x-pwmcp','MCP / HTTP'], ['g-art','x-qa','validated write'], ['g-gate','x-qa','hash-lock'],
+  ['g-repo','x-repo','read-only'], ['g-test','x-repo','tests/ only'], ['g-test','x-pwtest','npx playwright test'],
+  ['g-prov','x-ollama','OpenAI-compat HTTP'],
+  ['e-manual','x-pwmcp','starts if absent', true],
+];
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function chips(list, cls) { return list.map(x => `<span class="chip ${cls||''}">${esc(x)}</span>`).join(''); }
+
+// ============================================================
+// Capability matrix
+// ============================================================
+(() => {
+  const COLS = ['read_qa_artifact','WRITE','list_repo_directory','read_repo_file','search_repo','write_test_file','run_playwright_test','run_typecheck','read_test_results'];
+  const firstOfGroup = new Set([0,2,5]);
+  const mbody = document.getElementById('mbody');
+  const order = ['a-pd','a-ba','a-td','a-ap','a-tcr','a-qm','a-ue','a-ag'];
+  const sep = new Set(['a-tcr','a-ue']);
+  for (const id of order) {
+    const a = AG[id];
+    const tr = document.createElement('tr');
+    if (sep.has(id)) tr.className = 'sep';
+    const sub = a.phase === 1 ? 'Phase 1' : a.phase;
+    let html = `<th scope="row">${esc(a.name)}<small>${esc(sub)}</small></th>`;
+    COLS.forEach((c, i) => {
+      const g = firstOfGroup.has(i) ? 'g0' : '';
+      if (c === 'WRITE') { html += `<td class="${g}">${a.writes ? `<span class="own">${esc(a.writes)}</span>` : '<span class="none" aria-label="none">·</span>'}</td>`; return; }
+      html += `<td class="${g}">${a.tools.includes(c) ? '<span class="dot" role="img" aria-label="mounted"></span>' : '<span class="none" aria-label="not mounted">·</span>'}</td>`;
+    });
+    html += `<td class="g0">${a.browser ? `<span class="numv">${a.browser.length}</span>` : '<span class="none">·</span>'}</td>`;
+    html += `<td class="g0">${a.subs ? `<span class="numv">${a.subs.length}</span>` : '<span class="none">·</span>'}</td>`;
+    tr.innerHTML = html;
+    mbody.appendChild(tr);
+  }
+})();
+
+// ============================================================
+// Topology (who can reach what)
+// ============================================================
+(() => {
+  const topo = document.getElementById('topo');
+  const svg = document.getElementById('edges');
+  const nodeEl = id => id === 'agents-col' ? document.getElementById('agents-col') : topo.querySelector(`[data-id="${id}"]`);
+  const NS = 'http://www.w3.org/2000/svg';
+  const AGENT_IDS = Object.keys(AG);
+  let rendered = [];
+  let sel = null;
+  const detail = document.getElementById('detail');
+  const clearBtn = document.getElementById('clear');
+
+  function draw() {
+    svg.querySelectorAll('g.e').forEach(g => g.remove());
+    rendered = [];
+    if (getComputedStyle(svg).display === 'none') return;
+    const base = topo.getBoundingClientRect();
+    const outCount = {}, inCount = {}, outIdx = {}, inIdx = {};
+    EDGES.forEach(([f,t]) => { outCount[f] = (outCount[f]||0)+1; inCount[t] = (inCount[t]||0)+1; });
+    EDGES.forEach(([f, t, label, dashed], i) => {
+      const A = nodeEl(f), B = nodeEl(t);
+      if (!A || !B) return;
+      const a = A.getBoundingClientRect(), b = B.getBoundingClientRect();
+      const oi = outIdx[f] = (outIdx[f] ?? -1) + 1;
+      const ii = inIdx[t] = (inIdx[t] ?? -1) + 1;
+      const spread = (n, k, h) => n <= 1 ? 0 : (k - (n-1)/2) * Math.min(10, (h*0.6)/(n-1));
+      let x1 = a.right - base.left, y1 = a.top + a.height/2 - base.top + spread(outCount[f], oi, a.height);
+      let x2 = b.left - base.left - 2, y2 = b.top + b.height/2 - base.top + spread(inCount[t], ii, b.height);
+      if (f === 'agents-col') { y1 = b.top + b.height/2 - base.top; }
+      let d;
+      if (dashed) {
+        const top = -14;
+        x1 = a.left + a.width/2 - base.left; y1 = a.top - base.top;
+        x2 = b.left + b.width/2 - base.left; y2 = b.top - base.top - 2;
+        d = `M${x1},${y1} C${x1},${top} ${x1},${top} ${x1+20},${top} L${x2-20},${top} C${x2},${top} ${x2},${top} ${x2},${y2}`;
+      } else {
+        const dx = Math.max(24, (x2 - x1) * 0.5);
+        d = `M${x1},${y1} C${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}`;
+      }
+      const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'e');
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', d);
+      if (dashed) p.classList.add('dash');
+      p.setAttribute('marker-end', 'url(#arr)');
+      const title = document.createElementNS(NS, 'title'); title.textContent = label; p.appendChild(title);
+      g.append(p); svg.appendChild(g);
+      rendered.push({ i, p });
+    });
+    applySel();
+  }
+
+  function neighbours(id) {
+    const s = new Set([id]); const edges = new Set();
+    EDGES.forEach(([f,t], i) => {
+      if (f === id || t === id || (f === 'agents-col' && AGENT_IDS.includes(id))) { edges.add(i); s.add(f); s.add(t); }
+    });
+    if (AGENT_IDS.includes(id)) {
+      [...s].filter(n => n.startsWith('g-')).forEach(gid => EDGES.forEach(([f,t], i) => { if (f === gid) { edges.add(i); s.add(t); } }));
+      if (id === 'a-qm') ['a-pd','a-ba','a-td','a-ue','a-ag'].forEach(x => s.add(x));
+    }
+    if (id.startsWith('x-')) {
+      [...s].filter(n => n.startsWith('g-')).forEach(gid => EDGES.forEach(([f,t], i) => { if (t === gid) { edges.add(i); s.add(f); } }));
+    }
+    if (id === 'g-prov' || id === 'x-ollama') AGENT_IDS.forEach(x => s.add(x));
+    s.delete('agents-col');
+    return { nodes: s, edges };
+  }
+
+  function applySel() {
+    const nb = sel ? neighbours(sel) : null;
+    topo.classList.toggle('has-sel', !!sel);
+    svg.classList.toggle('has-sel', !!sel);
+    topo.querySelectorAll('.node').forEach(n => {
+      n.setAttribute('aria-pressed', String(n.dataset.id === sel));
+      n.classList.toggle('lit', !!nb && nb.nodes.has(n.dataset.id));
+    });
+    topo.querySelectorAll('.group').forEach(g => g.classList.toggle('lit', !!nb && [...g.querySelectorAll('.node')].some(n => nb.nodes.has(n.dataset.id))));
+    rendered.forEach(({ i, p }) => {
+      const on = !!nb && nb.edges.has(i);
+      p.classList.toggle('lit', on);
+      p.setAttribute('marker-end', on ? 'url(#arr-lit)' : 'url(#arr)');
+    });
+    clearBtn.hidden = !sel;
+  }
+
+  function showDetail(id) {
+    if (!id) { detail.innerHTML = '<p class="hint">Select a box above. Agents show their tools, browser actions, artifacts and skills; host code shows what it enforces.</p>'; return; }
+    const a = AG[id];
+    if (a) {
+      const rows = [
+        ['Status', esc(a.phase === 1 ? 'Phase 1 · mandatory stage' : a.phase)],
+        ['Tools', a.tools.length ? chips(a.tools) : '—'],
+        ['Writes (only)', a.writes ? chips([a.writes]) : '<span style="color:var(--muted)">nothing</span>'],
+        ['Browser', a.browser ? chips(a.browser) + `<br><span style="color:var(--muted);font-size:.8rem">never: </span>${chips(FORBID,'no')}` : '<span style="color:var(--muted)">none</span>'],
+        ['Reads', a.reads.length ? chips(a.reads) : '—'],
+      ];
+      if (a.subs) rows.push(['Subagents', chips(a.subs) + '<br><span style="color:var(--muted);font-size:.8rem">* only when PLAYWRIGHT_MCP_URL is set</span>']);
+      rows.push(['Skills', a.skills.length ? chips(a.skills) + '<br><span style="color:var(--muted);font-size:.8rem">↑ vendored from petrkindlmann/qa-skills · ⚠ see the skills note under the execution chain</span>' : `<span style="color:var(--muted)">${esc(a.noskills)}</span>`]);
+      detail.innerHTML = `<h3>${esc(a.name)}</h3><div class="path mono">${esc(a.path)}</div><p>${esc(a.role)}</p><dl>${rows.map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>`;
+      return;
+    }
+    const o = OTHER[id];
+    detail.innerHTML = `<h3>${esc(o.name)}</h3><div class="path mono">${esc(o.path)}</div><p>${esc(o.body)}</p>${o.extra ? o.extra() : ''}`;
+  }
+
+  function select(id) { sel = (sel === id) ? null : id; applySel(); showDetail(sel); }
+  topo.addEventListener('click', e => { const n = e.target.closest('.node'); if (n) select(n.dataset.id); });
+  clearBtn.addEventListener('click', () => { sel = null; applySel(); showDetail(null); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && sel) { sel = null; applySel(); showDetail(null); } });
+  new ResizeObserver(() => requestAnimationFrame(draw)).observe(topo);
+  window.addEventListener('load', draw);
+  draw();
+})();
+
+// ============================================================
+// Execution chain edges
+// ============================================================
+(() => {
+  const chain = document.getElementById('chain');
+  const svg = document.getElementById('cedges');
+  const NS = 'http://www.w3.org/2000/svg';
+  const KINDS = { control:'--main', artifact:'--store', artopt:'--store', browser:'--runtime', optional:'--muted', retry:'--loop', planned:'--plan' };
+
+  const defs = svg.querySelector('defs');
+  for (const [k, v] of Object.entries(KINDS)) {
+    const m = document.createElementNS(NS, 'marker');
+    m.setAttribute('id', 'cm-' + k);
+    m.setAttribute('viewBox', '0 0 10 10'); m.setAttribute('refX', '8.5'); m.setAttribute('refY', '5');
+    m.setAttribute('markerUnits', 'userSpaceOnUse');
+    const size = k === 'control' ? 11 : 8;
+    m.setAttribute('markerWidth', size); m.setAttribute('markerHeight', size);
+    m.setAttribute('orient', 'auto-start-reverse');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', 'M0,0 L10,5 L0,10 z'); p.setAttribute('style', `fill: var(${v})`);
+    m.appendChild(p); defs.appendChild(m);
+  }
+
+  const el = id => chain.querySelector(`[data-c="${id}"]`);
+  let base;
+  const R = id => { const r = el(id).getBoundingClientRect(); return { l: r.left - base.left, r: r.right - base.left, t: r.top - base.top, b: r.bottom - base.top, cx: r.left - base.left + r.width / 2, cy: r.top - base.top + r.height / 2, h: r.height }; };
+
+  function path(d, kind, marker = true) {
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', d); p.setAttribute('class', kind);
+    if (marker) p.setAttribute('marker-end', `url(#cm-${kind})`);
+    svg.appendChild(p);
+  }
+  function label(txt, x, y, kind, anchor = 'middle') {
+    const t = document.createElementNS(NS, 'text');
+    t.textContent = txt; t.setAttribute('class', kind);
+    t.setAttribute('x', x); t.setAttribute('y', y); t.setAttribute('text-anchor', anchor);
+    svg.appendChild(t);
+  }
+
+  // Mandatory path: [from, to, label?, kind]
+  const SPINE = [
+    ['entry','pre'], ['pre','s1','starts stage 2'], ['s1','k1','agent exits'], ['k1','s2','host starts stage 3'],
+    ['s2','k2'], ['k2','s3'], ['s3','k3'], ['k3','s4'], ['s4','k4'], ['k4','stop'],
+    ['stop','human'], ['human','gate','approve'], ['gate','p2g'], ['p2g','ra', 'planned — not built', 'planned'],
+  ];
+  // Per stage: agent, host check, artifact, next agent
+  const STAGES = [['s1','k1','a1','s2'], ['s2','k2','a2','s3'], ['s3','k3','a3','s4'], ['s4','k4','a4', null]];
+
+  function draw() {
+    [...svg.children].forEach(n => { if (n.tagName !== 'defs') n.remove(); });
+    if (getComputedStyle(svg).display === 'none') return;
+    base = chain.getBoundingClientRect();
+
+    // ---- control flow: straight down the spine
+    for (const [f, t, lab, kind = 'control'] of SPINE) {
+      const a = R(f), b = R(t);
+      const x = f === 'gate' || t === 'gate' ? R('human').cx : a.cx;
+      path(`M${x},${a.b} L${x},${b.t - 2}`, kind);
+      if (lab) label(lab, x + 14, (a.b + b.t) / 2 + 4, kind, 'start');
+    }
+
+    // ---- artifact flow: writes → host verifies → next agent reads (right side only)
+    STAGES.forEach(([s, k, art, next], i) => {
+      const A = R(s), K = R(k), P = R(art);
+      const first = i === 0;
+      // writes: agent right edge → artifact top
+      const wx = P.l + Math.min(38, (P.r - P.l) * 0.2);
+      path(`M${A.r},${A.b - 14} C${A.r + 44},${A.b - 14} ${wx},${P.t - 30} ${wx},${P.t - 2}`, 'artifact');
+      if (first) label('writes', A.r + 22, A.b - 20, 'artifact', 'start');
+      // verified by host: artifact left → check right
+      path(`M${P.l},${P.cy} L${K.r + 2},${K.cy}`, 'artifact');
+      if (first) label('host verifies', (P.l + K.r) / 2, K.cy - 7, 'artifact');
+      // reads: artifact bottom → next agent right edge
+      if (next) {
+        const N = R(next);
+        const rx = P.l + Math.min(38, (P.r - P.l) * 0.2);
+        path(`M${rx},${P.b} C${rx},${P.b + 30} ${N.r + 44},${N.t + 16} ${N.r + 2},${N.t + 16}`, 'artifact');
+        if (first) label('reads', N.r + 22, N.t + 11, 'artifact', 'start');
+      }
+      // retry: host check → back up into the same agent, in the left lane
+      const lx = A.l - 15;
+      path(`M${K.l},${K.cy} H${lx + 6} Q${lx},${K.cy} ${lx},${K.cy - 6} V${A.b - 16} Q${lx},${A.b - 22} ${lx + 6},${A.b - 22} H${A.l - 2}`, 'retry');
+
+    });
+
+    // ---- browser: preflight and discovery → MCP server → application
+    const M = R('mcp'), P0 = R('pre'), S1 = R('s1'), APP = R('app');
+    path(`M${P0.r},${P0.cy} L${M.l - 2},${P0.cy}`, 'browser');
+    label('opens target once', (P0.r + M.l) / 2, P0.cy - 7, 'browser');
+    const y1 = Math.min(Math.max(S1.cy - 10, M.t + 18), M.b - 18);
+    path(`M${S1.r},${y1} L${M.l - 2},${y1}`, 'browser');
+    label('5 browser tools', (S1.r + M.l) / 2, y1 - 7, 'browser');
+    path(`M${M.cx},${M.b} L${APP.cx},${APP.t - 2}`, 'browser');
+    label('Chromium', M.cx + 8, (M.b + APP.t) / 2 + 4, 'browser', 'start');
+
+    // ---- optional review branch
+    const H = R('human'), V = R('rev'), RP = R('rp');
+    path(`M${H.r},${V.cy} L${V.l - 2},${V.cy}`, 'optional');
+    label('review', (H.r + V.l) / 2, V.cy - 8, 'optional');
+    path(`M${V.r},${RP.cy} L${RP.l - 2},${RP.cy}`, 'artopt');
+    label('writes', (V.r + RP.l) / 2, RP.cy - 8, 'artopt');
+  }
+
+  new ResizeObserver(() => requestAnimationFrame(draw)).observe(chain);
+  window.addEventListener('load', draw);
+  draw();
+})();
+</script>
+</body>
+</html>

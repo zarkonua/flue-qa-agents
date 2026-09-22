@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["cases"],
+  "properties": {
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["testCaseId", "executionMode", "automationPriority", "reason", "blockingFactors"],
+        "properties": {
+          "testCaseId": { "type": "string" },
+          "executionMode": { "enum": ["AUTOMATION", "MANUAL"] },
+          "automationPriority": { "enum": ["HIGH", "MEDIUM", "LOW", "NONE"] },
+          "reason": { "type": "string" },
+          "blockingFactors": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

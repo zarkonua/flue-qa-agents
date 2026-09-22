@@ -1,0 +1,113 @@
+{
+  "feature": "User Login",
+  "openQuestions": [
+    "How should we handle login attempts from new devices?",
+    "What is the maximum allowed login attempts before lockout?"
+  ],
+  "testCases": [
+    {
+      "automationCandidate": true,
+      "automationReason": "Standard login flow with clear success indicators",
+      "evidenceIds": [
+        "RA001"
+      ],
+      "expectedResult": "User is redirected to dashboard",
+      "id": "TC001",
+      "preconditions": [
+        "A registered account exists for user@example.com",
+        "The user is logged out on the /login page"
+      ],
+      "priority": "P0",
+      "steps": [
+        {
+          "action": "Submit the login form with user@example.com and 'Passw0rd!'",
+          "expected": "Dashboard loads with user's name displayed"
+        },
+        {
+          "action": "Check the URL",
+          "expected": "URL changes to '/dashboard'"
+        }
+      ],
+      "tags": [
+        "smoke",
+        "regression"
+      ],
+      "testData": {
+        "email": "user@example.com",
+        "password": "Passw0rd!"
+      },
+      "title": "Successful login with valid credentials",
+      "types": [
+        "positive"
+      ]
+    },
+    {
+      "automationCandidate": true,
+      "automationReason": "Clear error feedback for invalid credentials",
+      "evidenceIds": [
+        "RA002"
+      ],
+      "expectedResult": "User remains on login page with error message",
+      "id": "TC002",
+      "preconditions": [
+        "A registered account exists for user@example.com",
+        "The user is logged out on the /login page"
+      ],
+      "priority": "P1",
+      "steps": [
+        {
+          "action": "Submit the login form with user@example.com and 'wrongpassword'",
+          "expected": "Error message 'Invalid credentials' is displayed"
+        },
+        {
+          "action": "Check the URL",
+          "expected": "URL remains '/login'"
+        }
+      ],
+      "tags": [
+        "regression"
+      ],
+      "testData": {
+        "email": "user@example.com",
+        "password": "wrongpassword"
+      },
+      "title": "Login with incorrect password",
+      "types": [
+        "negative"
+      ]
+    },
+    {
+      "automationCandidate": false,
+      "automationReason": "Requires email verification",
+      "evidenceIds": [
+        "RA003"
+      ],
+      "expectedResult": "User receives password reset email",
+      "id": "TC003",
+      "preconditions": [
+        "User has registered but forgotten their password"
+      ],
+      "priority": "P2",
+      "steps": [
+        {
+          "action": "Click 'Forgot password' link",
+          "expected": "Password reset form is displayed"
+        },
+        {
+          "action": "Enter email and submit",
+          "expected": "Success message 'Reset link sent to email' is displayed"
+        }
+      ],
+      "tags": [
+        "security-functional"
+      ],
+      "testData": {
+        "email": "user@example.com"
+      },
+      "title": "Password reset request",
+      "types": [
+        "validation"
+      ]
+    }
+  ]
+}

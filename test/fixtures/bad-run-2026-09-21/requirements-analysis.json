@@ -1,0 +1,46 @@
+{
+  "acceptancePoints": [
+    {
+      "evidenceIds": [
+        "BEH-1"
+      ],
+      "id": "AC-1",
+      "statement": "Login button click must trigger authentication flow"
+    },
+    {
+      "evidenceIds": [
+        "BEH-2"
+      ],
+      "id": "AC-2",
+      "statement": "Username textbox must accept text input"
+    }
+  ],
+  "businessRules": [],
+  "feature": "Login Page",
+  "openQuestions": [
+    {
+      "id": "OQ-1",
+      "impact": "Critical",
+      "question": "Why does clicking 'Sign In' not trigger authentication flow or page change?"
+    },
+    {
+      "id": "OQ-2",
+      "impact": "High",
+      "question": "Is the missing password field intentional or an accessibility issue?"
+    }
+  ],
+  "risks": [
+    {
+      "area": "Login Page",
+      "impact": "high",
+      "probability": "high",
+      "rationale": "Authentication flow appears broken"
+    },
+    {
+      "area": "Login Page",
+      "impact": "high",
+      "probability": "medium",
+      "rationale": "Incomplete authentication form missing password field"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "implementations"
+  ],
+  "properties": {
+    "implementations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "testCaseId",
+          "testFile",
+          "reuse",
+          "setup",
+          "cleanup",
+          "notes"
+        ],
+        "properties": {
+          "testCaseId": {
+            "type": "string"
+          },
+          "testFile": {
+            "type": "string"
+          },
+          "reuse": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "setup": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cleanup": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

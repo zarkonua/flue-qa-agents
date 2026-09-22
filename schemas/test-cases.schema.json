@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "feature",
+    "testCases",
+    "openQuestions"
+  ],
+  "properties": {
+    "feature": {
+      "type": "string"
+    },
+    "testCases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "evidenceIds",
+          "priority",
+          "types",
+          "preconditions",
+          "testData",
+          "steps",
+          "expectedResult",
+          "automationCandidate",
+          "automationReason",
+          "tags"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "priority": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ]
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "positive",
+                "negative",
+                "boundary",
+                "validation",
+                "state-transition",
+                "permission",
+                "integration",
+                "regression",
+                "smoke",
+                "accessibility",
+                "security-functional"
+              ]
+            }
+          },
+          "preconditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "testData": {
+            "type": "object"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "action",
+                "expected"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "expected": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "expectedResult": {
+            "type": "string"
+          },
+          "automationCandidate": {
+            "type": "boolean"
+          },
+          "automationReason": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

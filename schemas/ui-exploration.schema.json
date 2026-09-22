@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "scenarios"
+  ],
+  "properties": {
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "testCaseId",
+          "observations",
+          "elements",
+          "discrepancies"
+        ],
+        "properties": {
+          "testCaseId": {
+            "type": "string"
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "purpose",
+                "locatorStrategy",
+                "locatorValue",
+                "confidence"
+              ],
+              "properties": {
+                "purpose": {
+                  "type": "string"
+                },
+                "locatorStrategy": {
+                  "enum": [
+                    "role",
+                    "label",
+                    "testid",
+                    "placeholder",
+                    "text",
+                    "css",
+                    "unknown"
+                  ]
+                },
+                "locatorValue": {
+                  "type": "string"
+                },
+                "confidence": {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "discrepancies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,39 @@
+ {
+  "name": "flue-qa-agents",
+  "version": "1.0.0",
+  "description": "Local, Ollama-backed multi-agent QA workflow built on Flue.",
+  "scripts": {
+    "check:mcp-tools": "flue run src/diagnostics/mcp-tool-check.ts --new --id check-mcp-tools -m \"Navigate to https://demo.playwright.dev/todomvc and report the page title you actually received.\"",
+    "check:ollama": "node scripts/check-ollama.mjs",
+    "check:playwright": "node scripts/check-playwright.mjs",
+    "check:tools": "flue run src/diagnostics/local-tool-check.ts --new --id check-tools -m \"What is the magic number? You must call get_magic_number before answering.\"",
+    "mcp:playwright": "node scripts/mcp-server.mjs",
+    "mcp:playwright:headed": "node scripts/mcp-server.mjs --headed",
+    "probe:browser": "node scripts/probe-browser.mjs",
+    "qa": "node scripts/qa-manual.mjs",
+    "qa:agentic": "node scripts/qa-agentic.mjs",
+    "qa:approve": "node scripts/qa-approve.mjs",
+    "qa:automation": "node scripts/qa-automation.mjs",
+    "qa:manual": "node scripts/qa-manual.mjs",
+    "qa:prioritize": "node scripts/qa-manual.mjs --from prioritization",
+    "qa:review": "node scripts/qa-review.mjs",
+    "test": "node --test test/*.test.ts",
+    "validate": "node scripts/validate-artifact.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@flue/runtime": "^2.1.0",
+    "valibot": "^1.5.0"
+  },
+  "devDependencies": {
+    "@flue/cli": "^2.1.0",
+    "@playwright/test": "^1.63.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

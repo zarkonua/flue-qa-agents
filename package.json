@@ -1,4 +1,4 @@
- {
+{
   "name": "flue-qa-agents",
   "version": "1.0.0",
   "description": "Local, Ollama-backed multi-agent QA workflow built on Flue.",
@@ -17,6 +17,7 @@
     "qa:manual": "node scripts/qa-manual.mjs",
     "qa:prioritize": "node scripts/qa-manual.mjs --from prioritization",
     "qa:review": "node scripts/qa-review.mjs",
+    "qa:ui": "node scripts/qa-ui.mjs",
     "test": "node --test test/*.test.ts",
     "validate": "node scripts/validate-artifact.mjs"
   },

@@ -75,7 +75,7 @@ npm run check:tools        # uses QA_MODEL, whichever provider that selects
 export TARGET_URL="http://localhost:4444/"
 npm run qa:manual                      # Phase 1: 4 stages, then STOP  (~5–15 min)
 
-jq . ~/projects/qa-workspace/.qa/test-cases.json
+npm run qa:ui                          # review in a browser at http://127.0.0.1:4445
 npm run qa:review                      # optional AI review; proposes only, edits nothing
 # hand-edit test-cases.json if you want
 npm run qa:prioritize                  # re-run stage 4 only, after edits
@@ -100,6 +100,20 @@ npm run qa:automation -- --from repo-analyzer
 A stage that fails all its attempts stops the run, keeps what succeeded, and prints the
 `--from` command to resume. Retries alternate: even attempts continue the same conversation
 with a correction naming what went wrong, odd attempts start fresh.
+
+### Reviewing in a browser
+
+`npm run qa:ui` serves a read-and-approve screen at `http://127.0.0.1:4445` (`QA_UI_PORT` to
+change the port; it binds to loopback only and has no login). It merges the Phase 1 artifacts
+into one page — test cases with their execution mode, automation priority, covered
+requirements, steps and evidence, plus coverage, any blocking findings and the optional AI
+review — so a normal review no longer means reading `test-cases.json` beside
+`automation-prioritization.json`.
+
+Approving there calls the same `approvePhase1()` as `npm run qa:approve`; the resulting
+approval is the same artifact and the Phase 2 gate treats it identically. The
+`--accept-findings` override is deliberately **not** available in the browser — overriding a
+semantic finding stays a terminal action.
 
 ### Approval
 

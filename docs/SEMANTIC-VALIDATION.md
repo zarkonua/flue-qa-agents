@@ -8,11 +8,11 @@ missing. This layer rejects that class of output before it is written.
 
 Code: `src/lib/semantic-validate.ts` (pure, deterministic, no I/O); the approval gate applies the same rules in `src/lib/phase1-gate.ts`.
 Wired in: `src/lib/qa-artifacts.ts` → `writeQaArtifact()`.
-Tests: `test/semantic-validate.test.ts` and `test/phase1.test.ts`, fixtures in
-`test/fixtures/bad-run-2026-09-21/`.
+Tests: `test/semantic-validate.test.ts`, `test/phase1.test.ts` and `test/phase2.test.ts`;
+fixtures in `test/fixtures/`.
 
 ```bash
-npm test   # 60 tests — test/semantic-validate.test.ts, test/phase1.test.ts
+npm test   # 104 tests — semantic-validate, phase1, phase2
 ```
 
 ---
@@ -39,6 +39,7 @@ result and retries; no human approval is involved.
 | `test-cases` | `requirements-analysis` + `discovered-behavior`, **and** re-checks that the requirements are still consistent with the current discovery |
 | `automation-prioritization` | `test-cases` (coverage and consistency), plus hard facts against discovery and requirements |
 | `test-cases-review` | `test-cases` and `automation-prioritization` |
+| `repo-analysis` | the target repository **on disk** — not an upstream artifact |
 
 ---
 
@@ -109,6 +110,47 @@ Two deliberate limits here:
 
 `MANUAL` with `LOW` or `MEDIUM` is permitted: the rule forbids only `MANUAL` + `HIGH`. The
 Prioritizer's prompt steers MANUAL cases to `NONE`.
+
+### Phase 2 — repo-analysis
+
+The same rule, pointed at a filesystem instead of an upstream artifact. Facts about the
+repository are gathered by host code (`src/lib/repo-evidence.ts`) and handed to the pure
+validator, so an agent cannot assert a path into existence.
+
+| Code | Rejects |
+|---|---|
+| `UNKNOWN_PATH` | Any path the analysis names that is not in the repository — layout paths, `examples`, `keyFiles`, every `evidencePath`, and the Playwright/TypeScript config paths. `./tests` and `tests/` are the same path as `tests`. |
+| `BAD_PATH` | An absolute path, a `..` escape, or a file where the field names a directory (`playwright.testDir`). |
+| `DUPLICATE_PATH` | The same directory described twice in `layout`. |
+| `UNKNOWN_SCRIPT` | A script name that is not in the repository's `package.json`. Skipped entirely when the repo has no `package.json`. |
+| `UNKNOWN_DEPENDENCY` | A package that is in neither `dependencies` nor `devDependencies`. |
+| `NOT_A_LITERAL` | A `playwright.baseURL` copied as source rather than a value — `process.env.BASE_URL ?? '…'`. Observed in the first live run. |
+| `EMPTY_ANALYSIS` | `layout` and `keyFiles` both empty: an analysis that says nothing. |
+| `UNEXPLORED_DIRECTORY` | A directory in the repository whose **name** says it holds automation (`tests`, `pages`, `fixtures`, `api`, `data`, `auth`, `helpers`, …) that the analysis never describes in `layout` or `keyFiles`, and never mentions in `unknowns`. |
+| `UNINSPECTED_DIRECTORY` | A `layout` entry of kind `testDir`, `pageObjects`, `fixtures`, `apiClients`, `testData` or `auth` that names **no real file inside itself** — not in `examples`, not as a convention's `evidencePath`, not in `keyFiles`. Listing a directory is not reading one. |
+| `MISSING_UPSTREAM` | The target repository does not exist. A host configuration problem; the agent is told it cannot fix it. |
+
+Prose is **not** fact-checked here: `purpose`, `rule`, `risks` and `unknowns` are judgements
+about code the agent did read, and the Phase 1 vocabulary rules would reject reasonable
+wording. A path is checkable; an opinion about a directory is not.
+
+### Completeness — proving it looked, not only that it was truthful
+
+The first seven rules prove that what the analysis says is **true**. The last two prove it
+**looked**, which is a different failure: the first live runs named only real paths and still
+missed the repository's API client and test-data module entirely.
+
+Both stay deterministic, and neither infers architecture:
+
+- the directory list is a **fixed set of names** (`src/lib/repo-evidence.ts`), scanned at the
+  top level only and bounded at 400 entries. It says a directory is *worth an opinion*, never
+  what that directory *is* — the agent still assigns the `kind`;
+- "did you inspect it" is answered by *"did you name a file inside it"*, checked against the
+  filesystem. A file the agent never opened is one it cannot name a real path for.
+
+**There is an escape hatch, by design.** Naming the directory in `unknowns` with a reason
+satisfies both rules. A repository may genuinely contain a directory the agent cannot make
+sense of; saying so is an analysis, silently skipping it is not.
 
 ### Integrity
 
@@ -193,6 +235,11 @@ Each of these passes today. They are listed so nobody mistakes "validated" for "
    earlier run would be used as evidence. Clear `.qa/` between unrelated targets.
 9. **Notes are trusted.** Discovery's area notes feed the contradiction check without a
    confidence field. If discovery wrote a wrong note, downstream is forced to agree with it.
+
+10. **Repo analysis is faithful but not complete.** Every path is proved to exist, but
+    nothing detects what the agent *failed* to look at. Both live runs missed an `api/`
+    client and a `data/` test-data module that were present, and left `examples` empty for
+    directories it had listed. Schema-valid and true is not the same as sufficient.
 
 The natural next step for 1–5 is a constrained model-based check — an LLM asked only *"does
 evidence X support claim Y: yes / no / partially"* — run after the deterministic rules pass.

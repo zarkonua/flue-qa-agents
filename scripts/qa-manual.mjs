@@ -24,7 +24,8 @@
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { EXIT, ROOT, ensureMcp, preflightTarget, requireTarget, runAgent, stopMcp, stopMcpAndWait } from './lib/runtime.mjs';
+import { EXIT, ROOT, ensureMcp, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
+import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { summarize } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
@@ -110,24 +111,11 @@ if (startIndex < 0) {
 const attempts = Math.max(1, Number(option('attempts') ?? process.env.QA_STAGE_ATTEMPTS ?? 4));
 const plan = STAGES.slice(startIndex);
 
-/** The corrective message for a retry, naming exactly what the last attempt got wrong. */
-function retryMessage(stage, problem) {
-  if (problem && /was not written/.test(problem)) {
-    return (
-      `Nothing was saved: your last turn ended without a successful write_qa_artifact call, so ` +
-      `"${stage.artifact}" does not exist. Call write_qa_artifact now with name "${stage.artifact}" ` +
-      'and the complete object. Do not reply in prose until the tool reports success.'
-    );
-  }
-  return (
-    `The "${stage.artifact}" artifact you wrote failed host validation: ${problem}. ` +
-    `Fix it and call write_qa_artifact again with name "${stage.artifact}" and the complete object.`
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Preconditions
 // ---------------------------------------------------------------------------
+
+const artifactProblem = makeArtifactProblem(qa);
 
 const target = plan.some((s) => s.browser) ? requireTarget() : process.env.TARGET_URL;
 
@@ -142,23 +130,6 @@ for (const stage of STAGES.slice(0, startIndex)) {
     console.error(`\nCannot start at "${from}": ${problem}\nRun the earlier stages first, e.g. npm run qa:manual -- --from ${stage.key}\n`);
     process.exit(EXIT.BAD_CONFIG);
   }
-}
-
-/** Why an artifact is not usable, or undefined if it is: exists, schema-valid, (optionally) semantically valid. */
-function artifactProblem(name, { semantic: checkSemantic = true } = {}) {
-  let data;
-  try {
-    data = qa.readQaArtifact(name);
-  } catch (error) {
-    return `${name}.json is not valid JSON (${error.message}).`;
-  }
-  if (data === undefined) return `${name}.json does not exist.`;
-  const schema = qa.schemaErrorsFor(name, data);
-  if (schema.length > 0) return `${name}.json fails its schema: ${schema[0]}`;
-  if (!checkSemantic) return undefined;
-  const semantic = qa.semanticErrorsFor(name, data);
-  if (semantic.length > 0) return `${name}.json fails semantic validation: ${semantic[0].code} at ${semantic[0].path}`;
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,39 +179,16 @@ if (plan.some((s) => s.browser)) {
 for (const stage of plan) {
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
-  let passed = false;
-  let lastProblem;
-  // Retry style alternates. Even attempts CONTINUE the previous conversation
-  // with a nudge naming exactly what went wrong, keeping what the agent already
-  // read. Odd attempts start FRESH: back-to-back failures were observed within
-  // one conversation, so a clean start breaks that correlation.
-  let id;
-  entry.conversationIds = [];
-
-  for (let attempt = 1; attempt <= attempts && !passed; attempt += 1) {
-    const resume = attempt % 2 === 0;
-    if (!resume) {
-      id = `p1-${stage.key}-${stamp}-${attempt}`;
-      entry.conversationIds.push(id);
-    }
-    console.log(`\n=== ${stage.label} — attempt ${attempt}/${attempts}${resume ? ' (continuing, with correction)' : attempt > 1 ? ' (fresh conversation)' : ''} ===\n`);
-    const started = Date.now();
-    const message = resume ? retryMessage(stage, lastProblem) : stage.message;
-    const exitCode = await runAgent(stage.agent, message, id, { resume });
-
-    const path = qa.qaArtifactPath(stage.artifact);
-    // Fresh = written during this attempt. A file from before cannot pass.
-    const fresh = existsSync(path) && statSync(path).mtimeMs >= started - 1000;
-    const problem = fresh ? artifactProblem(stage.artifact) : `${stage.artifact}.json was not written by this attempt.`;
-    passed = fresh && problem === undefined;
-    lastProblem = problem;
-
-    entry.attempts.push({ attempt, resumed: resume, conversationId: id, agentExitCode: exitCode, seconds: Math.round((Date.now() - started) / 1000), passed, problem: problem ?? null });
-    saveRecord();
-    console.log(`\n--- ${stage.label}: ${passed ? 'artifact written and valid' : `FAILED — ${problem}`}`);
-  }
-
-  entry.passed = passed;
+  const passed = await runStage({
+    stage,
+    entry,
+    attempts,
+    idPrefix: 'p1',
+    stamp,
+    artifactProblem,
+    qaArtifactPath: qa.qaArtifactPath,
+    onProgress: saveRecord,
+  });
   if (stage.browser) {
     // Later stages need no browser; release it now if we started it.
     record.mcpStoppedCleanly = await stopMcpAndWait();

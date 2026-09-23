@@ -1,19 +1,77 @@
 #!/usr/bin/env node
-// PHASE 2 — Automation Engineering. Entry gate only, for now.
+// PHASE 2 — Automation Engineering. Entry gate, then Repo Analyzer, then STOP.
 //
 //   npm run qa:automation
 //
-// Refuses to start unless Phase 1 is complete, valid, approved by a person,
-// and unchanged since that approval. Then selects executionMode == AUTOMATION.
+//   [entry gate]     Phase 1 complete, valid, approved by a person, unchanged
+//   Repo Analyzer -> repo-analysis.json
+//   STOP
 //
-// The Phase 2 pipeline itself (Repo Analyzer, UI Explorer, Automation
-// Generator, Test Runner, Failure Analyzer) is deliberately not wired in yet:
-// this command stops after verifying the boundary.
+// Refuses to start unless Phase 1 is approved and unchanged since that
+// approval. The gate is unchanged from before; what follows it is one stage,
+// sequenced here in trusted code exactly as Phase 1 sequences its four — no
+// model decides what runs next.
+//
+// The rest of the Phase 2 pipeline (UI Explorer, Automation Generator, Test
+// Runner, Failure Analyzer) is deliberately NOT wired in yet. UI Explorer and
+// Automation Generator exist in src/agents/ but this command will not start
+// them: PHASE2_AGENTS is a closed allowlist checked at startup.
+//
+// Options:
+//   --from <stage>   start at: repo-analyzer  (the only stage today)
+//   --attempts <n>   attempts per stage (default 4, or QA_STAGE_ATTEMPTS)
+//   --gate-only      run the entry gate and stop, without starting any agent
 
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { EXIT, ROOT } from './lib/runtime.mjs';
+import { makeArtifactProblem, runStage } from './lib/stage.mjs';
+import { assertWiredStages, NOT_YET_WIRED, PHASE2_AGENTS, PHASE2_STAGES, UNWIRED_ARTIFACTS } from './lib/phase2-stages.mjs';
 
+const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { checkPhase2Gate } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
+const { TARGET_REPO_ROOT } = await import(resolve(ROOT, 'src/lib/trusted-roots.ts'));
+
+// ---------------------------------------------------------------------------
+// The Phase 2 stage list — a closed allowlist
+// ---------------------------------------------------------------------------
+
+const STAGES = PHASE2_STAGES;
+
+// Fails loudly at startup if a stage ever names an agent Phase 2 may not start
+// — including UI Explorer and Automation Generator, which are built but unwired.
+try {
+  assertWiredStages(STAGES);
+} catch (error) {
+  console.error(`Refusing to run: ${error.message}`);
+  process.exit(EXIT.BAD_CONFIG);
+}
+
+// ---------------------------------------------------------------------------
+// Options
+// ---------------------------------------------------------------------------
+
+function option(name) {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i > 0) return process.argv[i + 1];
+  const eq = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return eq?.split('=')[1];
+}
+
+const gateOnly = process.argv.includes('--gate-only');
+const from = option('from') ?? STAGES[0].key;
+const startIndex = STAGES.findIndex((s) => s.key === from);
+if (startIndex < 0) {
+  console.error(`Unknown --from stage "${from}". Use one of: ${STAGES.map((s) => s.key).join(', ')}.`);
+  process.exit(EXIT.BAD_CONFIG);
+}
+const attempts = Math.max(1, Number(option('attempts') ?? process.env.QA_STAGE_ATTEMPTS ?? 4));
+const plan = STAGES.slice(startIndex);
+
+// ---------------------------------------------------------------------------
+// 1-2. The entry gate — unchanged. Nothing below it runs if it refuses.
+// ---------------------------------------------------------------------------
+
 const gate = checkPhase2Gate();
 
 if (!gate.ok) {
@@ -31,5 +89,132 @@ console.log(`Approved by     : ${gate.approval.approvedBy} at ${gate.approval.ap
 console.log('Integrity       : all approved artifacts unchanged since approval');
 console.log(`Selected        : ${selected.length} AUTOMATION case(s); ${gate.approval.counts.manual} MANUAL case(s) stay in the manual suite`);
 for (const c of selected) console.log(`  ${c.automationPriority.padEnd(6)} ${c.testCaseId}  ${c.reason}`);
-console.log('\nPhase 2 pipeline is not implemented yet — prerequisites verified; nothing was generated.\n');
+
+if (gateOnly) {
+  console.log('\n--gate-only: prerequisites verified; no agent was started.\n');
+  process.exit(EXIT.OK);
+}
+
+// ---------------------------------------------------------------------------
+// Preconditions for the stages themselves
+// ---------------------------------------------------------------------------
+
+const artifactProblem = makeArtifactProblem(qa);
+
+// The Repo Analyzer has nothing to analyse without a repository. That is an
+// operator configuration problem, so say so here rather than burning four
+// attempts on an agent that can only report the same thing back.
+if (!existsSync(TARGET_REPO_ROOT)) {
+  console.error(`\nNo target repository at ${TARGET_REPO_ROOT}.`);
+  console.error('Phase 2 analyses the repository your automated tests will live in.');
+  console.error('Clone it there, or point QA_TARGET_REPO_ROOT at it:\n');
+  console.error('  export QA_TARGET_REPO_ROOT="/absolute/path/to/your/automation-repo"\n');
+  process.exit(EXIT.BAD_CONFIG);
+}
+
+// Starting part-way through needs every earlier stage's artifact present and
+// schema-valid (there are none today; this keeps `--from` honest as stages land).
+for (const stage of STAGES.slice(0, startIndex)) {
+  const problem = artifactProblem(stage.artifact, { semantic: false });
+  if (problem) {
+    console.error(`\nCannot start at "${from}": ${problem}\nRun the earlier stages first.\n`);
+    process.exit(EXIT.BAD_CONFIG);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Archive what this run will replace — never delete
+// ---------------------------------------------------------------------------
+
+const runStarted = new Date();
+const stamp = runStarted.toISOString().replace(/[:.]/g, '-');
+const archiveDir = join(qa.QA_ARTIFACT_ROOT, 'archive', stamp);
+
+for (const stage of plan) {
+  const path = qa.qaArtifactPath(stage.artifact);
+  if (!existsSync(path)) continue;
+  mkdirSync(archiveDir, { recursive: true });
+  renameSync(path, join(archiveDir, path.split('/').pop()));
+}
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
+
+console.log('\nPHASE 2 — Automation Engineering (deterministic sequencing)');
+console.log(`Repository      : ${TARGET_REPO_ROOT}`);
+console.log(`Artifacts       : ${qa.QA_ARTIFACT_ROOT}`);
+console.log(`Stages          : ${plan.map((s) => s.label).join(' -> ')} -> STOP`);
+console.log(`Attempts/stage  : ${attempts}`);
+if (existsSync(archiveDir)) console.log(`Archived        : previous artifacts moved to ${archiveDir}`);
+
+const record = {
+  phase: 2,
+  repository: TARGET_REPO_ROOT,
+  startedAt: runStarted.toISOString(),
+  from,
+  attempts,
+  approvedAt: gate.approval.approvedAt,
+  automationCases: selected.length,
+  stages: [],
+};
+const recordPath = join(qa.QA_ARTIFACT_ROOT, 'phase2-run.json');
+const saveRecord = () => {
+  mkdirSync(qa.QA_ARTIFACT_ROOT, { recursive: true });
+  writeFileSync(recordPath, JSON.stringify(record, null, 2));
+};
+
+for (const stage of plan) {
+  const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
+  record.stages.push(entry);
+
+  const passed = await runStage({
+    stage,
+    entry,
+    attempts,
+    idPrefix: 'p2',
+    stamp,
+    artifactProblem,
+    qaArtifactPath: qa.qaArtifactPath,
+    onProgress: saveRecord,
+  });
+
+  if (!passed) {
+    record.result = 'FAILED';
+    record.failedStage = stage.key;
+    record.finishedAt = new Date().toISOString();
+    saveRecord();
+    console.error(`\nPhase 2 stopped: ${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`);
+    console.error(`Resume from this stage with:\n  npm run qa:automation -- --from ${stage.key}\n`);
+    process.exit(EXIT.FAILED);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// STOP — Phase 2 ends here, by construction
+// ---------------------------------------------------------------------------
+
+const leaked = UNWIRED_ARTIFACTS.filter((name) => {
+  const path = qa.qaArtifactPath(name);
+  return existsSync(path) && statSync(path).mtimeMs >= runStarted.getTime();
+});
+record.unwiredArtifactsWritten = leaked;
+record.result = 'COMPLETE';
+record.finishedAt = new Date().toISOString();
+saveRecord();
+
+const analysis = qa.readQaArtifact('repo-analysis');
+const count = (list) => (Array.isArray(list) ? list.length : 0);
+
+console.log('\n==============================================================');
+console.log(' PHASE 2 — REPO ANALYSIS COMPLETE (stopped, as designed)');
+console.log('==============================================================');
+console.log(`Repository      : ${analysis?.repository?.packageManager} · ${analysis?.repository?.language} · ${analysis?.repository?.testRunner}`);
+console.log(`Recorded        : ${count(analysis?.layout)} layout entries, ${count(analysis?.conventions)} conventions, ${count(analysis?.keyFiles)} key files`);
+console.log(`Unknowns        : ${count(analysis?.unknowns)}   Risks: ${count(analysis?.risks)}`);
+if (leaked.length > 0) console.log(`WARNING         : artifacts of unwired stages appeared: ${leaked.join(', ')}`);
+console.log('\nNext:');
+console.log(`  jq . ${qa.qaArtifactPath('repo-analysis')}`);
+console.log('  Read it as a person: does it describe conventions a new test must follow?');
+console.log('\nThe rest of Phase 2 (UI Explorer, Automation Generator) is not wired yet — nothing was generated.\n');
 process.exit(EXIT.OK);

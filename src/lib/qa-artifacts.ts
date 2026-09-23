@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateAgainstSchema, type JsonSchemaNode } from './schema-validate.ts';
+import { collectRepoEvidence } from './repo-evidence.ts';
 import {
   formatSemanticErrors,
   validateDiscoveredBehavior,
@@ -18,9 +19,11 @@ import {
   validateTestCases,
   validateAutomationPrioritization,
   validateTestCasesReview,
+  validateRepoAnalysis,
   type AutomationPrioritization,
   type TestCasesReview,
   type DiscoveredBehavior,
+  type RepoAnalysis,
   type RequirementsAnalysis,
   type SemanticError,
   type TestCases,
@@ -87,6 +90,7 @@ export type QaArtifactName =
   | 'test-cases'
   | 'automation-prioritization'
   | 'test-cases-review'
+  | 'repo-analysis'
   | 'ui-exploration'
   | 'automation-plan';
 
@@ -101,6 +105,7 @@ const ARTIFACTS: Record<QaArtifactName, ArtifactDef> = {
   'test-cases': { fileName: 'test-cases.json', schemaFile: 'test-cases.schema.json' },
   'automation-prioritization': { fileName: 'automation-prioritization.json', schemaFile: 'automation-prioritization.schema.json' },
   'test-cases-review': { fileName: 'test-cases-review.json', schemaFile: 'test-cases-review.schema.json' },
+  'repo-analysis': { fileName: 'repo-analysis.json', schemaFile: 'repo-analysis.schema.json' },
   'ui-exploration': { fileName: 'ui-exploration.json', schemaFile: 'ui-exploration.schema.json' },
   'automation-plan': { fileName: 'automation-plan.json', schemaFile: 'automation-plan.schema.json' },
 };
@@ -231,6 +236,11 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
         data as TestCasesReview,
       );
     }
+
+    // Phase 2. Checked against the repository on disk, not against a Phase 1
+    // artifact: the facts come from the filesystem the agent just read.
+    case 'repo-analysis':
+      return validateRepoAnalysis(data as RepoAnalysis, collectRepoEvidence());
 
     default:
       return [];

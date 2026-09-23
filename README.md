@@ -11,13 +11,14 @@ PHASE 1 — Manual QA Design        npm run qa:manual
         ↓
    HUMAN APPROVAL GATE            npm run qa:approve
         ↓
-PHASE 2 — Automation Engineering  npm run qa:automation   (entry gate only — not built yet)
+PHASE 2 — Automation Engineering  npm run qa:automation   (entry gate + Repo Analyzer, then stops)
 ```
 
 Phase 1 browses the target application, records only what it observed, and produces a manual
 test suite plus a recommendation of which cases are worth automating — then **stops**. You
 review and edit the result and approve it yourself. Phase 2 refuses to start from anything
-that has not been approved, or that changed after approval.
+that has not been approved, or that changed after approval; its first stage reads your
+automation repository and records how tests are written there.
 
 ---
 
@@ -30,7 +31,7 @@ export TARGET_URL="http://localhost:4444/"   # the only required setting
 npm run qa:manual       # Phase 1: 4 agents in fixed order, then STOP  (~4–10 min)
 npm run qa:review       # optional AI review — proposes changes, edits nothing
 npm run qa:approve      # your approval, hash-locked to the exact artifacts
-npm run qa:automation   # Phase 2 gate: refuses unless approved and unchanged
+npm run qa:automation   # Phase 2: gate, then Repo Analyzer, then stop
 ```
 
 `npm run qa` is an alias of `qa:manual`. Everything else has a working default.
@@ -52,9 +53,15 @@ by a model deciding what comes next:
 | 3 | **Test Designer** | `test-cases.json` | — |
 | 4 | **Automation Prioritizer** | `automation-prioritization.json` | — |
 
+Phase 2 (`npm run qa:automation`) adds one more, after your approval:
+
+| # | Stage | Writes | Reads |
+|---|---|---|---|
+| 5 | **Repo Analyzer** | `repo-analysis.json` | your automation repo, read-only |
+
 Optional: **Test Case Reviewer** (`npm run qa:review`) writes `test-cases-review.json` and
 proposes changes only. Built but not wired into any command: UI Explorer, Automation
-Generator. Not built: Repo Analyzer, automation-code Reviewer, Test Runner, Failure Analyzer.
+Generator. Not built: automation-code Reviewer, Test Runner, Failure Analyzer.
 
 Each stage runs as its own process, hands off through a JSON artifact on disk, and passes only
 if host code confirms the artifact was written during that attempt and still validates. Stages
@@ -91,13 +98,16 @@ This is enforced in code, not asked for in prompts:
 | Evidence IDs resolve; no invented facts | `src/lib/semantic-validate.ts`, on every write |
 | Every test case prioritized exactly once | `validateAutomationPrioritization` |
 | Phase 2 starts only from approved, unchanged content | `src/lib/phase1-gate.ts` (SHA-256 of all four artifacts) |
+| Phase 2 starts only the agents it has wired | a closed allowlist in `scripts/lib/phase2-stages.mjs` |
+| Repo analysis names only files that exist | `validateRepoAnalysis` + `src/lib/repo-evidence.ts` |
+| Repo analysis accounts for every automation directory | `UNEXPLORED_DIRECTORY` / `UNINSPECTED_DIRECTORY`, checked against the repo |
 | Approval is a person's act | `npm run qa:approve` is host code; no agent can read or write the approval file |
 
 Rules, the error format, and the known gaps:
 [docs/SEMANTIC-VALIDATION.md](docs/SEMANTIC-VALIDATION.md).
 
 ```bash
-npm test     # 60 regression tests for the validators and the approval gate (~1s)
+npm test     # 118 regression tests for the validators, the gates and Phase 2 (~2s)
 ```
 
 ---
@@ -131,16 +141,16 @@ snapshot tools write a model-chosen filename — see
 flue-qa-agents/
 ├─ scripts/          host code: qa-manual · qa-review · qa-approve · qa-automation ·
 │                    qa-agentic · mcp-server · lib/runtime · diagnostics
-├─ schemas/          7 hand-off JSON Schemas
+├─ schemas/          8 hand-off JSON Schemas
 ├─ src/
-│  ├─ agents/        8 agents (4 Phase 1 · reviewer · QA Manager · 2 Phase 2)
+│  ├─ agents/        9 agents (4 Phase 1 · reviewer · QA Manager · Repo Analyzer · 2 unwired)
 │  ├─ connections/   Playwright MCP + per-role tool allowlists
 │  ├─ diagnostics/   regression agents: local tool calling · MCP tool calling
 │  ├─ lib/           artifacts · schema + semantic validation · trusted roots · phase-1 gate
 │  ├─ providers/     Ollama provider (reasoning-replay filter, sampling)
 │  ├─ tools/         qa-artifacts · repo · test-code
 │  └─ skills/        custom/ (6, project-specific) · upstream/qa-skills/ (15, vendored)
-├─ test/             60 tests (semantic validation, Phase 1 invariants, approval gate)
+├─ test/             118 tests (semantic validation, Phase 1 invariants, gate, Phase 2)
 └─ docs/             RUNBOOK · SEMANTIC-VALIDATION · architecture/ · notes/ (local only)
 ```
 
@@ -204,7 +214,9 @@ agents in WSL), `npm run check:ollama` probes the candidate endpoints and prints
 
 Phase 1 is implemented and live-verified: **5 of 5** complete runs on the final build, with
 every artifact schema- and semantically valid. The approval gate and the Phase 2 entry gate are
-implemented and tested end to end. The Phase 2 pipeline itself is not built.
+implemented and tested end to end. **Phase 2 stage 1 — the Repo Analyzer — is implemented and
+live-verified** (2 of 2 runs, each passing on the first attempt). The rest of Phase 2 is not
+built.
 
 Known limits worth reading before relying on this:
 
@@ -212,7 +224,9 @@ Known limits worth reading before relying on this:
   without calling its tool. Retries recover it; a failed attempt costs about 20 seconds.
 - Output depth is capped by discovery depth — faithful artifacts mean a thin discovery run
   yields a small test suite.
-- The repository is not committed to git yet (no git identity configured).
+- Repo analysis is checked for completeness, not only truth: every automation directory must
+  be described and evidenced by a real file inside it. It still cannot judge whether the
+  conventions it found are the ones that matter — read it before relying on it.
 
 ## Documentation
 

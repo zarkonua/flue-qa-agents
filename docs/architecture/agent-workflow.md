@@ -1,7 +1,7 @@
 # Phase 2 pipeline — planned
 
-What happens **after** the human approval gate. None of this runs today: `npm run qa:automation`
-verifies the gate and stops. Phase 1 and the gate are in
+What happens **after** the human approval gate. Only the first stage runs today:
+`npm run qa:automation` verifies the gate, runs the **Repo Analyzer**, and stops. Phase 1 and the gate are in
 [two-phase-workflow.md](two-phase-workflow.md); status for every box here is in
 [README.md](README.md).
 
@@ -19,8 +19,8 @@ flowchart TB
 
     approved[("approved AUTOMATION cases<br/>test-cases + automation-prioritization")]:::artifact
 
-    repoanalyzer["Repo Analyzer<br/>existing test architecture<br/>NOT BUILT"]:::planagent
-    a4[(".qa/repo-analysis.json<br/>PLANNED")]:::planartifact
+    repoanalyzer["Repo Analyzer<br/>how THIS repo writes tests<br/>BUILT · run by qa:automation"]:::agent
+    a4[(".qa/repo-analysis.json")]:::artifact
 
     explorer["UI Explorer<br/>walks the real UI, records<br/>stable locator evidence<br/>built, never run live"]:::agent
     a5[(".qa/ui-exploration.json")]:::artifact
@@ -40,7 +40,7 @@ flowchart TB
     a8[(".qa/failures/&lt;test-id&gt;.json<br/>+ .qa/bugs/&lt;test-id&gt;.md<br/>PLANNED")]:::planartifact
 
     approved --> repoanalyzer
-    repoanalyzer -.-> a4
+    repoanalyzer --> a4
     approved --> explorer --> a5 --> gate
     a4 -.-> gate
     gate -->|"no"| refuse
@@ -74,7 +74,7 @@ turn an expected result into a product defect.
 |---|---|---|
 | `.qa/ui-exploration.json` | UI Explorer | `schemas/ui-exploration.schema.json` — exists |
 | `.qa/automation-plan.json` | Automation Generator | `schemas/automation-plan.schema.json` — exists |
-| `.qa/repo-analysis.json` | Repo Analyzer | spec pack only |
+| `.qa/repo-analysis.json` | Repo Analyzer | `schemas/repo-analysis.schema.json` — exists |
 | `.qa/review.json` | automation-code Reviewer | spec pack only |
 | `.qa/failures/<test-id>.json` | Failure Analyzer | spec pack only |
 

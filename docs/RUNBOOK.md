@@ -161,7 +161,9 @@ Re-running any Phase 1 stage archives the approval.
 
 ---
 
-## 4. Phase 2 gate — `npm run qa:automation`
+## 4. Phase 2 — `npm run qa:automation`
+
+The entry gate, then the **Repo Analyzer**, then stop. Nothing else in Phase 2 is wired.
 
 Refuses (exit 4) unless: test cases and prioritization exist and are valid; an approval exists
 with status APPROVED; every recorded hash still matches; and at least one case is AUTOMATION.
@@ -177,8 +179,48 @@ Changed since approval: test-cases.json
 Review and approve again.
 ```
 
-When open, it lists the selected AUTOMATION cases (HIGH first) and stops: **the Phase 2
-pipeline is not implemented yet.**
+When open, it lists the selected AUTOMATION cases (HIGH first) and runs stage 1.
+
+### Stage 1 — Repo Analyzer
+
+Reads the repository at `QA_TARGET_REPO_ROOT` — read-only, repo-relative paths only, no
+browser, no shell — and writes `repo-analysis.json`: the layout, the conventions a new test
+must follow (each with an evidence path), the key files, scripts, dependencies, risks and
+unknowns.
+
+It is verified exactly as a Phase 1 stage: written during this attempt, schema-valid, and
+semantically valid. Two things are checked:
+
+- **truth** — every path, script and dependency it names must actually exist in the repository;
+- **completeness** — every directory that holds automation (`tests`, `pages`, `fixtures`,
+  `api`, `data`, `auth`, `helpers`, …) must be described, and a directory it calls a test dir,
+  page objects, fixtures, API clients, test data or auth must **name a real file inside
+  itself**. Listing a directory is not reading one. Naming it in `unknowns` with a reason is
+  an accepted answer; silently skipping it is not.
+
+Up to 4 attempts, then the run stops.
+
+```bash
+export QA_TARGET_REPO_ROOT="/absolute/path/to/your/automation-repo"   # required
+npm run qa:automation
+
+npm run qa:automation -- --gate-only          # check the prerequisites, start no agent
+npm run qa:automation -- --from repo-analyzer # resume this stage
+npm run qa:automation -- --attempts 2
+```
+
+With no repository at that path the command stops with exit 2 and says so, rather than
+burning attempts on an agent that can only report the same thing.
+
+Afterwards, read it as a person — schema-valid is not the same as useful:
+
+```bash
+jq . ~/projects/qa-workspace/.qa/repo-analysis.json
+jq '.stages[].attempts' ~/projects/qa-workspace/.qa/phase2-run.json
+```
+
+**The rest of Phase 2 is not wired.** UI Explorer and Automation Generator exist but are
+not called; `qa:automation` cannot start them (`PHASE2_AGENTS` is a closed allowlist).
 
 ### Exit codes
 

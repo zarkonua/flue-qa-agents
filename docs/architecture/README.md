@@ -26,8 +26,8 @@ The single status table for this folder; the documents below do not repeat it.
 | Playwright MCP confined outside the control plane | Implemented (fixed 2026-09-22) |
 | QA Manager (model-driven orchestration) | Implemented but **experimental** (`qa:agentic`), off the critical path |
 | UI Explorer, Automation Generator | Built and wired; **never run live**; not invoked by `qa:automation` |
-| **Phase 2 pipeline** | **Planned.** `qa:automation` verifies the gate, then stops. |
-| Repo Analyzer | **Planned** — its read-only tools exist; agent and schema do not |
+| **Repo Analyzer** — Phase 2, stage 1 | **Implemented, live-verified**; run by `qa:automation` after the gate |
+| **Rest of the Phase 2 pipeline** | **Planned.** `qa:automation` stops after the Repo Analyzer. |
 | Automation-code Reviewer, Test Runner, Failure Analyzer | **Planned** |
 | `modify_test_file` | **Planned** — in the spec's tool contracts, no implementation |
 | Langfuse observability | **Planned only** — no dependency or integration point exists |

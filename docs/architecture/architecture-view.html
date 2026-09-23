@@ -528,19 +528,35 @@
 
           <div class="cnode hostgate m" data-c="p2g">
             <div class="t"><span class="num">7</span>Phase 2 entry gate<span class="who">host code · built</span></div>
-            <div class="s"><code>npm run qa:automation</code> — six checks, then it lists the AUTOMATION cases and <b>stops</b>.</div>
+            <div class="s"><code>npm run qa:automation</code> — six checks. All pass, and it starts Phase 2; any one fails and nothing runs.</div>
           </div>
 
-          <div class="wire plan a lg"></div>
+          <div class="wire a lg"></div>
 
           <div class="phasebox plan">
-            <div class="hd2"><span>Phase 2 · automation engineering — not built</span></div>
-            <div class="cnode plan m" data-c="ra">
-              <div class="t"><span class="num">8</span>Repo Analyzer<span class="who">planned · next</span></div>
-              <div class="s">Its read-only repo tools exist; the agent, schema and wiring do not.</div>
-              <div class="sidecard note" data-c="notwired" style="top:0">
-                <b>Built, wired to no command:</b> UI Explorer and Automation Generator have never run live. Automation-code Reviewer, Test Runner and Failure Analyzer are not built.
+            <div class="hd2"><span>Phase 2 · automation engineering — stage 1 of 6 built</span></div>
+
+            <div class="cnode agent m" data-c="ra">
+              <div class="t"><span class="num">8</span>Repo Analyzer<span class="pill none">no browser · read-only</span></div>
+              <div class="s">Reads the target automation repository and records how automation is written <em>there</em> — layout, conventions with evidence, key files.</div>
+              <div class="skills"><span class="lbl">Skills</span><span class="sk own" title="agent-handoff">handoff</span><span class="sk own" title="capability-security">security</span></div>
+
+              <div class="sidecard" data-c="repo" style="top:-4px">
+                <div class="t">Target repository</div>
+                <div class="s"><code>QA_TARGET_REPO_ROOT</code> · read-only, repo-relative paths only</div>
               </div>
+            </div>
+
+            <div class="wire art a xs"></div>
+            <div class="apill m" data-c="a5"><b>repo-analysis.json</b><small>layout · conventions · key files</small></div>
+            <div class="wire art a xs"></div>
+            <div class="chk m" title="Host code: the artifact must have been written during this attempt, validate against its JSON Schema, and every path, script and dependency it names must actually exist in the repository." data-c="k5">✓ validated<span class="rt">↻ ≤4</span></div>
+            <div class="wire a xs"></div>
+
+            <div class="complete m" data-c="p2stop"><b>Stops here</b><small>the rest of Phase 2 is not wired</small></div>
+
+            <div class="sidecard note" data-c="notwired" style="top:150px">
+              <b>Built, wired to no command:</b> UI Explorer and Automation Generator have never run live. Automation-code Reviewer, Test Runner and Failure Analyzer are not built.
             </div>
           </div>
 
@@ -632,7 +648,8 @@
             <button class="node k-agent" data-id="a-td" type="button"><span class="t">Test Designer</span><span class="s">Manual test suite</span></button>
             <button class="node k-agent" data-id="a-ap" type="button"><span class="t">Automation Prioritizer</span><span class="s">AUTOMATION / MANUAL per case</span></button>
             <div class="col-sub">Optional · experimental</div>
-            <button class="node k-agent exp" data-id="a-tcr" type="button"><span class="t">Test Case Reviewer</span><span class="s">Proposes changes only</span></button>
+            <button class="node k-agent" data-id="a-ra" type="button"><span class="t">Repo Analyzer</span><span class="s">How this repo writes tests</span><span class="tag">Phase 2</span></button>
+          <button class="node k-agent exp" data-id="a-tcr" type="button"><span class="t">Test Case Reviewer</span><span class="s">Proposes changes only</span></button>
             <button class="node k-agent exp" data-id="a-qm" type="button"><span class="t">QA Manager</span><span class="s">Model-driven delegation</span></button>
             <div class="col-sub">Phase 2 · built, not wired</div>
             <button class="node k-agent planned" data-id="a-ue" type="button"><span class="t">UI Explorer</span><span class="s">Locator evidence</span><span class="tag">browser</span></button>
@@ -725,7 +742,12 @@
     'a-ap': { name:'Automation Prioritizer', path:'src/agents/automation-prioritizer.ts', phase:1,
       role:'Assigns every test case exactly one executionMode (AUTOMATION / MANUAL) and automationPriority (HIGH / MEDIUM / LOW / NONE), independent of P0–P3. Cannot change a test case.',
       tools:['read_qa_artifact'], writes:'automation-prioritization', browser:null, reads:['test-cases','requirements-analysis','discovered-behavior'], skills:[], noskills:'none mounted — criteria are inline' },
-    'a-tcr': { name:'Test Case Reviewer', path:'src/agents/test-case-reviewer.ts', phase:'optional',
+    'a-ra': { name:'Repo Analyzer', path:'src/agents/repo-analyzer.ts', phase:'Phase 2',
+    role:'Phase 2, stage 1 (npm run qa:automation). Reads the target automation repository read-only and records how automation is written there: layout, conventions with an evidence path for each, key files, scripts and dependencies. Every path, script and dependency it names is checked against the repository before the write is accepted.',
+    tools:['read_qa_artifact','list_repo_directory','read_repo_file','search_repo'], writes:'repo-analysis', browser:null,
+    reads:['approved Phase 1 artifacts (optional)'],
+    skills:['agent-handoff','capability-security'] },
+  'a-tcr': { name:'Test Case Reviewer', path:'src/agents/test-case-reviewer.ts', phase:'optional',
       role:'Optional (npm run qa:review). Reviews all four Phase 1 artifacts and proposes issues and changes. Cannot write test-cases.json; the command hashes the inputs before and after to prove it. Its verdict is advisory, never approval.',
       tools:['read_qa_artifact'], writes:'test-cases-review', browser:null, reads:['all four Phase 1 artifacts'], skills:[], noskills:'none mounted' },
     'a-qm': { name:'QA Manager', path:'src/agents/qa-manager.ts', phase:'experimental',
@@ -746,11 +768,11 @@
   const OTHER = {
     'e-manual': { name:'npm run qa:manual', path:'scripts/qa-manual.mjs', body:'Phase 1. Runs Product Discovery → Behavior Analyst → Test Designer → Automation Prioritizer in fixed order from a closed allowlist, each as its own flue run process, verifying each artifact from disk before starting the next, then stops. Up to 4 attempts per stage. Alias: npm run qa.' },
     'e-review': { name:'npm run qa:review', path:'scripts/qa-review.mjs', body:'Optional. Runs the Test Case Reviewer once Phase 1 artifacts exist. Hashes the four Phase 1 artifacts before and after and fails loudly if the reviewer changed any of them.' },
-    'e-gate': { name:'qa:approve · qa:automation', path:'scripts/qa-approve.mjs · scripts/qa-automation.mjs', body:'Host code only; no agent runs. qa:approve writes phase1-approval.json with SHA-256 hashes of all four Phase 1 artifacts. qa:automation applies the six Phase 2 entry checks and stops.' },
+    'e-gate': { name:'qa:approve · qa:automation', path:'scripts/qa-approve.mjs · scripts/qa-automation.mjs', body:'Host code; no model decides anything here. qa:approve writes phase1-approval.json with SHA-256 hashes of all four Phase 1 artifacts, and runs no agent at all. qa:automation applies the six Phase 2 entry checks, and only if they all pass does it run the Repo Analyzer — verifying that artifact from disk exactly as Phase 1 does — then stops.' },
     'e-agentic': { name:'npm run qa:agentic', path:'scripts/qa-agentic.mjs', body:'Experimental model-driven orchestration through the QA Manager. Not the default path.' },
     'e-flue': { name:'flue run <agent>', path:'@flue/cli 2.1', body:'Any agent can run standalone. Each agent module imports the Ollama provider for its side effect because flue run loads only that module.' },
     'g-mcp': { name:'Playwright MCP connection', path:'src/connections/playwright-mcp.ts', body:'browserTools() connects once and returns adapted tools each agent mounts with useTool() — it works in root and delegate renders alike. The server exposes about 25 tools; each role gets its own allowlist:', extra:() => `<dl><dt>Discovery</dt><dd>${chips(DISC)}</dd><dt>UI Explorer</dt><dd>${chips(UIX)}</dd><dt>Never mounted</dt><dd>${chips(FORBID,'no')}</dd></dl>` },
-    'g-art': { name:'QA artifact tools', path:'src/tools/qa-artifacts.ts → src/lib/qa-artifacts.ts · semantic-validate.ts', body:'read_qa_artifact(name) and writeQaArtifactToolFor([name]). Each agent’s write tool accepts only its own artifact name, enforced by its input schema. Every write is checked against its JSON schema and then semantically against the upstream artifacts on disk; a rejected write changes nothing and returns grouped errors.', extra:() => `<dl><dt>Names</dt><dd>${chips(['discovered-behavior','requirements-analysis','test-cases','automation-prioritization','test-cases-review','ui-exploration','automation-plan'])}</dd><dt>Not a tool name</dt><dd>${chips(['phase1-approval'],'no')}</dd></dl>` },
+    'g-art': { name:'QA artifact tools', path:'src/tools/qa-artifacts.ts → src/lib/qa-artifacts.ts · semantic-validate.ts', body:'read_qa_artifact(name) and writeQaArtifactToolFor([name]). Each agent’s write tool accepts only its own artifact name, enforced by its input schema. Every write is checked against its JSON schema and then semantically against the upstream artifacts on disk; a rejected write changes nothing and returns grouped errors.', extra:() => `<dl><dt>Names</dt><dd>${chips(['discovered-behavior','requirements-analysis','test-cases','automation-prioritization','test-cases-review','repo-analysis','ui-exploration','automation-plan'])}</dd><dt>Not a tool name</dt><dd>${chips(['phase1-approval'],'no')}</dd></dl>` },
     'g-repo': { name:'Repo read tools', path:'src/tools/repo.ts → src/lib/trusted-roots.ts', body:'list_repo_directory, read_repo_file and search_repo. Paths are relative and go through resolveInsideRoot(), which rejects absolute or Windows paths, .. escapes, .claude / .git / .env / key files at any depth, and symlinks that leave the root.' },
     'g-test': { name:'Test-code tools', path:'src/tools/test-code.ts', body:'write_test_file writes only .ts/.tsx inside QA_TEST_WRITE_ROOTS. run_playwright_test builds `npx playwright test <validated path>` itself and takes no command input. run_typecheck takes no arguments. Mounted only on the not-yet-wired Automation Generator.' },
     'g-gate': { name:'Phase 1 gate', path:'src/lib/phase1-gate.ts', body:'approvePhase1() and checkPhase2Gate(). Called only by the qa:approve and qa:automation scripts; not mounted as a tool, and no agent can name its file. Approval is bound to the SHA-256 of the exact bytes of all four Phase 1 artifacts.' },
@@ -771,7 +793,9 @@
     ['a-qm','g-art','read'],
     ['a-pd','g-mcp','5 tools'], ['a-pd','g-art','writes own'],
     ['a-ba','g-art','read · write own'], ['a-td','g-art','read · write own'], ['a-ap','g-art','read · write own'], ['a-tcr','g-art','read · write own'],
-    ['a-ue','g-mcp','12 tools'], ['a-ue','g-art','read · write own'], ['a-ue','g-repo','read file'],
+    ['e-gate','a-ra','runs ⑧'],
+  ['a-ra','g-art','read · write own'], ['a-ra','g-repo','list · read · search'],
+  ['a-ue','g-mcp','12 tools'], ['a-ue','g-art','read · write own'], ['a-ue','g-repo','read file'],
     ['a-ag','g-art','read · write own'], ['a-ag','g-repo','read · search'], ['a-ag','g-test','write · run'],
     ['agents-col','g-prov','every turn'],
     ['g-mcp','x-pwmcp','MCP / HTTP'], ['g-art','x-qa','validated write'], ['g-gate','x-qa','hash-lock'],
@@ -790,8 +814,8 @@
     const COLS = ['read_qa_artifact','WRITE','list_repo_directory','read_repo_file','search_repo','write_test_file','run_playwright_test','run_typecheck','read_test_results'];
     const firstOfGroup = new Set([0,2,5]);
     const mbody = document.getElementById('mbody');
-    const order = ['a-pd','a-ba','a-td','a-ap','a-tcr','a-qm','a-ue','a-ag'];
-    const sep = new Set(['a-tcr','a-ue']);
+    const order = ['a-pd','a-ba','a-td','a-ap','a-tcr','a-qm','a-ra','a-ue','a-ag'];
+    const sep = new Set(['a-tcr','a-ra','a-ue']);
     for (const id of order) {
       const a = AG[id];
       const tr = document.createElement('tr');

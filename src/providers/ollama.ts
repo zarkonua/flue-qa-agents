@@ -17,7 +17,12 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
  * prompt, tool definitions included. `npm run check:ollama` compares the two.
  */
 const CONTEXT_WINDOW = Number(process.env.OLLAMA_CONTEXT_WINDOW ?? 8192);
-const MAX_OUTPUT_TOKENS = 2048;
+// Phase 1 artifacts fit comfortably in 2048. The Phase 2 repo-analysis is
+// several times larger, and Qwen emits its reasoning *before* the tool call in
+// the same turn: when the two together exceed the cap, the call is truncated
+// and the turn ends with no tool call at all. Overridable so a stage that needs
+// a bigger artifact can raise it without changing the default for every agent.
+const MAX_OUTPUT_TOKENS = Number(process.env.OLLAMA_MAX_OUTPUT_TOKENS ?? 2048);
 
 /**
  * Under WSL2's default NAT networking, the Windows host is the default gateway,

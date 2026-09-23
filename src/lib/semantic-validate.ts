@@ -34,7 +34,16 @@ export type SemanticErrorCode =
   | 'DUPLICATE_PRIORITIZATION'
   | 'INCONSISTENT_PRIORITY'
   | 'SUMMARY_MISMATCH'
-  | 'INCONSISTENT_STATUS';
+  | 'INCONSISTENT_STATUS'
+  | 'UNKNOWN_PATH'
+  | 'BAD_PATH'
+  | 'DUPLICATE_PATH'
+  | 'UNKNOWN_SCRIPT'
+  | 'UNKNOWN_DEPENDENCY'
+  | 'EMPTY_ANALYSIS'
+  | 'NOT_A_LITERAL'
+  | 'UNEXPLORED_DIRECTORY'
+  | 'UNINSPECTED_DIRECTORY';
 
 export interface SemanticError {
   code: SemanticErrorCode;
@@ -126,6 +135,32 @@ export interface TestCasesReview {
 }
 
 /** Reviewer's ID for a finding about the suite as a whole rather than one test case. */
+/** Phase 2, stage 1. Everything it asserts about the repository must be checkable on disk. */
+export interface RepoAnalysis {
+  repository: { packageManager: string; language: string; testRunner: string; summary?: string };
+  playwright?: { configPath?: string; testDir?: string; baseURL?: string; projects?: string[]; usesStorageState?: boolean };
+  typescript?: { configPath?: string; strict?: boolean };
+  layout: { path: string; kind: string; purpose: string; examples?: string[] }[];
+  scripts?: { name: string; command?: string; purpose: string }[];
+  dependencies?: { name: string; role: string }[];
+  conventions: { topic: string; rule: string; evidencePath: string; evidenceLine?: number }[];
+  keyFiles: { path: string; why: string }[];
+  risks?: string[];
+  unknowns: string[];
+}
+
+/** What the host proved about the repository; see `src/lib/repo-evidence.ts`. */
+export interface RepoFacts {
+  rootExists: boolean;
+  exists(relativePath: string): boolean;
+  isDirectory(relativePath: string): boolean;
+  hasFiles(relativePath: string): boolean;
+  /** Directories the analysis is expected to account for. */
+  automationDirectories: string[];
+  scripts?: Set<string>;
+  dependencies?: Set<string>;
+}
+
 export const SUITE_ID = 'SUITE';
 
 // ---------------------------------------------------------------------------
@@ -1108,6 +1143,15 @@ const ORDER: SemanticErrorCode[] = [
   'INCONSISTENT_STATUS',
   'DUPLICATE_ID',
   'UNKNOWN_AREA',
+  'UNKNOWN_PATH',
+  'BAD_PATH',
+  'DUPLICATE_PATH',
+  'UNKNOWN_SCRIPT',
+  'UNKNOWN_DEPENDENCY',
+  'EMPTY_ANALYSIS',
+  'NOT_A_LITERAL',
+  'UNEXPLORED_DIRECTORY',
+  'UNINSPECTED_DIRECTORY',
 ];
 
 /** One fix instruction per rule, so it is said once rather than on every line. */
@@ -1129,10 +1173,230 @@ const HOW_TO_FIX: Record<SemanticErrorCode, string> = {
   INCONSISTENT_PRIORITY: 'MANUAL pairs with NONE; AUTOMATION pairs with HIGH, MEDIUM, or LOW',
   SUMMARY_MISMATCH: 'copy the counts exactly as given',
   INCONSISTENT_STATUS: 'make status agree with the issues you listed',
+  UNKNOWN_PATH: 'name only paths you actually opened or listed in the repository',
+  BAD_PATH: 'use a path relative to the repository root, with no ".." and no leading "/"',
+  DUPLICATE_PATH: 'describe each path once',
+  UNKNOWN_SCRIPT: 'name only scripts present in the repository package.json',
+  UNKNOWN_DEPENDENCY: 'name only packages present in the repository package.json',
+  EMPTY_ANALYSIS: 'Record what you actually found.',
+  NOT_A_LITERAL: 'write the literal default value, or omit the field',
+  UNEXPLORED_DIRECTORY: 'Open these directories and describe them in layout.',
+  UNINSPECTED_DIRECTORY: 'Name a real file inside each of these.',
 };
+
+// ---------------------------------------------------------------------------
+// repo-analysis (Phase 2, stage 1)
+// ---------------------------------------------------------------------------
+
+/** Repo-relative, no escapes, no absolute paths — the same contract the repo tools enforce. */
+function pathProblem(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) return 'must be a non-empty repo-relative path';
+  if (/^([a-zA-Z]:[\\/]|[\\/])/.test(value)) return 'must be relative to the repository root, not absolute';
+  if (value.split(/[\\/]/).includes('..')) return 'must not contain ".."';
+  return undefined;
+}
+
+/** Strip a leading "./" and any trailing slash so "./tests/" and "tests" compare equal. */
+function normalisePath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+/**
+ * Every path, script and dependency the analysis names must exist in the target
+ * repository. This is the Phase 1 evidence rule carried into Phase 2: the point
+ * of repo-analysis is to tell the Automation Generator how THIS repository
+ * works, and a plausible-but-invented path is worse than no analysis at all.
+ *
+ * Prose fields (`purpose`, `rule`, `risks`, `unknowns`) are deliberately not
+ * fact-checked — they are judgements about code the agent did read, and the
+ * fixed-vocabulary rules used in Phase 1 would reject reasonable wording.
+ */
+export function validateRepoAnalysis(analysis: RepoAnalysis, facts: RepoFacts): SemanticError[] {
+  const errors: SemanticError[] = [];
+
+  if (!facts.rootExists) {
+    return [
+      {
+        code: 'MISSING_UPSTREAM',
+        path: '$',
+        details:
+          'The target repository does not exist at the configured root. This is a host configuration ' +
+          'problem you cannot fix: report it and stop.',
+      },
+    ];
+  }
+
+  /** One path claim: well-formed, and actually present in the repository. */
+  const checkPath = (raw: unknown, where: string, expectDirectory = false) => {
+    const problem = pathProblem(raw);
+    if (problem !== undefined) {
+      errors.push({ code: 'BAD_PATH', path: where, value: typeof raw === 'string' ? raw : String(raw), details: problem });
+      return;
+    }
+    const value = normalisePath(raw as string);
+    if (value.length === 0 || value === '.') return;
+    if (!facts.exists(value)) {
+      errors.push({ code: 'UNKNOWN_PATH', path: where, value, details: 'no such file or directory in the repository' });
+      return;
+    }
+    if (expectDirectory && !facts.isDirectory(value)) {
+      errors.push({ code: 'BAD_PATH', path: where, value, details: 'is a file, but this field names a directory' });
+    }
+  };
+
+  const layout = Array.isArray(analysis.layout) ? analysis.layout : [];
+  const seen = new Map<string, number>();
+  layout.forEach((entry, i) => {
+    checkPath(entry?.path, `layout[${i}].path`);
+    const key = typeof entry?.path === 'string' ? normalisePath(entry.path).toLowerCase() : undefined;
+    if (key !== undefined) {
+      const first = seen.get(key);
+      if (first !== undefined) {
+        errors.push({
+          code: 'DUPLICATE_PATH',
+          path: `layout[${i}].path`,
+          value: entry.path,
+          details: `already described by layout[${first}]`,
+        });
+      } else {
+        seen.set(key, i);
+      }
+    }
+    (entry?.examples ?? []).forEach((example, j) => checkPath(example, `layout[${i}].examples[${j}]`));
+  });
+
+  (analysis.keyFiles ?? []).forEach((file, i) => checkPath(file?.path, `keyFiles[${i}].path`));
+  (analysis.conventions ?? []).forEach((c, i) => checkPath(c?.evidencePath, `conventions[${i}].evidencePath`));
+
+  // Observed in the first live run: the agent copied `process.env.BASE_URL ??
+  // 'http://localhost:4444'` straight out of the config. True, but not a value
+  // the Automation Generator can use. Fields that name a value must hold one.
+  const baseURL = analysis.playwright?.baseURL;
+  if (typeof baseURL === 'string' && /process\.env|\?\?|\$\{|`|import\.meta/.test(baseURL)) {
+    errors.push({
+      code: 'NOT_A_LITERAL',
+      path: 'playwright.baseURL',
+      value: baseURL,
+      details: 'this is the expression from the config, not a value',
+    });
+  }
+
+  if (analysis.playwright?.configPath !== undefined) checkPath(analysis.playwright.configPath, 'playwright.configPath');
+  if (analysis.playwright?.testDir !== undefined) checkPath(analysis.playwright.testDir, 'playwright.testDir', true);
+  if (analysis.typescript?.configPath !== undefined) checkPath(analysis.typescript.configPath, 'typescript.configPath');
+
+  // package.json is the authority on script and dependency names. When the repo
+  // has none, skip rather than reject: not every repository is a Node package.
+  if (facts.scripts !== undefined) {
+    (analysis.scripts ?? []).forEach((script, i) => {
+      if (typeof script?.name === 'string' && !facts.scripts!.has(script.name)) {
+        errors.push({
+          code: 'UNKNOWN_SCRIPT',
+          path: `scripts[${i}].name`,
+          value: script.name,
+          details: 'not a script in the repository package.json',
+        });
+      }
+    });
+  }
+  if (facts.dependencies !== undefined) {
+    (analysis.dependencies ?? []).forEach((dep, i) => {
+      if (typeof dep?.name === 'string' && !facts.dependencies!.has(dep.name)) {
+        errors.push({
+          code: 'UNKNOWN_DEPENDENCY',
+          path: `dependencies[${i}].name`,
+          value: dep.name,
+          details: 'not in dependencies or devDependencies of the repository package.json',
+        });
+      }
+    });
+  }
+
+  // ---- completeness -------------------------------------------------------
+  //
+  // The rules above prove that what the analysis says is true. These two prove
+  // it looked. Both are deterministic: a fixed list of directory names, and
+  // "did you name a file inside it". Neither infers what a directory *is*.
+
+  /** Anything the analysis said about this path, anywhere a path can appear. */
+  const mentions = (dir: string): boolean => {
+    const needle = dir.toLowerCase();
+    const inPaths = (value: unknown) => {
+      if (typeof value !== 'string') return false;
+      const p = normalisePath(value).toLowerCase();
+      return p === needle || p.startsWith(needle + '/') || needle.startsWith(p + '/');
+    };
+    if (layout.some((e) => inPaths(e?.path))) return true;
+    if ((analysis.keyFiles ?? []).some((f) => inPaths(f?.path))) return true;
+    // The escape hatch: say in `unknowns` why a directory was not described.
+    return (analysis.unknowns ?? []).some((u) => typeof u === 'string' && u.toLowerCase().includes(needle));
+  };
+
+  for (const dir of facts.automationDirectories) {
+    if (!mentions(dir)) {
+      errors.push({
+        code: 'UNEXPLORED_DIRECTORY',
+        path: '$.layout',
+        value: dir,
+        details: `"${dir}/" holds automation but the analysis never describes it. List it, read a file in it, and add a layout entry — or say in unknowns why you did not.`,
+      });
+    }
+  }
+
+  // A directory whose kind promises content the next agent will copy from has
+  // to name a real file inside it. Listing a directory is not reading one.
+  const MUST_SHOW_A_FILE = new Set(['testDir', 'pageObjects', 'fixtures', 'apiClients', 'testData', 'auth']);
+  layout.forEach((entry, i) => {
+    if (typeof entry?.path !== 'string' || !MUST_SHOW_A_FILE.has(entry?.kind)) return;
+    const dir = normalisePath(entry.path);
+    if (!facts.exists(dir) || !facts.isDirectory(dir) || !facts.hasFiles(dir)) return;
+
+    const insideDir = (value: unknown) =>
+      typeof value === 'string' &&
+      normalisePath(value).toLowerCase().startsWith(dir.toLowerCase() + '/') &&
+      facts.exists(normalisePath(value)) &&
+      !facts.isDirectory(normalisePath(value));
+
+    const shown =
+      (entry.examples ?? []).some(insideDir) ||
+      (analysis.conventions ?? []).some((c) => insideDir(c?.evidencePath)) ||
+      (analysis.keyFiles ?? []).some((f) => insideDir(f?.path)) ||
+      (analysis.unknowns ?? []).some((u) => typeof u === 'string' && u.toLowerCase().includes(dir.toLowerCase()));
+
+    if (!shown) {
+      errors.push({
+        code: 'UNINSPECTED_DIRECTORY',
+        path: `layout[${i}].examples`,
+        value: dir,
+        details: `you call "${dir}/" ${entry.kind} but name no file inside it. Read one and cite it here, in a convention's evidencePath, or in keyFiles.`,
+      });
+    }
+  });
+
+  // A analysis that names nothing is not an analysis. Unknowns alone are fine
+  // only if the agent genuinely found an empty repository — which it did not,
+  // because the root exists and it was asked to look.
+  if (layout.length === 0 && (analysis.keyFiles ?? []).length === 0) {
+    errors.push({
+      code: 'EMPTY_ANALYSIS',
+      path: '$',
+      details:
+        'layout and keyFiles are both empty, so this says nothing about the repository. List the ' +
+        'directories and files you actually read with list_repo_directory and read_repo_file.',
+    });
+  }
+
+  return errors;
+}
 
 /** Rules whose per-item details carry information the group hint does not. */
 const SPECIFIC = new Set<SemanticErrorCode>([
+  'EMPTY_ANALYSIS',
+  'UNEXPLORED_DIRECTORY',
+  'UNINSPECTED_DIRECTORY',
+  'NOT_A_LITERAL',
+  'BAD_PATH',
+  'DUPLICATE_PATH',
   'SUMMARY_MISMATCH',
   'INCONSISTENT_STATUS',
   'MISSING_UPSTREAM',

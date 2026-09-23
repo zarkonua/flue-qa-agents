@@ -8,6 +8,7 @@ const ARTIFACT_NAMES = [
   'test-cases',
   'automation-prioritization',
   'test-cases-review',
+  'repo-analysis',
   'ui-exploration',
   'automation-plan',
 ] as const satisfies readonly QaArtifactName[];

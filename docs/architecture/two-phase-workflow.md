@@ -148,13 +148,19 @@ not implemented yet**; the command stops after verifying the boundary.
 
 ---
 
-## Phase 2 — Automation Engineering *(planned)*
+## Phase 2 — Automation Engineering *(stage 1 of 6 built)*
 
 ```text
 approved AUTOMATION cases
-   → Repo Analyzer → UI Explorer → Automation Generator
+   → Repo Analyzer        ← built; qa:automation runs it, then STOPS
+   → UI Explorer → Automation Generator
    → automation Reviewer → Test Runner → Failure Analyzer
 ```
+
+**Stage 1 is built.** After the six entry checks pass, `qa:automation` runs the Repo
+Analyzer as its own process and verifies `repo-analysis.json` from disk — fresh, schema-
+valid, and semantically valid — exactly as Phase 1 verifies its four. Every path, script
+and dependency the analysis names must exist in the target repository. Then it stops.
 
 Detail: [agent-workflow.md](agent-workflow.md). Per-stage status: [README.md](README.md).
 
@@ -174,5 +180,8 @@ Detail: [agent-workflow.md](agent-workflow.md). Per-stage status: [README.md](RE
 | The reviewer changes nothing | tool restriction, plus `qa-review.mjs` hashes the inputs before and after |
 | Phase 2 starts only from approved, unchanged content | `phase1-gate.ts` → `checkPhase2Gate()` |
 | Browser agents cannot write into the control plane | MCP server cwd = `MCP_OUTPUT_ROOT`; running servers are verified before reuse |
+| Phase 2 runs only the agents it has wired | `PHASE2_AGENTS` allowlist in `scripts/lib/phase2-stages.mjs`, checked at startup |
+| Repo analysis names only real files | `validateRepoAnalysis` + `src/lib/repo-evidence.ts`, checked against the repository on disk |
+| Repo analysis accounts for every automation directory, with a file named inside each | `UNEXPLORED_DIRECTORY` / `UNINSPECTED_DIRECTORY` |
 
 Tests: `npm test` (60 tests: `test/semantic-validate.test.ts`, `test/phase1.test.ts`).

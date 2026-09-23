@@ -265,6 +265,25 @@ record.counts = counts;
 const discovery = qa.readQaArtifact('discovered-behavior');
 const ledger = ledgerLib.readLedger(stamp);
 if (ledger) record.observations = ledgerLib.ledgerSummary(ledger);
+
+// Per-stage efficiency, all host-derived. Ratios are left to whoever reads
+// this rather than stored, so they can never drift from their inputs.
+for (const s of record.stages) {
+  const byTool = {};
+  let total = 0;
+  let durationMs = 0;
+  for (const a of s.attempts) {
+    durationMs += a.durationMs ?? 0;
+    for (const [name, n] of Object.entries(a.toolCallsByTool ?? {})) byTool[name] = (byTool[name] ?? 0) + n;
+    total += a.toolCallsTotal ?? 0;
+  }
+  s.efficiency = { toolCallsTotal: total, toolCallsByTool: byTool, durationMs };
+}
+const discoveryStage = record.stages.find((s) => s.stage === 'discovery');
+if (discoveryStage) {
+  discoveryStage.efficiency.observationsRecorded = record.observations?.recorded ?? 0;
+  discoveryStage.efficiency.behaviorsProduced = discovery?.behaviors?.length ?? 0;
+}
 if (discovery?.locations) {
   const by = (st) => discovery.locations.filter((l) => l.status === st).length;
   record.discoveryCoverage = {

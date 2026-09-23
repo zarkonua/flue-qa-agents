@@ -91,6 +91,15 @@ export const DISCOVERY_BROWSER_TOOLS = [
   'browser_snapshot',
   'browser_click',
   'browser_type',
+  // Sets several fields in one call. Added to cut `browser_type` pairs filling
+  // an email and a password; measurement says it does not do that. Across two
+  // runs `browser_type` held at 24 and 26 against a baseline of 26, and the
+  // model never applied it to an auth form — it used it 5 times, error-free,
+  // to set the Notes search/sort/page-size comboboxes, replacing click +
+  // select sequences instead. Kept because it is used and costs nothing, not
+  // because it delivered the saving it was added for. Discovery tool calls
+  // over three runs: 109, 112, 101 — the spread is larger than any effect.
+  'browser_fill_form',
   'browser_press_key',
 ] as const;
 

@@ -95,6 +95,11 @@ you could see, is an incomplete run.
   not see a \`[ref=...]\` for it in a snapshot, you cannot act on it.
 - If a call errors, re-read the error and fix the argument shape — do not retry the same
   malformed call with a different selector.
+- \`browser_fill_form\` fills several fields in one call. Use it for ordinary form setup when
+  nothing observable happens between the fields — an email and a password before submitting.
+  Use \`browser_type\` field by field when the typing itself is what you are observing:
+  per-field validation, a control that enables as you type, autocomplete, or anything where
+  the intermediate state is the behaviour.
 
 ## You work alone — never ask the user anything
 There is no human to answer you. Do not ask "would you like me to continue", do not offer

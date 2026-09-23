@@ -100,7 +100,7 @@ export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifa
     );
     const started = Date.now();
     const message = resume ? retryMessage(stage, lastProblem) : stage.message;
-    const exitCode = await runAgent(stage.agent, message, id, { resume });
+    const { exitCode, toolCalls } = await runAgent(stage.agent, message, id, { resume });
 
     const path = qaArtifactPath(stage.artifact);
     // Fresh = written during this attempt. A file from before cannot pass.
@@ -109,12 +109,17 @@ export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifa
     passed = fresh && problem === undefined;
     lastProblem = problem;
 
+    const durationMs = Date.now() - started;
     entry.attempts.push({
       attempt,
       resumed: resume,
       conversationId: id,
       agentExitCode: exitCode,
-      seconds: Math.round((Date.now() - started) / 1000),
+      seconds: Math.round(durationMs / 1000),
+      durationMs,
+      // Counted by the host from the agent's own output, never self-reported.
+      toolCallsByTool: toolCalls,
+      toolCallsTotal: Object.values(toolCalls).reduce((a, b) => a + b, 0),
       passed,
       problem: problem ?? null,
     });

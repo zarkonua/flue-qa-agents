@@ -89,7 +89,7 @@ capability is a narrow host-controlled tool over roots that must live outside th
 What validation does and does not guarantee: **[docs/VALIDATION.md](docs/VALIDATION.md)**.
 
 ```bash
-npm test     # 199 tests covering the validators, both gates and the orchestration
+npm test     # 227 tests covering the validators, both gates and the orchestration
 ```
 
 ## Status
@@ -120,7 +120,7 @@ src/
   config/       .env loading and the one QA_MODEL lookup
   skills/       custom/ (6) · upstream/qa-skills/ (15, vendored, MIT)
 schemas/    8 hand-off JSON Schemas
-test/       199 tests
+test/       227 tests
 ```
 
 Artifacts are written to a **sibling** workspace, never inside this project:

@@ -5,7 +5,9 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { Writable } from 'node:stream';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -430,5 +432,157 @@ describe('observations must survive synthesis', () => {
     const d = withBehaviors([behavior('BEH-1', ['OBS-001'])]);
     d.behaviors[0].area = 'Imaginary';
     assert.ok(codes(validateDiscoveredBehavior(d, undefined, observed(1))).includes('UNKNOWN_AREA'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Efficiency metrics — counted by the host, never self-reported
+// ---------------------------------------------------------------------------
+
+/** A sink for the tee'd copy, so these tests do not spray the test output. */
+const devNull = () => new Writable({ write(_c, _e, cb) { cb(); } });
+
+describe('tool-call counting', () => {
+  const trace = [
+    'tool mcp__playwright__browser_navigate',
+    'tool done mcp__playwright__browser_navigate',
+    'tool mcp__playwright__browser_snapshot',
+    'tool done mcp__playwright__browser_snapshot',
+    'tool mcp__playwright__browser_type',
+    'tool error mcp__playwright__browser_type',
+    'tool record_observation',
+    'tool done record_observation',
+  ].join('\n');
+
+  it('counts each invocation exactly once, ignoring done and error lines', async () => {
+    const { countToolInvocations } = await import('../scripts/lib/runtime.mjs');
+    const counts = countToolInvocations(trace);
+    assert.deepEqual(counts, {
+      browser_navigate: 1,
+      browser_snapshot: 1,
+      browser_type: 1,
+      record_observation: 1,
+    });
+    assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), 4);
+  });
+
+  it('does not repeat the double-count that reported 109 calls as 216', async () => {
+    const { countToolInvocations } = await import('../scripts/lib/runtime.mjs');
+    // The old bug: `^tool [a-z_]` also matches `tool done …`.
+    const naive = trace.split('\n').filter((l) => /^tool [a-z_]/.test(l)).length;
+    const actual = Object.values(countToolInvocations(trace)).reduce((a, b) => a + b, 0);
+    assert.equal(naive, 8, 'the naive count still doubles');
+    assert.equal(actual, 4, 'the real count does not');
+  });
+
+  it('strips the MCP prefix so a tool reads the same however it is served', async () => {
+    const { countToolInvocations } = await import('../scripts/lib/runtime.mjs');
+    const counts = countToolInvocations('tool mcp__playwright__browser_click\ntool browser_click');
+    assert.deepEqual(counts, { browser_click: 2 });
+  });
+
+  it('accumulates into an existing tally, for chunked output', async () => {
+    const { countToolInvocations } = await import('../scripts/lib/runtime.mjs');
+    const into = {};
+    countToolInvocations('tool browser_click\n', into);
+    countToolInvocations('tool browser_click\n', into);
+    assert.deepEqual(into, { browser_click: 2 });
+  });
+
+  it('ignores prose that merely mentions a tool', async () => {
+    const { countToolInvocations } = await import('../scripts/lib/runtime.mjs');
+    const noise = [
+      '  I will call tool browser_click next',
+      'thinking about tool browser_snapshot',
+      'tool done browser_click',
+    ].join('\n');
+    assert.deepEqual(countToolInvocations(noise), {}, 'only line-initial invocations count');
+  });
+
+  // The bug these cover: the parser above was correct and well tested, while
+  // the code feeding it read the wrong stream. Every stage of a real run
+  // recorded `toolCallsByTool: {}`. Test the wiring, not only the regex.
+  it('counts tool lines a child writes to STDERR, which is where flue writes them', async () => {
+    const { attachToolCounter } = await import('../scripts/lib/runtime.mjs');
+    const child = spawn(process.execPath, [
+      '-e',
+      `process.stderr.write('tool browser_navigate\\ntool done browser_navigate\\n');
+       process.stderr.write('tool record_observation\\n');`,
+    ]);
+    const counter = attachToolCounter(child, devNull(), devNull());
+    await once(child, 'close');
+    counter.flush();
+    assert.deepEqual(counter.toolCalls, { browser_navigate: 1, record_observation: 1 });
+  });
+
+  it('counts a line split across two stderr writes exactly once', async () => {
+    const { attachToolCounter } = await import('../scripts/lib/runtime.mjs');
+    const child = spawn(process.execPath, [
+      '-e',
+      `process.stderr.write('tool browser_sna');
+       setTimeout(() => process.stderr.write('pshot\\n'), 20);`,
+    ]);
+    const counter = attachToolCounter(child, devNull(), devNull());
+    await once(child, 'close');
+    counter.flush();
+    assert.deepEqual(counter.toolCalls, { browser_snapshot: 1 });
+  });
+
+  it('counts a final line that never ended in a newline', async () => {
+    const { attachToolCounter } = await import('../scripts/lib/runtime.mjs');
+    const child = spawn(process.execPath, ['-e', `process.stderr.write('tool browser_click')`]);
+    const counter = attachToolCounter(child, devNull(), devNull());
+    await once(child, 'close');
+    assert.deepEqual(counter.flush(), { browser_click: 1 });
+  });
+
+  it('sees through the ANSI dimming flue applies when stderr is a terminal', async () => {
+    const { countToolInvocations } = await import('../scripts/lib/runtime.mjs');
+    // Exactly what @flue/cli emits with colour on: `${dim('tool')} ${name}`.
+    const dimmed = '\u001b[2mtool\u001b[22m browser_click\n\u001b[2mtool done\u001b[22m browser_click';
+    assert.deepEqual(countToolInvocations(dimmed), { browser_click: 1 });
+  });
+
+  it('reproduces the hand-verified count from the real baseline trace', async () => {
+    const { countToolInvocations } = await import('../scripts/lib/runtime.mjs');
+    // A faithful excerpt of the measured DeepSeek discovery stage.
+    const real = ['navigate', 'snapshot', 'type', 'type', 'click', 'snapshot']
+      .flatMap((t) => [`tool mcp__playwright__browser_${t}`, `tool done mcp__playwright__browser_${t}`])
+      .concat(['tool record_observation', 'tool done record_observation'])
+      .join('\n');
+    const counts = countToolInvocations(real);
+    assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), 7);
+    assert.equal(counts.browser_type, 2);
+  });
+});
+
+describe('Product Discovery capabilities', () => {
+  it('can fill a multi-field form in one call', async () => {
+    const { DISCOVERY_BROWSER_TOOLS } = await import('../src/connections/playwright-mcp.ts');
+    assert.ok(DISCOVERY_BROWSER_TOOLS.includes('browser_fill_form'));
+  });
+
+  it('keeps field-by-field typing, for behaviour that is the typing itself', async () => {
+    const { DISCOVERY_BROWSER_TOOLS } = await import('../src/connections/playwright-mcp.ts');
+    assert.ok(DISCOVERY_BROWSER_TOOLS.includes('browser_type'));
+    const prompt = readFileSync(join(PROJECT, 'src/agents/product-discovery.ts'), 'utf8');
+    assert.match(prompt, /browser_fill_form/);
+    assert.match(prompt, /per-field validation|validation, a control that enables as you type/);
+  });
+
+  it('gains no other browser capability', async () => {
+    const c = await import('../src/connections/playwright-mcp.ts');
+    const added = c.DISCOVERY_BROWSER_TOOLS.filter(
+      (t) => !['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press_key', 'browser_fill_form'].includes(t),
+    );
+    assert.deepEqual(added, [], 'the allowlist grew by exactly one deliberate tool');
+    for (const forbidden of c.FORBIDDEN_BROWSER_TOOLS) {
+      assert.ok(!c.DISCOVERY_BROWSER_TOOLS.includes(forbidden), `${forbidden} must never be mounted`);
+    }
+    // and nothing outside the browser
+    const source = readFileSync(join(PROJECT, 'src/agents/product-discovery.ts'), 'utf8');
+    for (const f of ['tools/repo', 'test-code', 'child_process', 'node:fs']) {
+      assert.ok(!source.includes(f), `must not import ${f}`);
+    }
   });
 });

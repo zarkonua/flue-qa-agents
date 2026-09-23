@@ -277,8 +277,70 @@ export async function preflightTarget(target) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Count tool INVOCATIONS in a chunk of agent output.
+ *
+ * Flue prints `tool <name>` when a call starts and `tool done <name>` /
+ * `tool error <name>` when it settles. Counting every line beginning `tool `
+ * therefore doubles the real figure — that is exactly how a 109-call stage was
+ * once reported as 216. Only the invocation line counts.
+ */
+export function countToolInvocations(text, into = {}) {
+  for (const raw of text.split('\n')) {
+    // `flue run` dims these lines with ANSI when its stderr is a TTY.
+    const line = raw.replace(/\u001b\[[0-9;]*m/g, '');
+    const match = /^tool (?!done\b|error\b)([A-Za-z0-9_]+)/.exec(line);
+    if (!match) continue;
+    // Strip the MCP prefix so `browser_click` reads the same however it is served.
+    const name = match[1].replace(/^mcp__[a-z0-9]+__/, '');
+    into[name] = (into[name] ?? 0) + 1;
+  }
+  return into;
+}
+
+/**
+ * Tee a child's output to this process while counting tool invocations in it.
+ *
+ * `flue run` writes its whole event stream -- including every `tool <name>`
+ * line -- to STDERR, not stdout: @flue/cli builds its line presenter with
+ * `write: (line) => process.stderr.write(...)`. Counting stdout alone silently
+ * yields zero, which is how a measured run once recorded `toolCallsByTool: {}`
+ * for every stage while the log plainly showed the calls. The log had merged
+ * the streams with `2>&1`; the counter had not.
+ *
+ * Both streams are counted. One carries the lines; the other costs nothing.
+ */
+export function attachToolCounter(child, out = process.stdout, err = process.stderr) {
+  const toolCalls = {};
+  const pending = { out: '', err: '' };
+  const tee = (key, sink) => (chunk) => {
+    sink.write(chunk);
+    // Count on whole lines only: a tool name split across two chunks would
+    // otherwise be missed or counted twice.
+    pending[key] += chunk;
+    const lastBreak = pending[key].lastIndexOf('\n');
+    if (lastBreak === -1) return;
+    countToolInvocations(pending[key].slice(0, lastBreak + 1), toolCalls);
+    pending[key] = pending[key].slice(lastBreak + 1);
+  };
+  child.stdout?.on('data', tee('out', out));
+  child.stderr?.on('data', tee('err', err));
+  return {
+    toolCalls,
+    /** Count whatever never ended in a newline. */
+    flush() {
+      for (const key of ['out', 'err']) {
+        if (pending[key]) countToolInvocations(pending[key] + '\n', toolCalls);
+        pending[key] = '';
+      }
+      return toolCalls;
+    },
+  };
+}
+
+/**
  * Run one agent module as its own root process via `flue run`. Resolves with
- * the exit code. Output is streamed so the operator can watch.
+ * `{ exitCode, toolCalls }` — output is still streamed live so the operator can
+ * watch, and counted as it passes through.
  *
  * `resume: true` continues an existing conversation (same `id`, no `--new`)
  * instead of starting a fresh one — used to retry a stage with a corrective
@@ -288,16 +350,24 @@ export function runAgent(agentPath, message, id, { extraEnv = {}, resume = false
   return new Promise((resolvePromise) => {
     const args = ['flue', 'run', agentPath, '--id', id, '-m', message];
     if (!resume) args.splice(3, 0, '--new');
-    const child = spawn('npx', args, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...extraEnv } });
+    // Piped rather than inherited so the host can count tool calls itself
+    // instead of trusting the model to report them. Everything still reaches
+    // the terminal unchanged, chunk by chunk.
+    const child = spawn('npx', args, { cwd: ROOT, stdio: ['inherit', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv } });
     activeAgent = child;
+
+    const counter = attachToolCounter(child);
+    const { toolCalls } = counter;
+
     child.on('error', (error) => {
       console.error(`Failed to start ${agentPath}: ${error.message}`);
       activeAgent = undefined;
-      resolvePromise(EXIT.FAILED);
+      resolvePromise({ exitCode: EXIT.FAILED, toolCalls });
     });
     child.on('close', (code) => {
+      counter.flush();
       activeAgent = undefined;
-      resolvePromise(code ?? EXIT.FAILED);
+      resolvePromise({ exitCode: code ?? EXIT.FAILED, toolCalls });
     });
   });
 }

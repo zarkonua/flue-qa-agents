@@ -16,7 +16,7 @@
 //
 // PASS: output contains "[check] get_magic_number EXECUTED" and the reply says 42.
 
-import '../providers/ollama.ts';
+import { QA_MODEL } from '../providers/model.ts';
 import { defineTool, useModel, useTool } from '@flue/runtime';
 import * as v from 'valibot';
 
@@ -31,7 +31,7 @@ export const getMagicNumberTool = defineTool({
 });
 
 export function LocalToolCheck() {
-  useModel('ollama/qwen3:14b');
+  useModel(QA_MODEL);
   useTool(getMagicNumberTool);
   return 'You answer questions about the magic number. You must call get_magic_number before answering.';
 }

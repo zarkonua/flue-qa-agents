@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "repository",
+    "layout",
+    "conventions",
+    "keyFiles",
+    "unknowns"
+  ],
+  "properties": {
+    "repository": {
+      "type": "object",
+      "required": [
+        "packageManager",
+        "language",
+        "testRunner"
+      ],
+      "properties": {
+        "packageManager": {
+          "enum": [
+            "npm",
+            "pnpm",
+            "yarn",
+            "bun",
+            "unknown"
+          ]
+        },
+        "language": {
+          "enum": [
+            "typescript",
+            "javascript",
+            "mixed",
+            "unknown"
+          ]
+        },
+        "testRunner": {
+          "enum": [
+            "playwright",
+            "cypress",
+            "jest",
+            "vitest",
+            "mixed",
+            "none",
+            "unknown"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "playwright": {
+      "type": "object",
+      "properties": {
+        "configPath": {
+          "type": "string"
+        },
+        "testDir": {
+          "type": "string"
+        },
+        "baseURL": {
+          "type": "string"
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "usesStorageState": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "typescript": {
+      "type": "object",
+      "properties": {
+        "configPath": {
+          "type": "string"
+        },
+        "strict": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "layout": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "kind",
+          "purpose"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "testDir",
+              "pageObjects",
+              "fixtures",
+              "helpers",
+              "apiClients",
+              "testData",
+              "auth",
+              "config",
+              "ci",
+              "other"
+            ]
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "scripts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "purpose"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "role"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "conventions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "topic",
+          "rule",
+          "evidencePath"
+        ],
+        "properties": {
+          "topic": {
+            "enum": [
+              "naming",
+              "locators",
+              "pageObjects",
+              "fixtures",
+              "testData",
+              "auth",
+              "assertions",
+              "imports",
+              "organization",
+              "config",
+              "ci",
+              "other"
+            ]
+          },
+          "rule": {
+            "type": "string"
+          },
+          "evidencePath": {
+            "type": "string"
+          },
+          "evidenceLine": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "keyFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "why"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

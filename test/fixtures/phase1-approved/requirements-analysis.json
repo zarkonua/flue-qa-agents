@@ -1,0 +1,22 @@
+{
+  "feature": "Authentication",
+  "acceptancePoints": [
+    {
+      "id": "AC-1",
+      "statement": "Login button is disabled with no credentials",
+      "evidenceIds": [
+        "BEH-1"
+      ]
+    },
+    {
+      "id": "AC-2",
+      "statement": "Error message shown for invalid credentials",
+      "evidenceIds": [
+        "BEH-2"
+      ]
+    }
+  ],
+  "businessRules": [],
+  "openQuestions": [],
+  "risks": []
+}

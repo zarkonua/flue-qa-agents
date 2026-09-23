@@ -1,6 +1,6 @@
 'use agent';
 
-import '../providers/ollama.ts';
+import { QA_MODEL } from '../providers/model.ts';
 import { useModel, useTool } from '@flue/runtime';
 import { readQaArtifactTool, writeQaArtifactToolFor } from '../tools/qa-artifacts.ts';
 
@@ -63,7 +63,7 @@ export function testCaseReviewerCore() {
 }
 
 export function TestCaseReviewer() {
-  useModel('ollama/qwen3:14b');
+  useModel(QA_MODEL);
   return testCaseReviewerCore();
 }
 

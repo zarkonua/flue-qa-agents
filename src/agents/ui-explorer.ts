@@ -1,6 +1,6 @@
 'use agent';
 
-import '../providers/ollama.ts';
+import { QA_MODEL } from '../providers/model.ts';
 import { useModel, useSkill, useTool } from '@flue/runtime';
 import { readQaArtifactTool, writeQaArtifactToolFor } from '../tools/qa-artifacts.ts';
 import { readRepoFileTool } from '../tools/repo.ts';
@@ -98,7 +98,7 @@ export function uiExplorerCore() {
 }
 
 export function UiExplorer() {
-  useModel('ollama/qwen3:14b');
+  useModel(QA_MODEL);
   return uiExplorerCore();
 }
 

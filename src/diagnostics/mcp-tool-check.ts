@@ -13,12 +13,12 @@
 // PASS: the reply reports the real page title "React • TodoMVC", which the
 // model can only know by actually calling browser_navigate.
 
-import '../providers/ollama.ts';
+import { QA_MODEL } from '../providers/model.ts';
 import { defineMcpConnection, useMcpConnection, useModel } from '@flue/runtime';
 import { DEFAULT_PLAYWRIGHT_MCP_URL, playwrightMcpUrl } from '../connections/playwright-mcp.ts';
 
 export function McpToolCheck() {
-  useModel('ollama/qwen3:14b');
+  useModel(QA_MODEL);
   useMcpConnection(
     defineMcpConnection({
       name: 'playwright',

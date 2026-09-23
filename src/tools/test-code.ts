@@ -8,6 +8,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { envInt, envString } from '../config/env.ts';
 import { dirname, extname, join, relative } from 'node:path';
 import { defineTool } from '@flue/runtime';
 import * as v from 'valibot';
@@ -25,7 +26,7 @@ import {
 const WRITABLE_EXTENSIONS = new Set(['.ts', '.tsx']);
 
 const MAX_OUTPUT_CHARS = 8_000;
-const RUN_TIMEOUT_MS = Number(process.env.QA_TEST_RUN_TIMEOUT_MS ?? 10 * 60_000);
+const RUN_TIMEOUT_MS = envInt('QA_TEST_RUN_TIMEOUT_MS', 10 * 60_000);
 
 function toolError(error: unknown) {
   if (error instanceof PathNotAllowedError) return { output: { ok: false, error: error.message } };
@@ -184,7 +185,7 @@ export const runTypecheckTool = defineTool({
     if (problem) return { output: { ok: false, error: problem } };
 
     // Fixed argv chosen by trusted host code, overridable only by the operator.
-    const configured = process.env.QA_TYPECHECK_SCRIPT?.trim();
+    const configured = envString('QA_TYPECHECK_SCRIPT');
     const args = configured ? ['run', configured] : ['tsc', '--noEmit'];
     const command = configured ? 'npm' : 'npx';
 

@@ -5,10 +5,11 @@
 // retype into a prompt. Agents receive it as one injected line; they cannot
 // change it, and it gives them no filesystem or config authority.
 
+import { envString } from '../config/env.ts';
+
 /** Raw value, unvalidated. `undefined` when the operator has not set one. */
 function rawTargetUrl(): string | undefined {
-  const value = process.env.TARGET_URL?.trim();
-  return value === undefined || value === '' ? undefined : value;
+  return envString('TARGET_URL');
 }
 
 export class TargetUrlError extends Error {}

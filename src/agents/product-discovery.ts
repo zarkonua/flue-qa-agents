@@ -1,6 +1,6 @@
 'use agent';
 
-import '../providers/ollama.ts';
+import { QA_MODEL } from '../providers/model.ts';
 import { useModel, useTool } from '@flue/runtime';
 import { writeQaArtifactToolFor } from '../tools/qa-artifacts.ts';
 import { browserTools, DISCOVERY_BROWSER_TOOLS, playwrightMcpUrl } from '../connections/playwright-mcp.ts';
@@ -177,7 +177,7 @@ export function productDiscoveryCore() {
 }
 
 export function ProductDiscovery() {
-  useModel('ollama/qwen3:14b');
+  useModel(QA_MODEL);
   return productDiscoveryCore();
 }
 

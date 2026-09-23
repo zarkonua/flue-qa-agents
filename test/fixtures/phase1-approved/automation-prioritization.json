@@ -1,0 +1,11 @@
+{
+  "cases": [
+    {
+      "testCaseId": "TC-1",
+      "executionMode": "AUTOMATION",
+      "automationPriority": "HIGH",
+      "reason": "Deterministic negative path",
+      "blockingFactors": []
+    }
+  ]
+}

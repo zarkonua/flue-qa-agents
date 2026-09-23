@@ -1,6 +1,6 @@
 'use agent';
 
-import '../providers/ollama.ts';
+import { QA_MODEL } from '../providers/model.ts';
 import { useModel, useSkill, useTool } from '@flue/runtime';
 import { readQaArtifactTool, writeQaArtifactToolFor } from '../tools/qa-artifacts.ts';
 import { readRepoFileTool, searchRepoTool } from '../tools/repo.ts';
@@ -96,7 +96,7 @@ export function automationGeneratorCore() {
 }
 
 export function AutomationGenerator() {
-  useModel('ollama/qwen3:14b');
+  useModel(QA_MODEL);
   return automationGeneratorCore();
 }
 

@@ -12,21 +12,55 @@ guarantees is in [VALIDATION.md](VALIDATION.md).
 - The application under test running, for Phase 1.
 - A target automation repository, for Phase 2.
 
-## Environment
+## Configuration
+
+```bash
+cp .env.example .env     # edit once, instead of exporting variables every run
+```
+
+`.env` is optional and git-ignored. Precedence is **shell > `.env` > code default**, so
+`TARGET_URL=http://other npm run qa:manual` still overrides the file and CI can keep passing
+variables directly.
 
 Only `TARGET_URL` is required; Phase 2 also needs `QA_TARGET_REPO_ROOT` to point somewhere
 real. Every root must be **absolute** and **outside this project** — both are checked at load
 time, and the process throws rather than relocating anything.
 
+### Choosing the model
+
+One setting, in Flue's `provider/model` form. Every agent uses it; there is no per-agent
+override.
+
+```dotenv
+QA_MODEL=ollama/qwen3:14b                              # default when unset
+```
+
+```dotenv
+QA_MODEL=openrouter/deepseek/deepseek-v4-flash-0731
+OPENROUTER_API_KEY=sk-or-...
+```
+
+Both run the same `npm run qa:manual` / `npm run qa:automation`. Selecting `openrouter/...`
+without a key fails immediately, before any agent starts. The key is read host-side only: it
+never reaches an agent prompt, a tool, the browser, or an artifact.
+
+To check a model really does structured tool calls before a full run:
+
+```bash
+npm run check:tools        # uses QA_MODEL, whichever provider that selects
+```
+
 | Variable | Default | What it does |
 |---|---|---|
 | `TARGET_URL` | — | The application Phase 1 explores. Required. |
+| `QA_MODEL` | `ollama/qwen3:14b` | `<provider>/<model>`; `ollama` or `openrouter`. |
+| `OPENROUTER_API_KEY` | — | Required only when `QA_MODEL` is `openrouter/*`. |
 | `QA_TARGET_REPO_ROOT` | `../qa-workspace/target-repo` | The automation repo Phase 2 reads. |
 | `QA_ARTIFACT_ROOT` | `../qa-workspace/.qa` | Artifacts, the approval, run logs. |
 | `QA_MCP_OUTPUT_ROOT` | `../qa-workspace/.mcp-output` | Playwright MCP working directory. A security boundary: browser tools write a model-chosen filename relative to it. |
 | `QA_STAGE_ATTEMPTS` | `4` | Attempts per stage; `--attempts n` overrides per run. |
 | `PLAYWRIGHT_MCP_URL` | unset → `http://localhost:8931/mcp` | `default` expands to the same. |
-| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | `npm run check:ollama` prints the right value if the default does not reach it. |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | *(Ollama only)*  `npm run check:ollama` prints the right value if the default does not reach it. |
 | `OLLAMA_CONTEXT_WINDOW` | `8192` | Declared to Flue. Must not exceed the server's `num_ctx`. |
 | `OLLAMA_MAX_OUTPUT_TOKENS` | `2048` | Per-turn output cap. |
 | `OLLAMA_REPLAY_REASONING` | unset (filter on) | Set `true` only to debug; historical reasoning then overruns the context. |

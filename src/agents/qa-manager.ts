@@ -1,6 +1,6 @@
 'use agent';
 
-import '../providers/ollama.ts';
+import { QA_MODEL } from '../providers/model.ts';
 import { useModel, useSkill, useSubagent, useTool } from '@flue/runtime';
 import { readQaArtifactTool } from '../tools/qa-artifacts.ts';
 import agentHandoff from '../skills/custom/agent-handoff/SKILL.md';
@@ -71,7 +71,7 @@ After the workflow completes (or stops early on a failure/missing prerequisite),
   product discovery, if that was unavailable).`;
 
 export function QaManager() {
-  useModel('ollama/qwen3:14b');
+  useModel(QA_MODEL);
   useTool(readQaArtifactTool);
   useSkill(agentHandoff);
   useSkill(capabilitySecurity);

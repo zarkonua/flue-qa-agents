@@ -16,6 +16,7 @@
 // not the Flue runtime configuration, which is this module.
 
 import { createMcpConnection, defineMcpConnection, type McpConnectionDefinition, type ToolDefinition } from '@flue/runtime';
+import { envString } from '../config/env.ts';
 
 /**
  * Default endpoint of the standalone server.
@@ -35,7 +36,7 @@ export const DEFAULT_PLAYWRIGHT_MCP_URL = 'http://localhost:8931/mcp';
  * is told when a server's tools are not there.
  */
 export function playwrightMcpUrl(): string | undefined {
-  const configured = process.env.PLAYWRIGHT_MCP_URL?.trim();
+  const configured = envString('PLAYWRIGHT_MCP_URL');
   if (configured === undefined || configured === '') return undefined;
   if (configured === 'default') return DEFAULT_PLAYWRIGHT_MCP_URL;
   return configured;

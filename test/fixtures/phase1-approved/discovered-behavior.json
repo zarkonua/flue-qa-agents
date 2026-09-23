@@ -1,0 +1,71 @@
+{
+  "areas": [
+    {
+      "name": "Authentication",
+      "notes": [
+        "Login form with username/password fields",
+        "Logout button appears after authentication"
+      ],
+      "routes": [
+        "http://localhost:4444/"
+      ]
+    },
+    {
+      "name": "Notes Management",
+      "notes": [
+        "Editable notes area visible post-login",
+        "Notes persist across page reloads"
+      ],
+      "routes": [
+        "http://localhost:4444/"
+      ]
+    }
+  ],
+  "behaviors": [
+    {
+      "area": "Authentication",
+      "confidence": "high",
+      "id": "BEH-1",
+      "source": [
+        "browser snapshot"
+      ],
+      "statement": "Login button is disabled with no credentials",
+      "status": "OBSERVED",
+      "suspectedIssue": false
+    },
+    {
+      "area": "Authentication",
+      "confidence": "high",
+      "id": "BEH-2",
+      "source": [
+        "browser snapshot"
+      ],
+      "statement": "Error message shown for invalid credentials",
+      "status": "OBSERVED",
+      "suspectedIssue": false
+    },
+    {
+      "area": "Notes Management",
+      "confidence": "high",
+      "id": "BEH-3",
+      "source": [
+        "browser snapshot"
+      ],
+      "statement": "Notes area becomes editable after successful login",
+      "status": "OBSERVED",
+      "suspectedIssue": false
+    }
+  ],
+  "conflicts": [],
+  "openQuestions": [
+    {
+      "id": "OQ-1",
+      "impact": "Data integrity concern",
+      "question": "What happens to unsaved notes on logout?",
+      "relatedBehaviorIds": [
+        "BEH-3"
+      ]
+    }
+  ],
+  "product": "QA Task - Auth + Notes"
+}

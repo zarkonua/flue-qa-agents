@@ -1,7 +1,8 @@
 # Flue QA Agents
 
-A local, multi-agent QA system built on [Flue](https://flueframework.com/) and driven by
-`qwen3:14b` through [Ollama](https://ollama.com/). No cloud LLM, no API keys, no Docker.
+A local-first, multi-agent QA system built on [Flue](https://flueframework.com/). It runs on
+`qwen3:14b` through [Ollama](https://ollama.com/) by default — no cloud, no API key, no Docker
+— and one setting switches it to a hosted model through OpenRouter.
 
 It turns a running web application into a reviewed manual test suite, and refuses to generate
 automation from anything a person has not approved.
@@ -22,8 +23,7 @@ stage reads your automation repository and records how tests are written there.
 ## Quick start
 
 ```bash
-export TARGET_URL="http://localhost:4444/"          # required for Phase 1
-export QA_TARGET_REPO_ROOT="/path/to/your/e2e-repo" # required for Phase 2
+cp .env.example .env     # then edit: TARGET_URL, and QA_TARGET_REPO_ROOT for Phase 2
 
 npm run qa:manual        # Phase 1: 4 agents in fixed order, then STOP   (~5–15 min)
 npm run qa:review        # optional AI review — proposes changes, edits nothing
@@ -31,8 +31,17 @@ npm run qa:approve       # your approval, hash-locked to the exact artifacts
 npm run qa:automation    # Phase 2: entry gate, then Repo Analyzer, then STOP
 ```
 
-`npm run qa` is an alias of `qa:manual`. Everything else has a working default.
-Full operator guide: **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
+`npm run qa` is an alias of `qa:manual`. Everything else has a working default, and a shell
+variable still overrides `.env`.
+
+The model is one setting, `QA_MODEL`, in Flue's `provider/model` form:
+
+```dotenv
+QA_MODEL=ollama/qwen3:14b                              # default — local, free
+QA_MODEL=openrouter/deepseek/deepseek-v4-flash-0731    # needs OPENROUTER_API_KEY
+```
+
+Both run the same commands. Full operator guide: **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
 
 ## The pipeline
 
@@ -78,7 +87,7 @@ capability is a narrow host-controlled tool over roots that must live outside th
 What validation does and does not guarantee: **[docs/VALIDATION.md](docs/VALIDATION.md)**.
 
 ```bash
-npm test     # 118 tests covering the validators, both gates and the orchestration
+npm test     # 136 tests covering the validators, both gates and the orchestration
 ```
 
 ## Status
@@ -105,10 +114,11 @@ src/
   tools/        9 narrow tools: artifacts · repo (read-only) · test-code
   lib/          trusted roots · schema + semantic validation · repo evidence · phase-1 gate
   connections/  Playwright MCP, with a per-role tool allowlist
-  providers/    Ollama provider (reasoning-replay filter, low-variance sampling)
+  providers/    model selection: Ollama (local tuning) · OpenRouter (Pi's provider)
+  config/       .env loading and the one QA_MODEL lookup
   skills/       custom/ (6) · upstream/qa-skills/ (15, vendored, MIT)
 schemas/    8 hand-off JSON Schemas
-test/       118 tests
+test/       136 tests
 ```
 
 Artifacts are written to a **sibling** workspace, never inside this project:
@@ -123,4 +133,4 @@ Artifacts are written to a **sibling** workspace, never inside this project:
 | [docs/architecture/architecture-view.html](docs/architecture/architecture-view.html) | The architecture reference — execution chain, skills, trust boundaries, capability matrix. Open it in a browser |
 
 Source, schemas and tests are the detailed truth; the documents above do not restate them.
-Requires Node ≥ 22.19 and a reachable Ollama endpoint.
+Requires Node ≥ 22.19 and either a reachable Ollama endpoint or an OpenRouter key.

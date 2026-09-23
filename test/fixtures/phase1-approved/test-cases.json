@@ -1,0 +1,36 @@
+{
+  "feature": "Authentication",
+  "testCases": [
+    {
+      "id": "TC-1",
+      "title": "Error message shown for invalid credentials",
+      "evidenceIds": [
+        "AC-2"
+      ],
+      "priority": "P1",
+      "types": [
+        "negative"
+      ],
+      "preconditions": [
+        "Requires configured test credentials"
+      ],
+      "testData": {
+        "username": "VALID_USERNAME",
+        "password": "INVALID_PASSWORD"
+      },
+      "steps": [
+        {
+          "action": "Submit the login form with INVALID_PASSWORD",
+          "expected": "Error message shown for invalid credentials"
+        }
+      ],
+      "expectedResult": "Error message shown for invalid credentials",
+      "automationCandidate": true,
+      "automationReason": "Deterministic",
+      "tags": [
+        "auth"
+      ]
+    }
+  ],
+  "openQuestions": []
+}

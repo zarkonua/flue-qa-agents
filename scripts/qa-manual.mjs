@@ -30,6 +30,8 @@ import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { summarize, coverageSummary } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
 const { APPROVAL_PATH } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
+const surfaceLib = await import(resolve(ROOT, 'src/lib/discovery-surface.ts'));
+const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
@@ -43,6 +45,16 @@ const STAGES = [
     artifact: 'discovered-behavior',
     browser: true,
     message: 'Begin.',
+    // Replaced at run time with the surface briefing, when there is one.
+    withSurface: (brief, count) =>
+      `Begin.\n\nThe browser found these same-origin locations on the entry page:\n\n${brief}\n\n` +
+      `Account for every one before you write — visit it, or record it UNREACHABLE/SKIPPED with a reason.` +
+      (count <= 1
+        ? ` This list is short because the entry page exposes few links; most of this application's ` +
+          `surface is reached by USING it — signing in, submitting forms, opening panels. Accounting for ` +
+          `this one location is the start of your job, not the end of it: work through the controls you ` +
+          `can see and record what each one actually does.`
+        : ''),
   },
   {
     key: 'analysis',
@@ -173,12 +185,41 @@ let browserStarted = false;
 if (plan.some((s) => s.browser)) {
   await ensureMcp();
   browserStarted = true;
-  await preflightTarget(target);
+  // The preflight snapshot is what establishes the product surface: the
+  // same-origin links the browser actually rendered. Written fresh for this
+  // run, so a retry can never inherit a stale queue.
+  // One ledger per run: evidence from an earlier session is not evidence about
+  // this one, and a retry within this run legitimately builds on what it saw.
+  ledgerLib.resetLedger(stamp);
+  const entrySnapshot = await preflightTarget(target);
+  if (entrySnapshot) {
+    try {
+      const surface = surfaceLib.buildSurface(target, entrySnapshot);
+      surfaceLib.writeSurface(surface);
+      record.surface = {
+        discovered: surface.locations.length,
+        preSkipped: surface.locations.filter((l) => l.status === 'SKIPPED').length,
+        overflow: surface.overflow,
+        externalOrigins: surface.externalOrigins,
+      };
+      console.log(`Product surface : ${surface.locations.length} location(s) from the entry page` +
+        `${surface.overflow ? `, ${surface.overflow} beyond the cap` : ''}` +
+        `${surface.externalOrigins.length ? `, ${surface.externalOrigins.length} external origin(s) ignored` : ''}`);
+    } catch (error) {
+      console.log(`Product surface : could not be established (${error.message}) — discovery will run unbounded`);
+    }
+  }
 }
 
 for (const stage of plan) {
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
+
+  // Give the discovery stage the surface the host just established.
+  if (stage.withSurface) {
+    const surface = surfaceLib.readSurface();
+    if (surface) stage.message = stage.withSurface(surfaceLib.surfaceBriefing(surface), surface.locations.length);
+  }
   const passed = await runStage({
     stage,
     entry,
@@ -221,6 +262,21 @@ record.counts = counts;
 
 // Coverage is computed here from the two artifacts, never taken from a total
 // the model reports about itself.
+const discovery = qa.readQaArtifact('discovered-behavior');
+const ledger = ledgerLib.readLedger(stamp);
+if (ledger) record.observations = ledgerLib.ledgerSummary(ledger);
+if (discovery?.locations) {
+  const by = (st) => discovery.locations.filter((l) => l.status === st).length;
+  record.discoveryCoverage = {
+    reported: discovery.locations.length,
+    visited: by('VISITED'),
+    unreachable: by('UNREACHABLE'),
+    skipped: by('SKIPPED'),
+    behaviors: discovery.behaviors?.length ?? 0,
+    areas: discovery.areas?.length ?? 0,
+  };
+}
+
 const requirements = qa.readQaArtifact('requirements-analysis');
 const suite = qa.readQaArtifact('test-cases');
 const coverage = requirements && suite ? coverageSummary(requirements, suite) : undefined;
@@ -234,6 +290,12 @@ if (browserStarted) await stopMcpAndWait();
 console.log('\n==============================================================');
 console.log(' PHASE 1 COMPLETE — stopped before any automation');
 console.log('==============================================================');
+if (record.discoveryCoverage) {
+  const d = record.discoveryCoverage;
+  console.log(`Discovery       : ${d.visited} visited, ${d.unreachable} unreachable, ${d.skipped} skipped` +
+    ` -> ${d.behaviors} behavior(s) across ${d.areas} area(s)` +
+    `${record.observations ? `, from ${record.observations.recorded} recorded observation(s)` : ''}`);
+}
 console.log(`Test cases      : ${counts.total}  (${counts.manual} MANUAL, ${counts.automation} AUTOMATION)`);
 if (coverage) {
   const pct = coverage.testable === 0 ? 100 : Math.round((coverage.covered / coverage.testable) * 100);

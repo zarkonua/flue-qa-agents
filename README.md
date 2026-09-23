@@ -76,6 +76,7 @@ These are enforced in code, not asked for in prompts:
 | Each agent can write **only its own artifact** | the tool's input schema (`writeQaArtifactToolFor`) |
 | Phase 1 never starts a Phase 2 agent; Phase 2 starts only wired agents | closed allowlists checked at startup |
 | Evidence IDs resolve; no invented routes, credentials or features | `src/lib/semantic-validate.ts`, on every write |
+| Every location the browser offered is accounted for | `src/lib/discovery-surface.ts` + `UNEXPLORED_LOCATION` |
 | Every testable requirement has a test case | `covers` on each case + `UNCOVERED_ACCEPTANCE_POINT` |
 | Repo analysis names only real files, and accounts for every automation directory | `src/lib/repo-evidence.ts` + the same validator |
 | A stage passes only if its artifact was written **during that attempt** | `scripts/lib/stage.mjs`, re-validated from disk |
@@ -88,7 +89,7 @@ capability is a narrow host-controlled tool over roots that must live outside th
 What validation does and does not guarantee: **[docs/VALIDATION.md](docs/VALIDATION.md)**.
 
 ```bash
-npm test     # 153 tests covering the validators, both gates and the orchestration
+npm test     # 199 tests covering the validators, both gates and the orchestration
 ```
 
 ## Status
@@ -119,7 +120,7 @@ src/
   config/       .env loading and the one QA_MODEL lookup
   skills/       custom/ (6) · upstream/qa-skills/ (15, vendored, MIT)
 schemas/    8 hand-off JSON Schemas
-test/       153 tests
+test/       199 tests
 ```
 
 Artifacts are written to a **sibling** workspace, never inside this project:

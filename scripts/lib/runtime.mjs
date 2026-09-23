@@ -209,8 +209,12 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 
 /**
  * Drive the browser to the target once, from host code, before any agent runs:
- * fail fast on a dead target, and leave the shared browser on the right page
- * rather than on whatever a previous run left open.
+ * fail fast on a dead target, leave the shared browser on the right page rather
+ * than on whatever a previous run left open — and take one snapshot, which is
+ * what establishes the product surface Product Discovery must account for.
+ *
+ * Returns the entry page's accessibility snapshot, or undefined if it could not
+ * be taken. The caller decides what to do with it; this function only observes.
  */
 export async function preflightTarget(target) {
   const parsed = new URL(target);
@@ -248,6 +252,17 @@ export async function preflightTarget(target) {
     }
     const title = text.split('\n').find((l) => /Page Title/i.test(l))?.replace(/^[-\s]*Page Title:\s*/i, '').trim();
     console.log(`Target          : reachable${title ? ` — "${title}"` : ''}`);
+
+    // The navigate result usually already carries the snapshot; ask explicitly
+    // only if it does not. Links appear in it as `/url:` lines.
+    if (/\/url:/.test(text)) return text;
+    try {
+      const snap = await client.callTool({ name: 'browser_snapshot', arguments: {} }, undefined, { timeout: 30_000 });
+      return (snap.content ?? []).map((c) => c.text ?? '').join('\n');
+    } catch {
+      return text;
+    }
+    return undefined;
   } catch (error) {
     console.error(`\nTarget preflight failed: ${error.message}\n`);
     stopMcp();

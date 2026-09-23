@@ -12,6 +12,8 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateAgainstSchema, type JsonSchemaNode } from './schema-validate.ts';
 import { collectRepoEvidence } from './repo-evidence.ts';
+import { expectedLocations, readSurface } from './discovery-surface.ts';
+import { readLedger } from './observation-ledger.ts';
 import {
   formatSemanticErrors,
   validateDiscoveredBehavior,
@@ -165,8 +167,27 @@ export class SemanticValidationError extends Error {
  */
 export function semanticErrorsFor(name: QaArtifactName, data: unknown): SemanticError[] {
   switch (name) {
-    case 'discovered-behavior':
-      return validateDiscoveredBehavior(data as DiscoveredBehavior);
+    case 'discovered-behavior': {
+      // The surface host code established before the agent ran, when there is
+      // one. Absent (no browser, or a run that never built it) means the
+      // completeness rules are skipped rather than guessed at.
+      const surface = readSurface();
+      // What the agent recorded while exploring. Nothing it saw may be quietly
+      // dropped during synthesis.
+      const ledger = readLedger();
+      const observed = ledger && {
+        ids: ledger.observations.map((o) => o.id),
+        describe: (id: string) => {
+          const o = ledger.observations.find((x) => x.id === id);
+          return o ? `${o.action} -> ${o.outcome}` : id;
+        },
+      };
+      return validateDiscoveredBehavior(
+        data as DiscoveredBehavior,
+        surface && { expected: expectedLocations(surface), origin: surface.origin },
+        observed,
+      );
+    }
 
     case 'requirements-analysis': {
       const discovery = readQaArtifact('discovered-behavior') as DiscoveredBehavior | undefined;

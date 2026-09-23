@@ -1,4 +1,11 @@
 {
+  "product": "QA Task - Auth + Notes",
+  "locations": [
+    {
+      "url": "http://localhost:4444/",
+      "status": "VISITED"
+    }
+  ],
   "areas": [
     {
       "name": "Authentication",
@@ -56,7 +63,6 @@
       "suspectedIssue": false
     }
   ],
-  "conflicts": [],
   "openQuestions": [
     {
       "id": "OQ-1",
@@ -67,5 +73,5 @@
       ]
     }
   ],
-  "product": "QA Task - Auth + Notes"
+  "conflicts": []
 }

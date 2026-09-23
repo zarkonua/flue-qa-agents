@@ -46,7 +46,11 @@ export type SemanticErrorCode =
   | 'UNINSPECTED_DIRECTORY'
   | 'UNKNOWN_COVERAGE_ID'
   | 'MISSING_COVERAGE'
-  | 'UNCOVERED_ACCEPTANCE_POINT';
+  | 'UNCOVERED_ACCEPTANCE_POINT'
+  | 'UNEXPLORED_LOCATION'
+  | 'UNKNOWN_LOCATION'
+  | 'UNKNOWN_OBSERVATION'
+  | 'UNACCOUNTED_OBSERVATION';
 
 export interface SemanticError {
   code: SemanticErrorCode;
@@ -66,10 +70,31 @@ interface Behavior {
   confidence: 'low' | 'medium' | 'high';
   suspectedIssue: boolean;
   source?: string[];
+  /** Ledger observation ids this behavior was synthesised from. */
+  observations?: string[];
+}
+
+/** What host code proved about the product surface; see `src/lib/discovery-surface.ts`. */
+/** What the host recorded during exploration; see `src/lib/observation-ledger.ts`. */
+export interface ObservationFacts {
+  /** Host-assigned ids, in the order they were observed. */
+  ids: string[];
+  /** For the error message: a short label per id. */
+  describe(id: string): string;
+}
+
+export interface SurfaceFacts {
+  /** Absolute URLs the run is expected to account for. */
+  expected: string[];
+  origin: string;
 }
 
 export interface DiscoveredBehavior {
   product: string;
+  /** One terminal state per location the host put on the surface. */
+  locations: { url: string; status: 'VISITED' | 'UNREACHABLE' | 'SKIPPED'; reason?: string; area?: string }[];
+  /** Observations deliberately not turned into a behavior, each with a reason. */
+  excludedObservations?: { id: string; reason: string }[];
   areas: { name: string; routes: string[]; notes: string[] }[];
   behaviors: Behavior[];
   openQuestions: { id: string; question: string; relatedBehaviorIds: string[]; impact: string }[];
@@ -745,7 +770,22 @@ function checkOverlap(claim: string, evidence: string[], path: string, ids: stri
 // ---------------------------------------------------------------------------
 
 /** Internal consistency of discovery itself: unique IDs, known areas, resolvable question links. */
-export function validateDiscoveredBehavior(discovery: DiscoveredBehavior): SemanticError[] {
+/** Same comparison the surface uses, so a trailing slash is not a new location. */
+function sameLocation(a: string, b: string): boolean {
+  const strip = (u: string) => u.replace(/#.*$/, '').replace(/\?$/, '').replace(/\/+$/, '').toLowerCase();
+  return strip(a) === strip(b);
+}
+
+/**
+ * `surface` is what host code established from the browser before the agent
+ * ran. When it is absent — no browser, or a run that never built one — the
+ * completeness rules are skipped rather than invented.
+ */
+export function validateDiscoveredBehavior(
+  discovery: DiscoveredBehavior,
+  surface?: SurfaceFacts,
+  observed?: ObservationFacts,
+): SemanticError[] {
   const errors: SemanticError[] = [];
   checkDuplicateIds(discovery.behaviors, 'behaviors', errors);
   checkDuplicateIds(discovery.openQuestions, 'openQuestions', errors);
@@ -761,6 +801,114 @@ export function validateDiscoveredBehavior(discovery: DiscoveredBehavior): Seman
       });
     }
   });
+
+  // ---- completeness: the surface the host found must be accounted for -----
+  //
+  // Not "did you find enough" — that is a judgement no host can make — but
+  // "did every location we know the browser rendered reach a terminal state".
+  // UNREACHABLE and SKIPPED are answers; silence is not.
+  const reported = discovery.locations ?? [];
+  reported.forEach((l, i) => {
+    if (typeof l?.url !== 'string') return;
+    // A same-origin location that was not on the host's list is a genuine
+    // find: most applications only reveal their real surface after signing in,
+    // and the entry page's links are just the starting point. Only an
+    // off-origin or malformed URL is rejected — that is invention, not
+    // discovery.
+    if (surface) {
+      let sameOrigin = false;
+      try {
+        sameOrigin = new URL(l.url).origin === surface.origin;
+      } catch {
+        sameOrigin = false;
+      }
+      if (!sameOrigin) {
+        errors.push({
+          code: 'UNKNOWN_LOCATION',
+          path: `locations[${i}].url`,
+          value: l.url,
+          details: `outside the application (${surface.origin}). Report only locations of the product itself.`,
+        });
+      }
+    }
+    if ((l.status === 'UNREACHABLE' || l.status === 'SKIPPED') && !l.reason) {
+      errors.push({
+        code: 'MISSING_EVIDENCE',
+        path: `locations[${i}].reason`,
+        value: l.url,
+        details: `${l.status} needs a reason — say what stopped you.`,
+      });
+    }
+  });
+
+  if (surface) {
+    for (const url of surface.expected) {
+      if (!reported.some((l) => typeof l?.url === 'string' && sameLocation(l.url, url))) {
+        errors.push({
+          code: 'UNEXPLORED_LOCATION',
+          path: '$.locations',
+          value: url,
+          details: 'no terminal state reported. Visit it, or record it UNREACHABLE/SKIPPED with a reason.',
+        });
+      }
+    }
+  }
+
+  // ---- behavioral observation completeness --------------------------------
+  //
+  // A different question from surface completeness. That asks whether the known
+  // areas were reached; this asks whether what was seen there survived
+  // synthesis. A measured run recorded ten meaningful observations and wrote
+  // one behavior, and nothing noticed.
+  //
+  // Several observations may support one behavior — that is synthesis, not a
+  // problem. What is not allowed is silence.
+  if (observed && observed.ids.length > 0) {
+    const known = new Set(observed.ids);
+    const cited = new Set<string>();
+
+    discovery.behaviors.forEach((b, i) => {
+      (b.observations ?? []).forEach((id, j) => {
+        if (!known.has(id)) {
+          errors.push({
+            code: 'UNKNOWN_OBSERVATION',
+            path: `behaviors[${i}].observations[${j}]`,
+            value: String(id),
+            details: `no such observation was recorded. Valid: ${observed.ids.join(', ')}`,
+          });
+        } else {
+          cited.add(id);
+        }
+      });
+    });
+
+    (discovery.excludedObservations ?? []).forEach((x, i) => {
+      if (!x?.id) return;
+      if (!known.has(x.id)) {
+        errors.push({
+          code: 'UNKNOWN_OBSERVATION',
+          path: `excludedObservations[${i}].id`,
+          value: x.id,
+          details: `no such observation was recorded. Valid: ${observed.ids.join(', ')}`,
+        });
+      } else {
+        cited.add(x.id);
+      }
+    });
+
+    for (const id of observed.ids) {
+      if (!cited.has(id)) {
+        errors.push({
+          code: 'UNACCOUNTED_OBSERVATION',
+          path: '$.behaviors',
+          value: id,
+          details:
+            `you recorded "${clip(observed.describe(id), 90)}" and no behavior represents it. ` +
+            'Add or extend a behavior citing it, or list it in excludedObservations with a reason.',
+        });
+      }
+    }
+  }
 
   const ids = new Set(discovery.behaviors.map((b) => b.id));
   discovery.openQuestions.forEach((q, i) =>
@@ -1255,11 +1403,13 @@ const ORDER: SemanticErrorCode[] = [
   'NOT_A_LITERAL',
   'UNEXPLORED_DIRECTORY',
   'UNINSPECTED_DIRECTORY',
+  'UNEXPLORED_LOCATION',
+  'UNKNOWN_OBSERVATION',
+  'UNACCOUNTED_OBSERVATION',
   'UNCOVERED_ACCEPTANCE_POINT',
   'MISSING_COVERAGE',
+  'UNKNOWN_LOCATION',
   'UNKNOWN_COVERAGE_ID',
-  'MISSING_COVERAGE',
-  'UNCOVERED_ACCEPTANCE_POINT',
 ];
 
 /** One fix instruction per rule, so it is said once rather than on every line. */
@@ -1293,6 +1443,10 @@ const HOW_TO_FIX: Record<SemanticErrorCode, string> = {
   UNKNOWN_COVERAGE_ID: 'covers must name acceptance point or business rule IDs that exist',
   MISSING_COVERAGE: 'say which requirement each test case demonstrates',
   UNCOVERED_ACCEPTANCE_POINT: 'Every testable requirement needs a test case. Add one for each ID below.',
+  UNEXPLORED_LOCATION: 'Account for every location below: VISITED, or UNREACHABLE/SKIPPED with a reason.',
+  UNKNOWN_LOCATION: 'report only locations the browser actually offered',
+  UNACCOUNTED_OBSERVATION: 'Every observation you recorded must reach a behavior, or be excluded with a reason.',
+  UNKNOWN_OBSERVATION: 'cite only observation ids the ledger actually holds',
 };
 
 // ---------------------------------------------------------------------------

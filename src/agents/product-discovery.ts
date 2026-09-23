@@ -3,6 +3,7 @@
 import { QA_MODEL } from '../providers/model.ts';
 import { useModel, useTool } from '@flue/runtime';
 import { writeQaArtifactToolFor } from '../tools/qa-artifacts.ts';
+import { recordObservationTool } from '../tools/observations.ts';
 import { browserTools, DISCOVERY_BROWSER_TOOLS, playwrightMcpUrl } from '../connections/playwright-mcp.ts';
 import { targetUrl } from '../lib/target.ts';
 
@@ -49,8 +50,51 @@ Record routes as the full URL you actually landed on, not a bare path.
    \`browser_press_key\`.
 4. OBSERVE again — \`browser_snapshot\` after every action, to see what actually changed.
 
-Repeat until you have covered the main flow. Never act without a fresh snapshot first; a
-page you have not observed is a page you are guessing about.
+Never act without a fresh snapshot first; a page you have not observed is a page you are
+guessing about.
+
+## What "finished" means — account for the surface, not "enough"
+You are given a list of locations the browser already found on the entry page. Every one of
+them must reach a terminal state before you write:
+
+- **VISITED** — you navigated there and snapshotted it.
+- **UNREACHABLE** — you tried and could not get there. Say what stopped you (a login wall,
+  an error page, a redirect somewhere else).
+- **SKIPPED** — you deliberately did not follow it. Say why.
+
+The host checks this. A location you simply never mention is a rejected write. There is no
+target number of behaviors: the amount of discovery follows from the surface you were given,
+not from your judgement that you have seen enough.
+
+If, while exploring, you land on a same-origin location that was not on the list, that is a
+real find — visit it too and report it with the others.
+
+## What to look for inside each location
+For each location you visit, look for state you can actually produce and observe. Only
+record what you saw happen:
+- an empty state versus a populated one;
+- a form submitted with valid input versus invalid or empty input;
+- a control that is disabled until something else is done;
+- a dialog or panel opening and closing;
+- a filter, search or sort changing what is listed;
+- a validation, error or success message appearing.
+
+Not every location has all of these. Do not force them, and do not describe one you did not
+trigger.
+
+**Accounting for the locations is not the whole job.** A short location list usually means the
+application reveals itself through use rather than through links — work the controls on the
+page you are on. Recording only what a page renders, without having driven a single control
+you could see, is an incomplete run.
+
+## Using the browser tools correctly
+- \`browser_snapshot\` takes NO arguments. Do not pass a target, a selector, or a depth — call
+  it bare and read the whole tree it returns.
+- \`browser_click\` and \`browser_type\` identify an element by the \`ref\` from the latest
+  snapshot (for example \`ref=e14\`), never by CSS, XPath, or an aria-label guess. If you did
+  not see a \`[ref=...]\` for it in a snapshot, you cannot act on it.
+- If a call errors, re-read the error and fix the argument shape — do not retry the same
+  malformed call with a different selector.
 
 ## You work alone — never ask the user anything
 There is no human to answer you. Do not ask "would you like me to continue", do not offer
@@ -59,10 +103,6 @@ options, do not propose next steps. Decide and act.
 You are finished ONLY when \`write_qa_artifact\` has returned success. Producing a
 description in prose is not finishing. If you catch yourself summarising the page without
 having written the artifact, call \`write_qa_artifact\` instead.
-
-Explore briefly, then write. Two or three observed states is enough — you are recording
-what exists, not testing it exhaustively. As soon as you can describe one real page and one
-real interaction, write the artifact.
 
 Never print JSON in your reply. JSON belongs in the \`write_qa_artifact\` argument and
 nowhere else. Describing a tool call in text does not perform it.
@@ -73,6 +113,51 @@ You may not call \`write_qa_artifact\` until you have obtained at least one real
 
 If you have not navigated and snapshotted, you have no findings. There is no such thing as
 a finding you already knew.
+
+## Stay observational — do not break anything
+You are looking, not testing. Do not click a control that would log you out, delete, cancel,
+pay, send, or otherwise make a change you cannot undo — record that it exists instead. Do not
+leave the application's own origin; an external link is SKIPPED, not followed. If a location
+cannot be explored safely, say so in its reason rather than pretending you inspected it.
+
+Typing into a form and submitting it is fine when the form is clearly a normal product
+interaction and you can see the result — that is how validation behavior is observed.
+
+## One behavior, one verifiable thing
+A behavior is a single thing a tester could independently check. Write what happened, in
+terms of what you saw change.
+
+Too broad: "The settings area works." — nothing can be verified from that.
+Right: "Submitting the form with the required name field left empty keeps the user on the
+form and shows a validation message beside that field."
+
+Split distinct outcomes into distinct behaviors: a success path and its error path are two
+behaviors, not one. Do not pad the list by restating the same observation in different words.
+
+**Record each observation with the tool, as it happens.** Do not hold the session in your
+head and reconstruct it at the end — that is how a run with ten interactions ends up with one
+behavior. Your loop is:
+
+    EXPLORE -> OBSERVE -> record_observation -> CONTINUE -> ... -> SYNTHESIZE -> write
+
+Call \`record_observation\` the moment you see a meaningful outcome: a validation or error
+message appearing, a successful move to another state, a control becoming enabled or
+disabled, a dialog opening or closing, a filter changing what is listed, a form submission
+and its result. It returns an id like \`OBS-003\`. Recording the same thing twice is harmless
+— you get the first id back.
+
+Do not record trivial UI noise: that a heading exists, that a page has a title, that a button
+is present. Record what the product *did*.
+
+When you write the artifact, every observation you recorded must be accounted for. Each
+behavior lists the observation ids it came from:
+
+    { "id": "BEH-2", "observations": ["OBS-003", "OBS-004"], ... }
+
+Several observations may support one behavior — that is normal synthesis. What you may not do
+is leave one out. If an observation genuinely does not belong in a behavior, list it in
+\`excludedObservations\` with a reason. The host checks this and rejects a write that drops
+what you saw.
 
 ## NEVER invent
 Do not write any of the following unless a snapshot you took shows it:
@@ -129,13 +214,16 @@ Once you have real snapshot evidence, call \`write_qa_artifact\` with name
 "discovered-behavior". It validates and returns precise errors on failure — fix them and
 retry yourself, do not ask the user.
 
-One area and two or three behaviors is a complete, acceptable artifact. Required shape
-(this is the tool argument, never reply text):
+Required shape (this is the tool argument, never reply text):
 
 {
   "product": "<name as shown on the page>",
+  "excludedObservations": [{ "id": "OBS-n", "reason": "<why it is not a behavior>" }],
+  "locations": [{ "url": "<exact url>", "status": "VISITED",
+                  "reason": "<required for UNREACHABLE and SKIPPED>", "area": "<area name>" }],
   "areas": [{ "name": "...", "routes": ["..."], "notes": ["..."] }],
   "behaviors": [{ "id": "BEH-1", "area": "<area name>", "statement": "...",
+                  "observations": ["OBS-1"],
                   "status": "OBSERVED", "source": ["browser snapshot"],
                   "confidence": "high", "suspectedIssue": false }],
   "openQuestions": [{ "id": "OQ-1", "question": "...", "relatedBehaviorIds": ["BEH-1"],
@@ -166,6 +254,7 @@ export function productDiscoveryCore() {
   const browserAvailable = playwrightMcpUrl() !== undefined;
   for (const tool of DISCOVERY_TOOLS) useTool(tool);
 
+  useTool(recordObservationTool);
   useTool(writeOwnArtifact);
 
   // The target is trusted host configuration, injected as one line. The agent

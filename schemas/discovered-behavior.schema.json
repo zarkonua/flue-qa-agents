@@ -3,6 +3,7 @@
   "type": "object",
   "required": [
     "product",
+    "locations",
     "areas",
     "behaviors",
     "openQuestions",
@@ -86,6 +87,12 @@
           },
           "suspectedIssue": {
             "type": "boolean"
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false
@@ -138,6 +145,54 @@
             "items": {
               "type": "string"
             }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "url",
+          "status"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "VISITED",
+              "UNREACHABLE",
+              "SKIPPED"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "area": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "excludedObservations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
           }
         },
         "additionalProperties": false

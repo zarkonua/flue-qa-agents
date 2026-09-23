@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  coverageSummary,
   validateDiscoveredBehavior,
   validateRequirementsAnalysis,
   validateTestCases,
@@ -47,6 +48,16 @@ const goodRequirements: RequirementsAnalysis = {
   risks: [{ area: 'Authentication', probability: 'medium', impact: 'high', rationale: 'Login gates access to notes' }],
 };
 
+/**
+ * `goodRequirements` narrowed to the acceptance points a focused test actually
+ * exercises. Suite completeness is checked in its own describe block; a test
+ * about fact-checking one case should not also fail for not being a whole suite.
+ */
+const just = (...ids: string[]): RequirementsAnalysis => ({
+  ...goodRequirements,
+  acceptancePoints: goodRequirements.acceptancePoints.filter((a) => ids.includes(a.id)),
+});
+
 /** Corrected test cases: placeholders for unknown data, lineage to acceptance points, unknowns as questions. */
 const goodTestCases: TestCases = {
   feature: 'Authentication',
@@ -55,6 +66,7 @@ const goodTestCases: TestCases = {
       id: 'TC-1',
       title: 'Invalid credentials show an error message',
       evidenceIds: ['AC-2'],
+      covers: ['AC-2'],
       priority: 'P1',
       types: ['negative'],
       preconditions: ['Requires configured test credentials', 'The user is logged out'],
@@ -71,6 +83,7 @@ const goodTestCases: TestCases = {
       id: 'TC-2',
       title: 'Login button is disabled with empty credentials',
       evidenceIds: ['AC-1'],
+      covers: ['AC-1'],
       priority: 'P1',
       types: ['validation'],
       preconditions: ['The user is logged out'],
@@ -87,6 +100,7 @@ const goodTestCases: TestCases = {
       id: 'TC-3',
       title: 'Successful login makes the notes area editable',
       evidenceIds: ['AC-3'],
+      covers: ['AC-3'],
       priority: 'P0',
       types: ['positive'],
       preconditions: ['Requires configured test credentials'],
@@ -240,17 +254,17 @@ describe('ACCEPT: grounded equivalents from the same discovery', () => {
 
   it('accepts a negative login test based on the observed invalid-credentials error', () => {
     const only = { ...goodTestCases, testCases: [goodTestCases.testCases[0]] };
-    assert.deepEqual(validateTestCases(discovery, goodRequirements, only), []);
+    assert.deepEqual(validateTestCases(discovery, just('AC-2'), only), []);
   });
 
   it('accepts a disabled-login-button test with empty credentials', () => {
     const only = { ...goodTestCases, testCases: [goodTestCases.testCases[1]] };
-    assert.deepEqual(validateTestCases(discovery, goodRequirements, only), []);
+    assert.deepEqual(validateTestCases(discovery, just('AC-1'), only), []);
   });
 
   it('accepts generic placeholders for unknown credentials', () => {
     const only = { ...goodTestCases, testCases: [goodTestCases.testCases[2]] };
-    assert.deepEqual(validateTestCases(discovery, goodRequirements, only), []);
+    assert.deepEqual(validateTestCases(discovery, just('AC-3'), only), []);
   });
 
   it('accepts open questions about unobserved features — that is where unknowns belong', () => {
@@ -329,5 +343,152 @@ describe('integration: write_qa_artifact enforces it', () => {
     assert.throws(() => qa.writeQaArtifact('test-cases', badTestCases), qa.SemanticValidationError);
     const onDisk = JSON.parse(readFileSync(join(root, 'test-cases.json'), 'utf8')) as TestCases;
     assert.equal(onDisk.testCases[0].id, 'TC-1', 'a rejected write must not overwrite the previous artifact');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coverage: a suite is not complete merely because every case is supported
+// ---------------------------------------------------------------------------
+
+describe('requirement coverage', () => {
+  const full = (): TestCases => structuredClone(goodTestCases);
+
+  it('accepts a suite that covers every testable requirement', () => {
+    assert.deepEqual(validateTestCases(discovery, goodRequirements, full()), []);
+  });
+
+  it('rejects a valid suite that leaves a testable acceptance point uncovered', () => {
+    const tcs = full();
+    tcs.testCases = tcs.testCases.filter((c) => !c.covers.includes('AC-3'));
+    const errors = validateTestCases(discovery, goodRequirements, tcs);
+    assert.ok(errors.some((e) => e.code === 'UNCOVERED_ACCEPTANCE_POINT' && e.value === 'AC-3'));
+    // and every remaining case is individually fine — this is the point
+    assert.ok(!errors.some((e) => e.code === 'UNSUPPORTED_FACT' || e.code === 'UNKNOWN_EVIDENCE_ID'));
+  });
+
+  it('names every uncovered requirement, not just the first', () => {
+    const tcs = full();
+    tcs.testCases = [tcs.testCases[0]];
+    const missing = validateTestCases(discovery, goodRequirements, tcs)
+      .filter((e) => e.code === 'UNCOVERED_ACCEPTANCE_POINT')
+      .map((e) => e.value);
+    assert.deepEqual(missing.sort(), ['AC-1', 'AC-3']);
+  });
+
+  it('requires coverage of business rules too — they are requirements', () => {
+    const reqs = structuredClone(goodRequirements);
+    reqs.businessRules = [
+      { id: 'BR-1', statement: 'The Login button stays disabled until both fields are filled', evidenceIds: ['BEH-1'] },
+    ];
+    const errors = validateTestCases(discovery, reqs, full());
+    assert.ok(errors.some((e) => e.code === 'UNCOVERED_ACCEPTANCE_POINT' && e.value === 'BR-1'));
+  });
+
+  it('rejects a covers entry that names no real requirement', () => {
+    const tcs = full();
+    tcs.testCases[0].covers = ['AC-2', 'AC-99'];
+    const errors = validateTestCases(discovery, goodRequirements, tcs);
+    assert.ok(errors.some((e) => e.code === 'UNKNOWN_COVERAGE_ID' && e.value === 'AC-99'));
+  });
+
+  it('rejects a covers entry naming a behavior or an open question', () => {
+    for (const bad of ['BEH-1', 'OQ-2']) {
+      const tcs = full();
+      tcs.testCases[0].covers = [bad];
+      assert.ok(
+        validateTestCases(discovery, goodRequirements, tcs).some((e) => e.code === 'UNKNOWN_COVERAGE_ID' && e.value === bad),
+        `${bad} must not satisfy coverage`,
+      );
+    }
+  });
+
+  it('rejects a case that claims to cover nothing', () => {
+    const tcs = full();
+    tcs.testCases[0].covers = [];
+    assert.ok(validateTestCases(discovery, goodRequirements, tcs).some((e) => e.code === 'MISSING_COVERAGE'));
+  });
+
+  it('accepts one case covering two requirements genuinely exercised together', () => {
+    const tcs = full();
+    tcs.testCases = tcs.testCases.filter((c) => !c.covers.includes('AC-3'));
+    tcs.testCases[0].covers = ['AC-2', 'AC-3'];
+    assert.deepEqual(validateTestCases(discovery, goodRequirements, tcs), []);
+  });
+
+  it('allows duplicate coverage — two cases may exercise the same requirement', () => {
+    const tcs = full();
+    tcs.testCases[1].covers = ['AC-1', 'AC-2'];
+    assert.deepEqual(validateTestCases(discovery, goodRequirements, tcs), []);
+  });
+
+  it('does not demand a case for a requirement marked not testable', () => {
+    const reqs = structuredClone(goodRequirements);
+    reqs.acceptancePoints[2].testable = false;
+    reqs.acceptancePoints[2].notTestableReason = 'Only examined as static text; behaviour never exercised';
+    const tcs = full();
+    tcs.testCases = tcs.testCases.filter((c) => !c.covers.includes('AC-3'));
+    assert.deepEqual(validateTestCases(discovery, reqs, tcs), []);
+  });
+
+  it('never demands a case for an open question', () => {
+    // goodRequirements has OQ-1 and OQ-2; neither may appear as uncovered.
+    const uncovered = validateTestCases(discovery, goodRequirements, full())
+      .filter((e) => e.code === 'UNCOVERED_ACCEPTANCE_POINT')
+      .map((e) => e.value);
+    assert.deepEqual(uncovered, []);
+  });
+
+  it('rejects two broad cases that leave independent requirements uncovered', () => {
+    // The failure mode this exists to stop: a small, individually-valid suite.
+    const tcs = full();
+    tcs.testCases = tcs.testCases.slice(0, 2).map((c) => ({ ...c, covers: ['AC-2'] }));
+    const errors = validateTestCases(discovery, goodRequirements, tcs);
+    const missing = errors.filter((e) => e.code === 'UNCOVERED_ACCEPTANCE_POINT').map((e) => e.value).sort();
+    assert.deepEqual(missing, ['AC-1', 'AC-3']);
+  });
+});
+
+describe('coverage summary is derived, not reported', () => {
+  it('counts testable requirements, covered, uncovered and cases', () => {
+    const summary = coverageSummary(goodRequirements, goodTestCases);
+    assert.deepEqual(summary, {
+      testable: 3,
+      covered: 3,
+      uncovered: 0,
+      exempt: 0,
+      testCases: 3,
+      uncoveredIds: [],
+    });
+  });
+
+  it('counts business rules as testable requirements', () => {
+    const reqs = structuredClone(goodRequirements);
+    reqs.businessRules = [{ id: 'BR-1', statement: 'A rule', evidenceIds: ['BEH-1'] }];
+    const summary = coverageSummary(reqs, goodTestCases);
+    assert.equal(summary.testable, 4);
+    assert.deepEqual(summary.uncoveredIds, ['BR-1']);
+  });
+
+  it('separates exempt requirements from uncovered ones', () => {
+    const reqs = structuredClone(goodRequirements);
+    reqs.acceptancePoints[2].testable = false;
+    const tcs = structuredClone(goodTestCases);
+    tcs.testCases = tcs.testCases.filter((c) => !c.covers.includes('AC-3'));
+    const summary = coverageSummary(reqs, tcs);
+    assert.equal(summary.testable, 2);
+    assert.equal(summary.exempt, 1);
+    assert.equal(summary.uncovered, 0);
+  });
+
+  it('is deterministic — the same inputs give the same counts', () => {
+    const a = coverageSummary(goodRequirements, goodTestCases);
+    const b = coverageSummary(structuredClone(goodRequirements), structuredClone(goodTestCases));
+    assert.deepEqual(a, b);
+  });
+
+  it('ignores a total the model might claim about itself', () => {
+    const tcs = structuredClone(goodTestCases) as TestCases & { coverage?: unknown };
+    tcs.coverage = { testable: 99, covered: 99 };
+    assert.equal(coverageSummary(goodRequirements, tcs).testable, 3);
   });
 });

@@ -43,7 +43,10 @@ export type SemanticErrorCode =
   | 'EMPTY_ANALYSIS'
   | 'NOT_A_LITERAL'
   | 'UNEXPLORED_DIRECTORY'
-  | 'UNINSPECTED_DIRECTORY';
+  | 'UNINSPECTED_DIRECTORY'
+  | 'UNKNOWN_COVERAGE_ID'
+  | 'MISSING_COVERAGE'
+  | 'UNCOVERED_ACCEPTANCE_POINT';
 
 export interface SemanticError {
   code: SemanticErrorCode;
@@ -73,10 +76,18 @@ export interface DiscoveredBehavior {
   conflicts: { description: string; sources: string[] }[];
 }
 
-interface EvidencedItem {
+/**
+ * An upstream requirement: an acceptance point or a business rule.
+ *
+ * `testable` absent means testable — coverage is the default obligation, not
+ * the exception, so an analyst who says nothing still owes a test case.
+ */
+export interface EvidencedItem {
   id: string;
   statement: string;
   evidenceIds: string[];
+  testable?: boolean;
+  notTestableReason?: string;
 }
 
 export interface RequirementsAnalysis {
@@ -91,6 +102,8 @@ interface TestCase {
   id: string;
   title: string;
   evidenceIds: string[];
+  /** Upstream requirement IDs this case demonstrates. Distinct from evidenceIds. */
+  covers: string[];
   preconditions: string[];
   testData: Record<string, unknown>;
   steps: { action: string; expected: string }[];
@@ -866,6 +879,53 @@ export function validateRequirementsAnalysis(
  * cite acceptance points, business rules, or behaviors directly; all must
  * resolve. Test data may not invent accounts or credentials.
  */
+/**
+ * The upstream requirements a suite owes a test case.
+ *
+ * Both acceptance points and business rules count: a business rule is a
+ * testable statement about the product with its own evidence, and leaving them
+ * out is how five of them went silently untested in a real run.
+ *
+ * `testable: false` opts one out — that is the analyst's judgement to record,
+ * not the host's to infer. Open questions are never included: a question is
+ * uncertainty, and demanding a test for it would invite invention.
+ */
+export function testableRequirements(requirements: RequirementsAnalysis): EvidencedItem[] {
+  return [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])].filter(
+    (r) => r?.testable !== false,
+  );
+}
+
+export interface CoverageSummary {
+  /** Requirements that owe a test case. */
+  testable: number;
+  covered: number;
+  uncovered: number;
+  /** Requirements the analyst marked `testable: false`. */
+  exempt: number;
+  testCases: number;
+  uncoveredIds: string[];
+}
+
+/**
+ * Coverage, computed from the two artifacts — never from a total the model
+ * reports about itself. Used by the validator and by the run log.
+ */
+export function coverageSummary(requirements: RequirementsAnalysis, testCases: TestCases): CoverageSummary {
+  const testable = testableRequirements(requirements);
+  const claimed = new Set((testCases.testCases ?? []).flatMap((tc) => tc?.covers ?? []));
+  const uncoveredIds = testable.filter((r) => !claimed.has(r.id)).map((r) => r.id);
+  const all = [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])];
+  return {
+    testable: testable.length,
+    covered: testable.length - uncoveredIds.length,
+    uncovered: uncoveredIds.length,
+    exempt: all.length - testable.length,
+    testCases: (testCases.testCases ?? []).length,
+    uncoveredIds,
+  };
+}
+
 export function validateTestCases(
   discovery: DiscoveredBehavior | undefined,
   requirements: RequirementsAnalysis,
@@ -884,8 +944,36 @@ export function validateTestCases(
 
   checkDuplicateIds(testCases.testCases, 'testCases', errors);
 
+  // Coverage is a different claim from evidence: `evidenceIds` says "this is
+  // supported by", `covers` says "this demonstrates". A case may cite a raw
+  // behavior as evidence while demonstrating no requirement at all, which is
+  // exactly how a suite passed while leaving requirements untested.
+  const requirementIds = new Set(
+    [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])].map((r) => r.id),
+  );
+  const requirementList = [...requirementIds].join(', ') || '(none)';
+
   testCases.testCases.forEach((tc, i) => {
     const base = `testCases[${i}]`;
+
+    const covers = tc?.covers ?? [];
+    if (covers.length === 0) {
+      errors.push({
+        code: 'MISSING_COVERAGE',
+        path: `${base}.covers`,
+        details: `name the requirement ID(s) this case demonstrates. Valid: ${requirementList}`,
+      });
+    }
+    for (const [j, id] of covers.entries()) {
+      if (!requirementIds.has(id)) {
+        errors.push({
+          code: 'UNKNOWN_COVERAGE_ID',
+          path: `${base}.covers[${j}]`,
+          value: String(id),
+          details: `not an acceptance point or business rule. Valid: ${requirementList}`,
+        });
+      }
+    }
 
     if (tc.evidenceIds.length === 0) {
       errors.push({
@@ -950,6 +1038,21 @@ export function validateTestCases(
     checkEmails(question, `openQuestions[${i}]`, corpus, errors);
     checkContradictions(question, `openQuestions[${i}]`, discovery, errors);
   });
+
+  // The other direction: every test case being supported does not make a suite
+  // complete. Each testable requirement must be demonstrated by some case, or
+  // the analyst must have marked it `testable: false` with a reason.
+  for (const requirement of testableRequirements(requirements)) {
+    const covered = testCases.testCases.some((tc) => (tc?.covers ?? []).includes(requirement.id));
+    if (!covered) {
+      errors.push({
+        code: 'UNCOVERED_ACCEPTANCE_POINT',
+        path: '$.testCases',
+        value: requirement.id,
+        details: `"${clip(requirement.statement, 100)}" has no test case. Add one whose covers includes ${requirement.id}.`,
+      });
+    }
+  }
 
   return errors;
 }
@@ -1152,6 +1255,11 @@ const ORDER: SemanticErrorCode[] = [
   'NOT_A_LITERAL',
   'UNEXPLORED_DIRECTORY',
   'UNINSPECTED_DIRECTORY',
+  'UNCOVERED_ACCEPTANCE_POINT',
+  'MISSING_COVERAGE',
+  'UNKNOWN_COVERAGE_ID',
+  'MISSING_COVERAGE',
+  'UNCOVERED_ACCEPTANCE_POINT',
 ];
 
 /** One fix instruction per rule, so it is said once rather than on every line. */
@@ -1182,6 +1290,9 @@ const HOW_TO_FIX: Record<SemanticErrorCode, string> = {
   NOT_A_LITERAL: 'write the literal default value, or omit the field',
   UNEXPLORED_DIRECTORY: 'Open these directories and describe them in layout.',
   UNINSPECTED_DIRECTORY: 'Name a real file inside each of these.',
+  UNKNOWN_COVERAGE_ID: 'covers must name acceptance point or business rule IDs that exist',
+  MISSING_COVERAGE: 'say which requirement each test case demonstrates',
+  UNCOVERED_ACCEPTANCE_POINT: 'Every testable requirement needs a test case. Add one for each ID below.',
 };
 
 // ---------------------------------------------------------------------------

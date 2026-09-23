@@ -78,6 +78,8 @@ as a substitute for product evidence.
 ## Output
 Write your analysis with the \`write_qa_artifact\` tool, name "requirements-analysis".
 Required top-level keys: feature, acceptancePoints, businessRules, openQuestions, risks.
+Each acceptance point and business rule may optionally carry \`testable\` (boolean, default
+true) and \`notTestableReason\` (string). Omitting them means the item owes a test case.
 
 The tool checks the schema AND checks your work against the discovered-behavior artifact:
 every evidence ID must exist there and actually relate to your statement, and no product fact

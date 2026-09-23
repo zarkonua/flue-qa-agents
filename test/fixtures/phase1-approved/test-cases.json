@@ -29,6 +29,42 @@
       "automationReason": "Deterministic",
       "tags": [
         "auth"
+      ],
+      "covers": [
+        "AC-2"
+      ]
+    },
+    {
+      "id": "TC-2",
+      "title": "Login button is disabled while no credentials are entered",
+      "evidenceIds": [
+        "AC-1"
+      ],
+      "priority": "P1",
+      "types": [
+        "positive"
+      ],
+      "preconditions": [
+        "Requires configured test credentials"
+      ],
+      "testData": {
+        "username": "VALID_USERNAME",
+        "password": "INVALID_PASSWORD"
+      },
+      "steps": [
+        {
+          "action": "Open the Sign In form and leave both fields empty",
+          "expected": "The Login button is disabled"
+        }
+      ],
+      "expectedResult": "The Login button is disabled",
+      "automationCandidate": true,
+      "automationReason": "Deterministic",
+      "tags": [
+        "auth"
+      ],
+      "covers": [
+        "AC-1"
       ]
     }
   ],

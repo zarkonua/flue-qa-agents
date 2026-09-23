@@ -6,6 +6,13 @@
       "automationPriority": "HIGH",
       "reason": "Deterministic negative path",
       "blockingFactors": []
+    },
+    {
+      "testCaseId": "TC-2",
+      "executionMode": "AUTOMATION",
+      "automationPriority": "MEDIUM",
+      "reason": "Pure UI state check, deterministic",
+      "blockingFactors": []
     }
   ]
 }

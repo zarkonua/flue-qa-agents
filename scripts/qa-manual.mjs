@@ -28,7 +28,7 @@ import { EXIT, ROOT, ensureMcp, preflightTarget, requireTarget, stopMcpAndWait }
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
-const { summarize } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
+const { summarize, coverageSummary } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
 const { APPROVAL_PATH } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
 
 // ---------------------------------------------------------------------------
@@ -218,6 +218,13 @@ record.phase2ArtifactsWritten = leaked;
 const prioritization = qa.readQaArtifact('automation-prioritization');
 const counts = summarize(prioritization);
 record.counts = counts;
+
+// Coverage is computed here from the two artifacts, never taken from a total
+// the model reports about itself.
+const requirements = qa.readQaArtifact('requirements-analysis');
+const suite = qa.readQaArtifact('test-cases');
+const coverage = requirements && suite ? coverageSummary(requirements, suite) : undefined;
+if (coverage) record.coverage = coverage;
 record.result = 'COMPLETE';
 record.finishedAt = new Date().toISOString();
 saveRecord();
@@ -228,6 +235,12 @@ console.log('\n==============================================================');
 console.log(' PHASE 1 COMPLETE — stopped before any automation');
 console.log('==============================================================');
 console.log(`Test cases      : ${counts.total}  (${counts.manual} MANUAL, ${counts.automation} AUTOMATION)`);
+if (coverage) {
+  const pct = coverage.testable === 0 ? 100 : Math.round((coverage.covered / coverage.testable) * 100);
+  console.log(`Coverage        : ${coverage.covered}/${coverage.testable} testable requirements (${pct}%)` +
+    `${coverage.exempt > 0 ? `, ${coverage.exempt} marked not testable` : ''}`);
+  if (coverage.uncovered > 0) console.log(`WARNING         : uncovered: ${coverage.uncoveredIds.join(', ')}`);
+}
 console.log(`Automation      : ${counts.automationHigh} HIGH, ${counts.automationMedium} MEDIUM, ${counts.automationLow} LOW`);
 if (leaked.length > 0) console.log(`WARNING         : Phase 2 artifacts appeared during this run: ${leaked.join(', ')}`);
 console.log('\nNext:');

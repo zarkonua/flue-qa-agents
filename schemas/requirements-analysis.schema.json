@@ -33,6 +33,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "testable": {
+            "type": "boolean"
+          },
+          "notTestableReason": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -59,6 +65,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "testable": {
+            "type": "boolean"
+          },
+          "notTestableReason": {
+            "type": "string"
           }
         },
         "additionalProperties": false

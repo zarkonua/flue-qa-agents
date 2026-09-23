@@ -41,6 +41,7 @@ const tc = (id: string, evidence: string, title: string, expected: string) => ({
   id,
   title,
   evidenceIds: [evidence],
+  covers: [evidence],
   priority: 'P1',
   types: ['negative'],
   preconditions: ['Requires configured test credentials'],

@@ -145,6 +145,7 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `~/projects/qa-workspace/.qa/`):
 | `Refusing to use the running Playwright MCP server` | Something started it from inside this project, so browser writes could land here. Kill it; the command starts a confined one. |
 | `<artifact>.json was not written by this attempt` | The model reasoned and stopped without calling its tool. Expected in ~18% of attempts; retries recover it. Persistent failure usually means the artifact it must emit is too large or too nested for the model. |
 | `is schema-valid but not supported by upstream evidence` | Working as intended — the agent gets the list and retries. Repeated failure means the upstream artifact is thin. |
+| `UNCOVERED_ACCEPTANCE_POINT` in a rejected write | A requirement has no test case. Normally the agent adds one and retries. If it persists, the requirement may not be testable as written — that is the Behavior Analyst's `testable: false` to set, with a reason. |
 | Artifact mentions a feature the app does not have | Validation catches most of this. If it persists, check the skills that agent mounts for a worked example it may be copying. |
 
 ## Diagnostics

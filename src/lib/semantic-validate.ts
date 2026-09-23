@@ -11,7 +11,7 @@
 // have a crisp answer — does this ID exist, does this route/credential/quoted
 // UI string appear upstream, does this sentence negate something discovery
 // observed. It does not attempt general natural-language entailment; the gaps
-// that leaves are listed in docs/SEMANTIC-VALIDATION.md.
+// that leaves are listed in docs/VALIDATION.md.
 
 // ---------------------------------------------------------------------------
 // Types

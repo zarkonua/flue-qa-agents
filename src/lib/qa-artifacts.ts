@@ -171,7 +171,7 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
     case 'requirements-analysis': {
       const discovery = readQaArtifact('discovered-behavior') as DiscoveredBehavior | undefined;
       // Requirements-driven workflow: no discovery ran, so there is no
-      // evidence set to check against. See docs/SEMANTIC-VALIDATION.md.
+      // evidence set to check against. See docs/VALIDATION.md.
       if (discovery === undefined) return [];
       return validateRequirementsAnalysis(discovery, data as RequirementsAnalysis);
     }

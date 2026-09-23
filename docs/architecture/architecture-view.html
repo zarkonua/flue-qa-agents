@@ -401,7 +401,7 @@
   <header>
     <h1>Flue QA Agents — architecture</h1>
     <p>A local, Ollama-backed QA workflow in two phases with a human approval gate between them. Host code sequences every stage; each AI agent runs as its own process, holds only narrow tools, and can write only its own schema- and semantically-validated JSON artifact.</p>
-    <p class="verified">Verified against the source on 2026-09-22: <code>scripts/qa-manual.mjs</code>, <code>scripts/lib/runtime.mjs</code>, <code>src/agents/*.ts</code> (<code>useSkill()</code> / <code>useTool()</code> calls), <code>src/lib/phase1-gate.ts</code>, <code>src/lib/qa-artifacts.ts</code>, <code>package.json</code>.</p>
+    <p class="verified">Verified against the source on 2026-09-23: <code>scripts/qa-manual.mjs</code>, <code>scripts/qa-automation.mjs</code>, <code>scripts/lib/stage.mjs</code>, <code>scripts/lib/phase2-stages.mjs</code>, <code>src/agents/*.ts</code> (<code>useSkill()</code> / <code>useTool()</code> calls), <code>src/lib/phase1-gate.ts</code>, <code>src/lib/qa-artifacts.ts</code>, <code>package.json</code>.</p>
   </header>
 
   <section aria-labelledby="h-chain">
@@ -716,7 +716,7 @@
     </div>
   </section>
 
-  <footer>Generated from the source on 2026-09-22. Execution chain from <span class="mono">scripts/qa-manual.mjs</span> (stage allowlist, retry policy, host checks) and <span class="mono">src/lib/phase1-gate.ts</span>; skills and tools from the <span class="mono">useSkill()</span> / <span class="mono">useTool()</span> calls in <span class="mono">src/agents/*.ts</span>; skill activations from Flue's run database.</footer>
+  <footer>Generated from the source on 2026-09-23. Execution chain from <span class="mono">scripts/qa-manual.mjs</span> and <span class="mono">scripts/qa-automation.mjs</span> (stage allowlist, retry policy, host checks) and <span class="mono">src/lib/phase1-gate.ts</span>; skills and tools from the <span class="mono">useSkill()</span> / <span class="mono">useTool()</span> calls in <span class="mono">src/agents/*.ts</span>; skill activations from Flue's run database.</footer>
 </main>
 
 <script>

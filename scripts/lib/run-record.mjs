@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 /** The commit this run's code came from, when the tree is a git repo. */
-function gitCommit(root) {
+export function gitCommit(root) {
   try {
     const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
       cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],

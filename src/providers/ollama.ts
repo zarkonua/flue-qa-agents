@@ -4,6 +4,7 @@ import { createProvider } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { envBool, envInt, envString } from '../config/env.ts';
 import { describeRequest, isParserFailure, recordHarmonyFailure } from '../lib/harmony-diagnostic.ts';
+import { gptOssMaxOutputTokens, resolveOllamaBaseUrl } from './ollama-settings.ts';
 
 // Local Ollama server, exposed through its OpenAI-compatible endpoint.
 // Keyless, zero-cost, and fully local — no cloud provider is contacted.
@@ -63,24 +64,8 @@ export function wslHostAddress(): string | undefined {
   return undefined;
 }
 
-/**
- * Explicit configuration always wins; otherwise plain loopback. Loopback is
- * correct for a native Ollama and for WSL in mirrored networking mode (see
- * .wslconfig), which is how this project reaches Ollama on the Windows host
- * without binding it to 0.0.0.0.
- *
- * Under WSL NAT networking, loopback will NOT reach a Windows-hosted Ollama:
- * run `npm run check:ollama`, which prints the OLLAMA_BASE_URL to export. The
- * default deliberately never dials the gateway on its own — on a mirrored or
- * native setup that address is the real LAN router.
- */
-function resolveBaseUrl(): string {
-  const configured = envString('OLLAMA_BASE_URL');
-  if (configured) return configured.replace(/\/+$/, '');
-  return 'http://127.0.0.1:11434/v1';
-}
-
-export const OLLAMA_BASE_URL = resolveBaseUrl();
+// Resolution rules live in `ollama-settings.ts`, which has no import side effects.
+export const OLLAMA_BASE_URL = resolveOllamaBaseUrl();
 
 /**
  * Locally built gpt-oss-20b variants, whose tag encodes the context window the
@@ -130,10 +115,9 @@ const GPT_OSS_MODELS = Object.entries(GPT_OSS_CONTEXTS).map(([tag, measuredConte
     input: ['text'] as const,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
-    // Default: a quarter of the window — enough for the reasoning plus a large
-    // artifact in the same turn, without crowding out the prompt. An explicit
-    // OLLAMA_MAX_OUTPUT_TOKENS wins outright, including a smaller value.
-    maxTokens: MAX_OUTPUT_IS_EXPLICIT ? MAX_OUTPUT_TOKENS : Math.floor(contextWindow / 4),
+    // See gptOssMaxOutputTokens: a quarter of the window unless
+    // OLLAMA_MAX_OUTPUT_TOKENS is set, in which case it wins outright.
+    maxTokens: gptOssMaxOutputTokens(contextWindow, MAX_OUTPUT_IS_EXPLICIT ? MAX_OUTPUT_TOKENS : undefined),
   };
 });
 
@@ -264,6 +248,41 @@ function reasoningTrimmingApi() {
   } as ReturnType<typeof openAICompletionsApi>;
 }
 
+/**
+ * Every model this provider serves, with the context window and output budget
+ * Flue budgets against. Exported so observability can report the resolved
+ * values rather than re-deriving them from the environment.
+ */
+export const OLLAMA_MODELS = [
+  ...GPT_OSS_MODELS,
+  {
+    id: 'qwen3:14b',
+    name: 'Qwen3 14B (local)',
+    api: 'openai-completions' as const,
+    provider: 'ollama',
+    baseUrl: OLLAMA_BASE_URL,
+    reasoning: false,
+    input: ['text'] as const,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: CONTEXT_WINDOW,
+    maxTokens: MAX_OUTPUT_TOKENS,
+    // Agentic tool use, not prose. At Qwen3's default sampling this model
+    // drifts: it narrates a tool call in text, or emits one as a
+    // `<tool_call>` block inside its reasoning channel where the
+    // OpenAI-compat parser cannot see it. Low temperature and tighter
+    // nucleus sampling make it far likelier to emit a real structured call.
+    // (Thinking itself cannot be turned off here — Ollama's /v1 shim
+    // ignores both `enable_thinking` and `chat_template_kwargs`.)
+    samplingParams: { temperature: 0.2, top_p: 0.8 },
+  },
+];
+
+/** The resolved limits of one registered model, or undefined for an unknown id. */
+export function ollamaModelLimits(id: string): { contextWindow: number; maxOutputTokens: number } | undefined {
+  const model = OLLAMA_MODELS.find((m) => m.id === id);
+  return model ? { contextWindow: model.contextWindow, maxOutputTokens: model.maxTokens } : undefined;
+}
+
 setProvider(
   createProvider({
     id: 'ollama',
@@ -275,29 +294,7 @@ setProvider(
         resolve: async () => ({ auth: { apiKey: 'ollama-local' } }),
       },
     },
-    models: [
-      ...GPT_OSS_MODELS,
-      {
-        id: 'qwen3:14b',
-        name: 'Qwen3 14B (local)',
-        api: 'openai-completions',
-        provider: 'ollama',
-        baseUrl: OLLAMA_BASE_URL,
-        reasoning: false,
-        input: ['text'],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: CONTEXT_WINDOW,
-        maxTokens: MAX_OUTPUT_TOKENS,
-        // Agentic tool use, not prose. At Qwen3's default sampling this model
-        // drifts: it narrates a tool call in text, or emits one as a
-        // `<tool_call>` block inside its reasoning channel where the
-        // OpenAI-compat parser cannot see it. Low temperature and tighter
-        // nucleus sampling make it far likelier to emit a real structured call.
-        // (Thinking itself cannot be turned off here — Ollama's /v1 shim
-        // ignores both `enable_thinking` and `chat_template_kwargs`.)
-        samplingParams: { temperature: 0.2, top_p: 0.8 },
-      },
-    ],
+    models: OLLAMA_MODELS,
     api: reasoningTrimmingApi(),
   }),
 );

@@ -132,6 +132,7 @@ Artifacts are written to a **sibling** workspace, never inside this project:
 |---|---|
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Running it: commands, variables, outputs, troubleshooting |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | What deterministic validation guarantees, and what it does not |
+| [docs/observability.md](docs/observability.md) | Optional Langfuse tracing: enabling it, trace shape, what is and is not sent |
 | [docs/architecture/architecture-view.html](docs/architecture/architecture-view.html) | The architecture reference — execution chain, skills, trust boundaries, capability matrix. Open it in a browser |
 
 Source, schemas and tests are the detailed truth; the documents above do not restate them.

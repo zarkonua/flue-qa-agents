@@ -23,16 +23,22 @@ export { QA_MODEL };
 
 const provider = modelProvider(QA_MODEL);
 
+/** The resolved window and output budget of QA_MODEL, when the provider declares them. */
+let limits: { contextWindow: number; maxOutputTokens: number } | undefined;
+
 switch (provider) {
-  case 'ollama':
+  case 'ollama': {
     // Registers the Ollama provider, its reasoning-replay filter and its
     // low-variance sampling. Import for the side effect, as before.
-    await import('./ollama.ts');
+    const { ollamaModelLimits } = await import('./ollama.ts');
+    limits = ollamaModelLimits(modelId(QA_MODEL));
     break;
+  }
 
   case 'openrouter': {
-    const { registerOpenRouter } = await import('./openrouter.ts');
+    const { openRouterModelLimits, registerOpenRouter } = await import('./openrouter.ts');
     registerOpenRouter();
+    limits = openRouterModelLimits(modelId(QA_MODEL));
     break;
   }
 
@@ -48,3 +54,13 @@ export const QA_MODEL_PROVIDER = provider;
 
 /** The model id within its provider, for diagnostics. */
 export const QA_MODEL_ID = modelId(QA_MODEL);
+
+/** Context window and output budget Flue budgets QA_MODEL against, if known. */
+export const QA_MODEL_LIMITS = limits;
+
+// Every agent module imports this file, and `flue run` loads nothing else, so
+// this is the one place an agent process can install tracing. A no-op unless
+// LANGFUSE_ENABLED=true: nothing Langfuse- or OpenTelemetry-related is even
+// loaded otherwise. See docs/observability.md.
+const { initAgentObservability } = await import('../observability/agent.ts');
+await initAgentObservability({ model: QA_MODEL, limits });

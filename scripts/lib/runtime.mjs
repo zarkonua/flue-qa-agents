@@ -40,6 +40,29 @@ export function requireTarget() {
 }
 
 // ---------------------------------------------------------------------------
+// Observability
+// ---------------------------------------------------------------------------
+
+/**
+ * The run's observability (src/observability/host.ts): a no-op unless
+ * LANGFUSE_ENABLED=true. Called before any stage starts, so a misconfigured
+ * Langfuse stops the run here with a clear message instead of mid-run.
+ */
+export async function createObservabilityOrExit() {
+  const { createRunObservability } = await import(resolve(ROOT, 'src/observability/host.ts'));
+  const { ObservabilityConfigError } = await import(resolve(ROOT, 'src/observability/config.ts'));
+  try {
+    return await createRunObservability();
+  } catch (error) {
+    if (error instanceof ObservabilityConfigError) {
+      console.error(`\n${error.message}\n`);
+      process.exit(EXIT.BAD_CONFIG);
+    }
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Playwright MCP lifecycle
 // ---------------------------------------------------------------------------
 

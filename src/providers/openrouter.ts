@@ -58,6 +58,18 @@ export function isInPiCatalog(modelId: string): boolean {
 }
 
 /**
+ * The catalog limits of one OpenRouter model, or undefined for an unknown id.
+ * Read from the same two sources `registerOpenRouter` serves, so observability
+ * reports exactly the window and output budget Flue budgets against.
+ */
+export function openRouterModelLimits(modelId: string): { contextWindow: number; maxOutputTokens: number } | undefined {
+  const model =
+    (isInPiCatalog(modelId) ? (OPENROUTER_MODELS as Record<string, { contextWindow: number; maxTokens: number }>)[modelId] : undefined) ??
+    MISSING_FROM_PI_CATALOG.find((m) => m.id === modelId);
+  return model ? { contextWindow: model.contextWindow, maxOutputTokens: model.maxTokens } : undefined;
+}
+
+/**
  * Register OpenRouter with Flue. Throws a clear error when the key is missing,
  * before any agent starts — the failure is a configuration mistake, not
  * something a model can recover from.

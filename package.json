@@ -27,7 +27,17 @@
   "type": "module",
   "dependencies": {
     "@earendil-works/pi-ai": "^0.83.0",
+    "@flue/opentelemetry": "2.1.0",
     "@flue/runtime": "^2.1.0",
+    "@langfuse/core": "^5.11.1",
+    "@langfuse/otel": "^5.11.1",
+    "@langfuse/tracing": "^5.11.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/core": "^2.11.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.222.0",
+    "@opentelemetry/resources": "^2.11.0",
+    "@opentelemetry/sdk-node": "^0.222.0",
+    "@opentelemetry/sdk-trace-base": "^2.11.0",
     "valibot": "^1.5.0"
   },
   "devDependencies": {

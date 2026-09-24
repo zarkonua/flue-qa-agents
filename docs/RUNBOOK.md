@@ -26,6 +26,9 @@ Only `TARGET_URL` is required; Phase 2 also needs `QA_TARGET_REPO_ROOT` to point
 real. Every root must be **absolute** and **outside this project** — both are checked at load
 time, and the process throws rather than relocating anything.
 
+Tracing to Langfuse is optional and off unless `LANGFUSE_ENABLED=true` — see
+[observability.md](observability.md).
+
 ### Choosing the model
 
 One setting, in Flue's `provider/model` form. Every agent uses it; there is no per-agent

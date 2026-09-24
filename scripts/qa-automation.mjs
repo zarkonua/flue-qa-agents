@@ -24,13 +24,15 @@
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { EXIT, ROOT } from './lib/runtime.mjs';
+import { EXIT, ROOT, createObservabilityOrExit } from './lib/runtime.mjs';
+import { gitCommit } from './lib/run-record.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 import { assertWiredStages, NOT_YET_WIRED, PHASE2_AGENTS, PHASE2_STAGES, UNWIRED_ARTIFACTS } from './lib/phase2-stages.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { checkPhase2Gate } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
 const { TARGET_REPO_ROOT } = await import(resolve(ROOT, 'src/lib/trusted-roots.ts'));
+const { stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 2 stage list — a closed allowlist
@@ -100,6 +102,10 @@ if (gateOnly) {
 // ---------------------------------------------------------------------------
 
 const artifactProblem = makeArtifactProblem(qa);
+
+// Langfuse tracing, when LANGFUSE_ENABLED=true; a no-op otherwise. Validated
+// before anything is archived or any agent starts.
+const observability = await createObservabilityOrExit();
 
 // The Repo Analyzer has nothing to analyse without a repository. That is an
 // operator configuration problem, so say so here rather than burning four
@@ -196,9 +202,19 @@ async function buildContract() {
   return { summary: contractSummary(contract), gaps: contractGaps(contract) };
 }
 
+const { QA_MODEL } = await import(resolve(ROOT, 'src/config/env.ts'));
+observability.startRun({
+  command: 'qa-automation',
+  runId: stamp,
+  model: QA_MODEL,
+  input: { stages: plan.map((s) => s.key), automationCases: selected.length, attemptsPerStage: attempts },
+  metadata: { from, attemptsPerStage: attempts, automationCases: selected.length, gitCommit: gitCommit(ROOT) ?? null },
+});
+
 for (const stage of plan) {
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
+  const stageTrace = observability.startStage(stage);
 
   const passed = await runStage({
     stage,
@@ -209,7 +225,9 @@ for (const stage of plan) {
     artifactProblem,
     qaArtifactPath: qa.qaArtifactPath,
     onProgress: saveRecord,
+    trace: stageTrace,
   });
+  await stageTrace.end({ passed, metrics: () => stageMetrics(stage.key, qa.readQaArtifact) });
 
   // The automation project contract: a deterministic projection of the analysis
   // into what a later agent needs, with every path and script re-checked on
@@ -236,6 +254,7 @@ for (const stage of plan) {
     saveRecord();
     console.error(`\nPhase 2 stopped: ${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`);
     console.error(`Resume from this stage with:\n  npm run qa:automation -- --from ${stage.key}\n`);
+    await observability.endRun({ outcome: 'FAILED', failedStage: stage.key });
     process.exit(EXIT.FAILED);
   }
 }
@@ -267,4 +286,5 @@ console.log('\nNext:');
 console.log(`  jq . ${qa.qaArtifactPath('repo-analysis')}`);
 console.log('  Read it as a person: does it describe conventions a new test must follow?');
 console.log('\nThe rest of Phase 2 (UI Explorer, Automation Generator) is not wired yet — nothing was generated.\n');
+await observability.endRun({ outcome: 'COMPLETE', output: () => stageMetrics('repo-analyzer', qa.readQaArtifact) });
 process.exit(EXIT.OK);

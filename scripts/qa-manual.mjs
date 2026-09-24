@@ -24,10 +24,10 @@
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { EXIT, ROOT, ensureMcp, mcpUrl, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
+import { EXIT, ROOT, createObservabilityOrExit, ensureMcp, mcpUrl, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 import { acquireRunLock } from './lib/run-lock.mjs';
-import { preserveRun } from './lib/run-record.mjs';
+import { gitCommit, preserveRun } from './lib/run-record.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { summarize, coverageSummary, analysisCoverageSummary, strategySummary, scenarioDiversityDiagnostic } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
@@ -35,6 +35,7 @@ const { APPROVAL_PATH } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
 const surfaceLib = await import(resolve(ROOT, 'src/lib/discovery-surface.ts'));
 const auxLib = await import(resolve(ROOT, 'src/config/auxiliary-origins.ts'));
 const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
+const { runFunnel, stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
@@ -135,6 +136,10 @@ const plan = STAGES.slice(startIndex);
 const artifactProblem = makeArtifactProblem(qa);
 
 const target = plan.some((s) => s.browser) ? requireTarget() : process.env.TARGET_URL;
+
+// Langfuse tracing, when LANGFUSE_ENABLED=true; a no-op otherwise. Validated
+// here, before the lock, the archive or any browser work.
+const observability = await createObservabilityOrExit();
 
 // Starting part-way through needs every earlier artifact present and
 // schema-valid. Semantic findings there are only warnings: those files may hold
@@ -262,9 +267,20 @@ if (plan.some((s) => s.browser)) {
   }
 }
 
+// One QA run, one trace. Started only now, after every exit path of the
+// preflight, so a trace always has an end.
+observability.startRun({
+  command: 'qa-manual',
+  runId: stamp,
+  model: env.QA_MODEL,
+  input: { target: target ?? null, from, stages: plan.map((s) => s.key), attemptsPerStage: attempts },
+  metadata: { from, attemptsPerStage: attempts, target: target ?? null, gitCommit: gitCommit(ROOT) ?? null },
+});
+
 for (const stage of plan) {
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
+  const stageTrace = observability.startStage(stage);
 
   // Give the discovery stage the surface the host just established.
   if (stage.withSurface) {
@@ -280,6 +296,7 @@ for (const stage of plan) {
     artifactProblem,
     qaArtifactPath: qa.qaArtifactPath,
     onProgress: saveRecord,
+    trace: stageTrace,
   });
   // Deterministic browser evidence, collected while the browser is still up.
   // This runs on the host, in its own session, and replays the locations the
@@ -307,6 +324,17 @@ for (const stage of plan) {
     }
   }
 
+  // QA counts from the artifact just validated — evaluated only when tracing.
+  await stageTrace.end({
+    passed,
+    metrics: () => {
+      const ledger = stage.key === 'discovery' ? ledgerLib.readLedger(stamp) : undefined;
+      return stageMetrics(stage.key, qa.readQaArtifact, {
+        observationCount: ledger ? ledgerLib.ledgerSummary(ledger).recorded : undefined,
+      });
+    },
+  });
+
   if (stage.browser) {
     // Later stages need no browser; release it now if we started it.
     record.mcpStoppedCleanly = await stopMcpAndWait();
@@ -319,6 +347,7 @@ for (const stage of plan) {
     saveRecord();
     console.error(`\nPhase 1 stopped: ${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`);
     console.error(`Earlier artifacts are kept. Resume from this stage with:\n  npm run qa:manual -- --from ${stage.key}\n`);
+    await observability.endRun({ outcome: 'FAILED', failedStage: stage.key, output: () => runFunnel(qa.readQaArtifact) });
     process.exit(EXIT.FAILED);
   }
 }
@@ -455,4 +484,5 @@ console.log(`  jq . ${qa.qaArtifactPath('automation-prioritization')}`);
 console.log('  npm run qa:review      # optional AI review — proposes changes, edits nothing');
 console.log('  npm run qa:approve     # your approval; required before Phase 2');
 console.log('  (edited test cases?  npm run qa:manual -- --from prioritization)\n');
+await observability.endRun({ outcome: 'COMPLETE', output: () => runFunnel(qa.readQaArtifact) });
 process.exit(EXIT.OK);

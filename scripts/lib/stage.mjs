@@ -80,9 +80,11 @@ export function retryMessage(stage, problem) {
  * @param {Function} o.artifactProblem from `makeArtifactProblem`
  * @param {Function} o.qaArtifactPath  `qa.qaArtifactPath`
  * @param {Function} [o.onProgress]    called after each attempt (to persist the log)
+ * @param {object}   [o.trace]         the stage's observability handle (src/observability/host.ts);
+ *                                     absent or no-op unless LANGFUSE_ENABLED=true
  * @returns {Promise<boolean>} whether the stage passed
  */
-export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifactProblem, qaArtifactPath, onProgress }) {
+export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifactProblem, qaArtifactPath, onProgress, trace }) {
   let passed = false;
   let lastProblem;
   let id;
@@ -100,7 +102,9 @@ export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifa
     );
     const started = Date.now();
     const message = resume ? retryMessage(stage, lastProblem) : stage.message;
-    const { exitCode, toolCalls } = await runAgent(stage.agent, message, id, { resume });
+    // Each attempt's agent process parents its spans under this stage.
+    const extraEnv = trace?.childEnv({ attempt, resumed: resume }) ?? {};
+    const { exitCode, toolCalls } = await runAgent(stage.agent, message, id, { resume, extraEnv });
 
     const path = qaArtifactPath(stage.artifact);
     // Fresh = written during this attempt. A file from before cannot pass.
@@ -123,6 +127,7 @@ export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifa
       passed,
       problem: problem ?? null,
     });
+    trace?.recordAttempt(entry.attempts.at(-1));
     onProgress?.();
     console.log(`\n--- ${stage.label}: ${passed ? 'artifact written and valid' : `FAILED — ${problem}`}`);
   }

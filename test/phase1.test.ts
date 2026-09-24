@@ -35,6 +35,10 @@ const requirements: RequirementsAnalysis = {
   businessRules: [],
   openQuestions: [],
   risks: [],
+  // The discovery fixture also carries BEH-3 (notes editing), which this
+  // Authentication analysis does not cover. Accounted for rather than dropped:
+  // completeness is enforced, and these tests are about the approval gate.
+  excludedBehaviors: [{ id: 'BEH-3', reason: 'Notes editing is outside this analysis, whose feature is Authentication.' }],
 };
 
 const tc = (id: string, evidence: string, title: string, expected: string) => ({

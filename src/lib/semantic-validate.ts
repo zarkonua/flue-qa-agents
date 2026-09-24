@@ -50,7 +50,13 @@ export type SemanticErrorCode =
   | 'UNEXPLORED_LOCATION'
   | 'UNKNOWN_LOCATION'
   | 'UNKNOWN_OBSERVATION'
-  | 'UNACCOUNTED_OBSERVATION';
+  | 'UNACCOUNTED_OBSERVATION'
+  | 'UNANALYZED_BEHAVIOR'
+  | 'UNKNOWN_BEHAVIOR_REFERENCE'
+  | 'CONTRADICTORY_VALIDATION_TYPE'
+  | 'COVERAGE_NOT_EVIDENCED'
+  | 'CONTRADICTORY_STRATEGY'
+  | 'UNSUPPORTED_STRATEGY';
 
 export interface SemanticError {
   code: SemanticErrorCode;
@@ -107,12 +113,26 @@ export interface DiscoveredBehavior {
  * `testable` absent means testable — coverage is the default obligation, not
  * the exception, so an analyst who says nothing still owes a test case.
  */
+/** How a requirement can be verified, when the evidence settles it. */
+export type ValidationType = 'UI' | 'API' | 'VISUAL' | 'CONTRACT' | 'MANUAL' | 'UNKNOWN';
+
+export const VALIDATION_TYPES: readonly ValidationType[] = [
+  'UI', 'API', 'VISUAL', 'CONTRACT', 'MANUAL', 'UNKNOWN',
+];
+
 export interface EvidencedItem {
   id: string;
   statement: string;
   evidenceIds: string[];
   testable?: boolean;
   notTestableReason?: string;
+  /**
+   * Optional. Absent means undecided, which is honest; `UNKNOWN` means
+   * considered and not settled by the evidence. Both are acceptable — forcing
+   * a type the evidence does not support is not.
+   */
+  validationType?: ValidationType;
+  validationTypeReason?: string;
 }
 
 export interface RequirementsAnalysis {
@@ -121,6 +141,12 @@ export interface RequirementsAnalysis {
   businessRules: EvidencedItem[];
   openQuestions: { id: string; question: string; impact: string }[];
   risks: { area: string; probability: string; impact: string; rationale: string }[];
+  /**
+   * Discovered behaviors deliberately not turned into a requirement, each with
+   * a reason. The escape hatch that makes completeness enforceable: a behavior
+   * may be left out, but only on the record.
+   */
+  excludedBehaviors?: { id: string; reason: string }[];
 }
 
 interface TestCase {
@@ -146,6 +172,25 @@ export interface TestCases {
 export type ExecutionMode = 'AUTOMATION' | 'MANUAL';
 export type AutomationPriority = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
 
+/**
+ * How a case would be automated, as distinct from whether and when.
+ *
+ * Three separate judgements travel together and must not be collapsed:
+ *   - `priority` on the test case  — product importance (P0..P3), the Designer's call
+ *   - `executionMode`              — AUTOMATION or MANUAL
+ *   - `automationPriority`         — HIGH/MEDIUM/LOW/NONE, when to build it
+ *   - `automationStrategy`         — through what, this type
+ *
+ * A P0 case can be MANUAL. A HIGH-priority automation can be UNKNOWN strategy.
+ * Conflating them is how a business rule best checked against an API becomes a
+ * brittle browser test purely because the discovery evidence came from a browser.
+ */
+export type AutomationStrategy = 'UI' | 'API' | 'UI_API' | 'VISUAL' | 'MANUAL' | 'UNKNOWN';
+
+export const AUTOMATION_STRATEGIES: readonly AutomationStrategy[] = [
+  'UI', 'API', 'UI_API', 'VISUAL', 'MANUAL', 'UNKNOWN',
+];
+
 export interface AutomationPrioritization {
   cases: {
     testCaseId: string;
@@ -153,9 +198,25 @@ export interface AutomationPrioritization {
     automationPriority: AutomationPriority;
     reason: string;
     blockingFactors: string[];
+    /**
+     * Optional. Absent means undecided; `UNKNOWN` means considered and not
+     * settled by the evidence. Claiming API or VISUAL requires that the
+     * upstream evidence actually shows such a capability.
+     */
+    automationStrategy?: AutomationStrategy;
+    strategyReason?: string;
   }[];
 }
 
+/**
+ * The counts a Test Cases Review must reproduce exactly.
+ *
+ * Deliberately numbers only. `validateTestCasesReview` compares this field by
+ * field against the reviewer's own summary, so anything added here becomes
+ * something the reviewer is required to restate — and a nested value cannot be
+ * compared that way. The strategy breakdown is run reporting, not part of the
+ * review contract, and lives in `strategySummary()` instead.
+ */
 export interface ReviewSummary {
   total: number;
   manual: number;
@@ -1019,7 +1080,158 @@ export function validateRequirementsAnalysis(
     checkContradictions(q.question, `openQuestions[${i}].question`, discovery, errors);
   });
 
+  // ---- Validation type -----------------------------------------------------
+  //
+  // The type is optional on purpose. What is checked is only that a stated one
+  // does not contradict the analyst's own `testable` judgement: a requirement
+  // marked not testable cannot simultaneously claim an automatable route.
+  for (const [field, items] of evidenced) {
+    items.forEach((item, i) => {
+      const type = item.validationType;
+      if (type === undefined) return;
+      if (item.testable === false && type !== 'MANUAL' && type !== 'UNKNOWN') {
+        errors.push({
+          code: 'CONTRADICTORY_VALIDATION_TYPE',
+          path: `${field}[${i}].validationType`,
+          value: type,
+          details:
+            `${item.id} is marked testable: false but claims a ${type} validation route. ` +
+            'Either it can be verified that way, or it is not testable — not both. Use MANUAL or ' +
+            'UNKNOWN, or remove testable: false.',
+        });
+      }
+    });
+  }
+
+  // ---- Completeness: no discovered behavior may vanish ----------------------
+  //
+  // The same rule discovery itself follows for observations, applied one stage
+  // later: everything upstream is either represented downstream or explicitly
+  // accounted for. Without this a run can quietly analyse four of fifteen
+  // behaviors and still validate, because every individual statement it DID
+  // write was well evidenced. Silence was the failure mode, and silence is
+  // exactly what a per-item check cannot see.
+  const cited = new Set<string>();
+  for (const [, items] of evidenced) {
+    for (const item of items) for (const id of item.evidenceIds) cited.add(id);
+  }
+
+  const excluded = requirements.excludedBehaviors ?? [];
+  const excludedIds = new Set<string>();
+  excluded.forEach((entry, i) => {
+    if (!behaviors.has(entry.id)) {
+      errors.push({
+        code: 'UNKNOWN_BEHAVIOR_REFERENCE',
+        path: `excludedBehaviors[${i}].id`,
+        value: entry.id,
+        details: `No discovered behavior has this ID. Valid behavior IDs: ${validIds}.`,
+      });
+      return;
+    }
+    if (cited.has(entry.id)) {
+      errors.push({
+        code: 'UNKNOWN_BEHAVIOR_REFERENCE',
+        path: `excludedBehaviors[${i}].id`,
+        value: entry.id,
+        details: `${entry.id} is both excluded and cited as evidence. Decide which: remove it from excludedBehaviors, or stop citing it.`,
+      });
+      return;
+    }
+    if (!entry.reason || entry.reason.trim().length === 0) {
+      errors.push({
+        code: 'UNANALYZED_BEHAVIOR',
+        path: `excludedBehaviors[${i}].reason`,
+        value: entry.id,
+        details: `Excluding ${entry.id} requires a reason saying why it produces no requirement.`,
+      });
+      return;
+    }
+    excludedIds.add(entry.id);
+  });
+
+  for (const behavior of discovery.behaviors) {
+    if (cited.has(behavior.id) || excludedIds.has(behavior.id)) continue;
+    // A behavior that cannot become a requirement still has to be accounted
+    // for — the exclusion list is where that is said, and the message names
+    // the route so the fix is obvious rather than guessed at.
+    const blocked = behavior.suspectedIssue
+      ? ' It is a suspected issue, so it cannot become a requirement: exclude it and raise an open question.'
+      : behavior.status === 'INFERRED'
+        ? ' It is INFERRED, so it cannot become a requirement on its own: exclude it and raise an open question.'
+        : '';
+    errors.push({
+      code: 'UNANALYZED_BEHAVIOR',
+      path: 'acceptancePoints',
+      value: behavior.id,
+      details:
+        `${behavior.id} ("${truncate(behavior.statement, 80)}") is neither cited as evidence by any ` +
+        `acceptance point or business rule, nor listed in excludedBehaviors with a reason.${blocked}`,
+    });
+  }
+
   return errors;
+}
+
+/** Shorten a statement for an error message without hiding which one it is. */
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+export interface AnalysisCoverageSummary {
+  /** Behaviors discovery produced. */
+  behaviors: number;
+  /** Behaviors cited as evidence by at least one requirement. */
+  analyzed: number;
+  /** Behaviors explicitly excluded with a reason. */
+  excluded: number;
+  /** Behaviors neither analyzed nor excluded — always 0 in a valid artifact. */
+  unaccounted: number;
+  acceptancePoints: number;
+  businessRules: number;
+  openQuestions: number;
+  /** Requirements the analyst marked not testable. */
+  notTestable: number;
+  /** How the testable requirements break down by stated validation type. */
+  validationTypes: Record<string, number>;
+  unaccountedIds: string[];
+}
+
+/**
+ * Host-derived analysis coverage. Computed from the two artifacts, never from
+ * a total the model reports about its own work.
+ */
+export function analysisCoverageSummary(
+  discovery: DiscoveredBehavior | undefined,
+  requirements: RequirementsAnalysis,
+): AnalysisCoverageSummary {
+  const items = [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])];
+  const cited = new Set<string>();
+  for (const item of items) for (const id of item.evidenceIds ?? []) cited.add(id);
+  const excluded = new Set((requirements.excludedBehaviors ?? []).map((e) => e.id));
+
+  const all = discovery?.behaviors ?? [];
+  const analyzed = all.filter((b) => cited.has(b.id));
+  const unaccounted = all.filter((b) => !cited.has(b.id) && !excluded.has(b.id));
+
+  const validationTypes: Record<string, number> = {};
+  for (const item of items) {
+    if (item.testable === false) continue;
+    const key = item.validationType ?? 'UNSPECIFIED';
+    validationTypes[key] = (validationTypes[key] ?? 0) + 1;
+  }
+
+  return {
+    behaviors: all.length,
+    analyzed: analyzed.length,
+    excluded: all.filter((b) => excluded.has(b.id)).length,
+    unaccounted: unaccounted.length,
+    acceptancePoints: requirements.acceptancePoints?.length ?? 0,
+    businessRules: requirements.businessRules?.length ?? 0,
+    openQuestions: requirements.openQuestions?.length ?? 0,
+    notTestable: items.filter((i) => i.testable === false).length,
+    validationTypes,
+    unaccountedIds: unaccounted.map((b) => b.id),
+  };
 }
 
 /**
@@ -1053,6 +1265,52 @@ export interface CoverageSummary {
   exempt: number;
   testCases: number;
   uncoveredIds: string[];
+  /**
+   * Scenario shape, host-counted from the cases' own `types`. Coverage says
+   * every requirement has a case; this says what kind of cases they are. A
+   * suite that is entirely `positive` covers everything and tests nothing
+   * interesting, and that is invisible in a coverage percentage.
+   */
+  scenarioTypes: Record<string, number>;
+  /** Cases claiming more than one requirement — merging, if it is happening. */
+  multiRequirementCases: number;
+  /** Requirements demonstrated by more than one case. Not a fault; a fact. */
+  requirementsWithMultipleCases: number;
+}
+
+/**
+ * A suite big enough that a two-kind classification is worth a second look.
+ * Below this, one or two kinds is perfectly normal.
+ */
+export const DIVERSITY_DIAGNOSTIC_MIN_CASES = 8;
+
+/**
+ * A non-blocking note when a large suite classifies itself very narrowly.
+ *
+ * This is a diagnostic, never a rule. A real run once produced 23 cases using
+ * only `positive` and `negative`, one label each, because the prompt named no
+ * vocabulary and the model inferred one from the coverage-matrix categories.
+ * The collapse was the visible symptom of that.
+ *
+ * It deliberately does NOT become a validation error, and nothing anywhere
+ * requires a minimum number of kinds or labels. A rule like "every suite needs
+ * a boundary test" would be satisfied by inventing one, which is worse than
+ * the narrow classification it replaced. This surfaces the pattern and leaves
+ * the judgement to a person.
+ */
+export function scenarioDiversityDiagnostic(summary: CoverageSummary): string | undefined {
+  if (summary.testCases < DIVERSITY_DIAGNOSTIC_MIN_CASES) return undefined;
+  const kinds = Object.keys(summary.scenarioTypes);
+  if (kinds.length === 0) {
+    return `Scenario-type diversity is low: ${summary.testCases} cases carry no scenario classification at all.`;
+  }
+  if (kinds.length > 2) return undefined;
+  return (
+    `Scenario-type diversity is low: ${summary.testCases} cases use only ` +
+    `${kinds.sort().join('/')} classifications. Review whether boundary, state-transition, ` +
+    'regression, smoke or validation classifications were overlooked. This is a diagnostic, ' +
+    'not a failure — a narrow suite can be correct.'
+  );
 }
 
 /**
@@ -1064,13 +1322,26 @@ export function coverageSummary(requirements: RequirementsAnalysis, testCases: T
   const claimed = new Set((testCases.testCases ?? []).flatMap((tc) => tc?.covers ?? []));
   const uncoveredIds = testable.filter((r) => !claimed.has(r.id)).map((r) => r.id);
   const all = [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])];
+  const cases = testCases.testCases ?? [];
+  const scenarioTypes: Record<string, number> = {};
+  for (const tc of cases) {
+    for (const type of tc?.types ?? []) scenarioTypes[type] = (scenarioTypes[type] ?? 0) + 1;
+  }
+  const casesPerRequirement = new Map<string, number>();
+  for (const tc of cases) {
+    for (const id of tc?.covers ?? []) casesPerRequirement.set(id, (casesPerRequirement.get(id) ?? 0) + 1);
+  }
+
   return {
     testable: testable.length,
     covered: testable.length - uncoveredIds.length,
     uncovered: uncoveredIds.length,
     exempt: all.length - testable.length,
-    testCases: (testCases.testCases ?? []).length,
+    testCases: cases.length,
     uncoveredIds,
+    scenarioTypes,
+    multiRequirementCases: cases.filter((tc) => (tc?.covers ?? []).length > 1).length,
+    requirementsWithMultipleCases: [...casesPerRequirement.values()].filter((n) => n > 1).length,
   };
 }
 
@@ -1096,9 +1367,10 @@ export function validateTestCases(
   // supported by", `covers` says "this demonstrates". A case may cite a raw
   // behavior as evidence while demonstrating no requirement at all, which is
   // exactly how a suite passed while leaving requirements untested.
-  const requirementIds = new Set(
-    [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])].map((r) => r.id),
+  const requirementById = new Map(
+    [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])].map((r) => [r.id, r]),
   );
+  const requirementIds = new Set(requirementById.keys());
   const requirementList = [...requirementIds].join(', ') || '(none)';
 
   testCases.testCases.forEach((tc, i) => {
@@ -1119,6 +1391,30 @@ export function validateTestCases(
           path: `${base}.covers[${j}]`,
           value: String(id),
           details: `not an acceptance point or business rule. Valid: ${requirementList}`,
+        });
+      }
+    }
+
+    // A `covers` claim has to be traceable, not asserted. The case must either
+    // cite the requirement itself, or cite a behavior that requirement rests
+    // on. This is what stops independent requirements being swept into one
+    // case to shorten the list: merging only survives when the scenario really
+    // does exercise the same evidence.
+    for (const [j, id] of covers.entries()) {
+      const requirement = requirementById.get(id);
+      if (requirement === undefined) continue;
+      const cited = tc.evidenceIds ?? [];
+      const sharesEvidence =
+        cited.includes(id) || cited.some((e) => (requirement.evidenceIds ?? []).includes(e));
+      if (!sharesEvidence) {
+        errors.push({
+          code: 'COVERAGE_NOT_EVIDENCED',
+          path: `${base}.covers[${j}]`,
+          value: String(id),
+          details:
+            `This case claims to cover ${id} but cites none of its evidence. Cite ${id} itself, or ` +
+            `one of the behaviors it rests on (${(requirement.evidenceIds ?? []).join(', ') || 'none'}). ` +
+            'If the scenario does not actually exercise this requirement, give it its own case.',
         });
       }
     }
@@ -1226,15 +1522,73 @@ export function summarize(prioritization: AutomationPrioritization): ReviewSumma
 }
 
 /**
+ * How many cases fall into each automation strategy, host-counted.
+ *
+ * Separate from `summarize()` on purpose — see `ReviewSummary`. Entries that
+ * state no strategy are counted as 'UNSPECIFIED' rather than assigned one.
+ */
+export function strategySummary(prioritization: AutomationPrioritization): Record<string, number> {
+  return (prioritization.cases ?? []).reduce<Record<string, number>>((acc, c) => {
+    const key = c?.automationStrategy ?? 'UNSPECIFIED';
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+/**
  * Structural invariants Phase 2 relies on. Every manual test case gets exactly
  * one entry; no entry points at a test case that does not exist; and the two
  * fields cannot contradict each other.
  */
+/**
+ * Which automation routes this run has actually SEEN evidence for.
+ *
+ * The rule the spec sets is "do not invent an API or visual-testing capability
+ * if it has not been observed", so the host works out what was observed rather
+ * than trusting a claim. Three independent signals, any one of which is enough:
+ *
+ *   - the analyst typed a requirement `API` or `CONTRACT` / `VISUAL`, which is
+ *     itself evidence-checked one stage earlier;
+ *   - the host's browser evidence recorded real HTTP requests, which proves
+ *     there is an API surface to drive;
+ *   - a repository analysis mentions an API surface (Phase 2 only).
+ *
+ * Nothing infers a capability from a test case's own wording: a case that
+ * *says* "call the API" is the claim, not the evidence for it.
+ */
+export function observedCapabilities(input: {
+  requirements?: RequirementsAnalysis;
+  evidence?: { findings?: { type?: string; source?: string }[] };
+}): { api: boolean; visual: boolean } {
+  const items = [
+    ...(input.requirements?.acceptancePoints ?? []),
+    ...(input.requirements?.businessRules ?? []),
+  ];
+  const typed = new Set(items.map((i) => i.validationType).filter(Boolean) as string[]);
+
+  // A recorded request — failed or not — proves requests are observable here.
+  const sawRequests = (input.evidence?.findings ?? []).some(
+    (f) => f?.type === 'REQUEST_FAILED' || f?.type === 'BROKEN_RESOURCE',
+  );
+
+  return {
+    api: typed.has('API') || typed.has('CONTRACT') || sawRequests,
+    visual: typed.has('VISUAL'),
+  };
+}
+
+/** Strategies that are incompatible with each execution mode. */
+const STRATEGY_CONFLICTS: Record<string, readonly AutomationStrategy[]> = {
+  MANUAL: ['UI', 'API', 'UI_API', 'VISUAL'],
+  AUTOMATION: ['MANUAL'],
+};
+
 export function validateAutomationPrioritization(
   testCases: TestCases,
   prioritization: AutomationPrioritization,
   discovery?: DiscoveredBehavior,
   requirements?: RequirementsAnalysis,
+  capabilities?: { api: boolean; visual: boolean },
 ): SemanticError[] {
   const errors: SemanticError[] = [];
   const ids = testCases.testCases.map((tc) => tc.id);
@@ -1268,6 +1622,48 @@ export function validateAutomationPrioritization(
         value: `${entry.executionMode}/${entry.automationPriority}`,
         details: 'An AUTOMATION case needs HIGH, MEDIUM, or LOW priority. Use NONE only with MANUAL.',
       });
+    }
+
+    const strategy = entry.automationStrategy;
+    if (strategy !== undefined) {
+      // The strategy answers "through what", the mode answers "automated at
+      // all". They are separate judgements, but they cannot disagree.
+      if ((STRATEGY_CONFLICTS[entry.executionMode] ?? []).includes(strategy)) {
+        errors.push({
+          code: 'CONTRADICTORY_STRATEGY',
+          path: `${base}.automationStrategy`,
+          value: `${entry.executionMode}/${strategy}`,
+          details:
+            entry.executionMode === 'MANUAL'
+              ? `A MANUAL case cannot have a ${strategy} automation strategy. Use MANUAL or UNKNOWN, or set executionMode to AUTOMATION.`
+              : 'An AUTOMATION case cannot have a MANUAL strategy. Pick the route it would be automated through, or UNKNOWN.',
+        });
+      }
+
+      // Capabilities are only checked when the host worked them out; a run
+      // without that context skips the check rather than guessing.
+      if (capabilities !== undefined) {
+        if ((strategy === 'API' || strategy === 'UI_API') && !capabilities.api) {
+          errors.push({
+            code: 'UNSUPPORTED_STRATEGY',
+            path: `${base}.automationStrategy`,
+            value: strategy,
+            details:
+              'No API surface was observed in this run — no requirement is typed API or CONTRACT and no HTTP ' +
+              'request was recorded. Use UI for what was actually observed, or UNKNOWN. Do not assume an API exists.',
+          });
+        }
+        if (strategy === 'VISUAL' && !capabilities.visual) {
+          errors.push({
+            code: 'UNSUPPORTED_STRATEGY',
+            path: `${base}.automationStrategy`,
+            value: strategy,
+            details:
+              'No requirement was typed VISUAL, so nothing upstream says appearance must be compared. ' +
+              'Use UI, or UNKNOWN.',
+          });
+        }
+      }
     }
   });
 
@@ -1380,6 +1776,7 @@ const ORDER: SemanticErrorCode[] = [
   'MISSING_UPSTREAM',
   'UPSTREAM_INVALID',
   'UNKNOWN_EVIDENCE_ID',
+  'UNKNOWN_BEHAVIOR_REFERENCE',
   'NOT_EVIDENCE',
   'MISSING_EVIDENCE',
   'EVIDENCE_MISMATCH',
@@ -1406,6 +1803,11 @@ const ORDER: SemanticErrorCode[] = [
   'UNEXPLORED_LOCATION',
   'UNKNOWN_OBSERVATION',
   'UNACCOUNTED_OBSERVATION',
+  'UNANALYZED_BEHAVIOR',
+  'CONTRADICTORY_VALIDATION_TYPE',
+  'COVERAGE_NOT_EVIDENCED',
+  'CONTRADICTORY_STRATEGY',
+  'UNSUPPORTED_STRATEGY',
   'UNCOVERED_ACCEPTANCE_POINT',
   'MISSING_COVERAGE',
   'UNKNOWN_LOCATION',
@@ -1446,6 +1848,14 @@ const HOW_TO_FIX: Record<SemanticErrorCode, string> = {
   UNEXPLORED_LOCATION: 'Account for every location below: VISITED, or UNREACHABLE/SKIPPED with a reason.',
   UNKNOWN_LOCATION: 'report only locations the browser actually offered',
   UNACCOUNTED_OBSERVATION: 'Every observation you recorded must reach a behavior, or be excluded with a reason.',
+  UNANALYZED_BEHAVIOR:
+    'Every discovered behavior must be cited as evidence by a requirement, or listed in excludedBehaviors with a reason.',
+  UNKNOWN_BEHAVIOR_REFERENCE: 'An excluded behavior ID must exist in discovery and must not also be cited as evidence.',
+  CONTRADICTORY_VALIDATION_TYPE: 'A requirement marked not testable cannot also claim an automatable validation route.',
+  COVERAGE_NOT_EVIDENCED:
+    'A case may only claim to cover a requirement whose evidence it actually cites. Split the scenario, or cite the evidence.',
+  CONTRADICTORY_STRATEGY: 'An automation strategy may not contradict the execution mode.',
+  UNSUPPORTED_STRATEGY: 'A strategy may only name a capability this run actually observed.',
   UNKNOWN_OBSERVATION: 'cite only observation ids the ledger actually holds',
 };
 

@@ -412,12 +412,25 @@ describe('requirement coverage', () => {
     const tcs = full();
     tcs.testCases = tcs.testCases.filter((c) => !c.covers.includes('AC-3'));
     tcs.testCases[0].covers = ['AC-2', 'AC-3'];
+    // "Genuinely exercised" has to be visible in the data, not only in the
+    // test's name: the case cites AC-3's evidence as well as its own. Without
+    // this the claim is untraceable, which is what COVERAGE_NOT_EVIDENCED
+    // catches — see test/coverage-design.test.ts.
+    tcs.testCases[0].evidenceIds = [...tcs.testCases[0].evidenceIds, 'BEH-3'];
     assert.deepEqual(validateTestCases(discovery, goodRequirements, tcs), []);
   });
 
   it('allows duplicate coverage — two cases may exercise the same requirement', () => {
     const tcs = full();
-    tcs.testCases[1].covers = ['AC-1', 'AC-2'];
+    // Duplicate coverage means one requirement demonstrated by two cases, so
+    // the second case is a real variant of the first rather than an unrelated
+    // case with an extra ID bolted onto its `covers`.
+    tcs.testCases.push({
+      ...structuredClone(tcs.testCases[1]),
+      id: 'TC-1b',
+      title: 'The Login button stays disabled with only a username entered',
+      types: ['boundary'],
+    });
     assert.deepEqual(validateTestCases(discovery, goodRequirements, tcs), []);
   });
 
@@ -451,14 +464,20 @@ describe('requirement coverage', () => {
 describe('coverage summary is derived, not reported', () => {
   it('counts testable requirements, covered, uncovered and cases', () => {
     const summary = coverageSummary(goodRequirements, goodTestCases);
-    assert.deepEqual(summary, {
+    const { scenarioTypes, ...counts } = summary;
+    assert.deepEqual(counts, {
       testable: 3,
       covered: 3,
       uncovered: 0,
       exempt: 0,
       testCases: 3,
       uncoveredIds: [],
+      multiRequirementCases: 0,
+      requirementsWithMultipleCases: 0,
     });
+    // Scenario shape is reported alongside the counts: complete coverage says
+    // nothing about whether the suite exercises anything but happy paths.
+    assert.ok(Object.values(scenarioTypes).reduce((a, b) => a + b, 0) > 0);
   });
 
   it('counts business rules as testable requirements', () => {

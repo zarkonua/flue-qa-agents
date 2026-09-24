@@ -39,6 +39,20 @@
           },
           "notTestableReason": {
             "type": "string"
+          },
+          "validationType": {
+            "type": "string",
+            "enum": [
+              "UI",
+              "API",
+              "VISUAL",
+              "CONTRACT",
+              "MANUAL",
+              "UNKNOWN"
+            ]
+          },
+          "validationTypeReason": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -70,6 +84,20 @@
             "type": "boolean"
           },
           "notTestableReason": {
+            "type": "string"
+          },
+          "validationType": {
+            "type": "string",
+            "enum": [
+              "UI",
+              "API",
+              "VISUAL",
+              "CONTRACT",
+              "MANUAL",
+              "UNKNOWN"
+            ]
+          },
+          "validationTypeReason": {
             "type": "string"
           }
         },
@@ -128,6 +156,25 @@
             ]
           },
           "rationale": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "excludedBehaviors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
             "type": "string"
           }
         },

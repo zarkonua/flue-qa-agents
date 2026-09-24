@@ -20,6 +20,7 @@ import {
   validateRequirementsAnalysis,
   validateTestCases,
   validateAutomationPrioritization,
+  observedCapabilities,
   validateTestCasesReview,
   validateRepoAnalysis,
   type AutomationPrioritization,
@@ -94,7 +95,11 @@ export type QaArtifactName =
   | 'test-cases-review'
   | 'repo-analysis'
   | 'ui-exploration'
-  | 'automation-plan';
+  | 'automation-plan'
+  // Host-written only. Collected by `scripts/lib/evidence.mjs` from the
+  // browser; deliberately absent from the agents' write picklist, so no model
+  // can author, amend or contradict it. See `src/tools/qa-artifacts.ts`.
+  | 'discovery-evidence';
 
 interface ArtifactDef {
   fileName: string;
@@ -110,6 +115,7 @@ const ARTIFACTS: Record<QaArtifactName, ArtifactDef> = {
   'repo-analysis': { fileName: 'repo-analysis.json', schemaFile: 'repo-analysis.schema.json' },
   'ui-exploration': { fileName: 'ui-exploration.json', schemaFile: 'ui-exploration.schema.json' },
   'automation-plan': { fileName: 'automation-plan.json', schemaFile: 'automation-plan.schema.json' },
+  'discovery-evidence': { fileName: 'discovery-evidence.json', schemaFile: 'discovery-evidence.schema.json' },
 };
 
 function loadSchema(schemaFile: string): JsonSchemaNode {
@@ -131,6 +137,27 @@ function resolveArtifactPath(name: QaArtifactName): string {
 /** Absolute path of an artifact file — for trusted host code (hashing, archiving) only. */
 export function qaArtifactPath(name: QaArtifactName): string {
   return resolveArtifactPath(name);
+}
+
+/**
+ * The scenario-type vocabulary, read from the test-cases schema.
+ *
+ * Exported so the Test Designer's prompt can state the real enum instead of a
+ * second copy of it. The prompt once named no vocabulary at all and the model
+ * inferred one from the coverage-matrix row categories, collapsing a six-kind
+ * classification to `positive`/`negative`. A hard-coded list in the prompt
+ * would fix that until the schema changed; deriving it means the two cannot
+ * disagree.
+ */
+export function scenarioTypeVocabulary(): string[] {
+  const schema = loadSchema(ARTIFACTS['test-cases'].schemaFile) as JsonSchemaNode & {
+    properties?: { testCases?: { items?: { properties?: { types?: { items?: { enum?: string[] } } } } } };
+  };
+  const values = schema.properties?.testCases?.items?.properties?.types?.items?.enum;
+  if (!values || values.length === 0) {
+    throw new Error('test-cases.schema.json no longer declares a types enum; the Test Designer prompt depends on it.');
+  }
+  return [...values];
 }
 
 /** Schema errors for `data` as artifact `name`, without writing anything. */
@@ -238,11 +265,19 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
       }
       // Validated against the test cases as they are NOW, which may include the
       // operator's hand edits — the prioritization must cover exactly those.
+      const priorRequirements = readQaArtifact('requirements-analysis') as RequirementsAnalysis | undefined;
       return validateAutomationPrioritization(
         testCases,
         data as AutomationPrioritization,
         readQaArtifact('discovered-behavior') as DiscoveredBehavior | undefined,
-        readQaArtifact('requirements-analysis') as RequirementsAnalysis | undefined,
+        priorRequirements,
+        // What this run actually observed, worked out host-side from the
+        // analyst's validation types and the browser evidence. An automation
+        // strategy may not claim a capability that is not in here.
+        observedCapabilities({
+          requirements: priorRequirements,
+          evidence: readQaArtifact('discovery-evidence') as { findings?: { type?: string }[] } | undefined,
+        }),
       );
     }
 

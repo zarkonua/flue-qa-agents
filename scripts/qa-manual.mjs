@@ -24,11 +24,11 @@
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { EXIT, ROOT, ensureMcp, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
+import { EXIT, ROOT, ensureMcp, mcpUrl, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
-const { summarize, coverageSummary } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
+const { summarize, coverageSummary, analysisCoverageSummary, strategySummary, scenarioDiversityDiagnostic } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
 const { APPROVAL_PATH } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
 const surfaceLib = await import(resolve(ROOT, 'src/lib/discovery-surface.ts'));
 const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
@@ -174,6 +174,21 @@ console.log(`Stages          : ${plan.map((s) => s.label).join(' -> ')} -> STOP`
 console.log(`Attempts/stage  : ${attempts}`);
 if (existsSync(archiveDir)) console.log(`Archived        : previous artifacts moved to ${archiveDir}`);
 
+/**
+ * Which locations the evidence collector replays: the ones discovery reported
+ * actually reaching, falling back to the host-built surface when the artifact
+ * has none. Never the model's free text — these are URLs the host records.
+ */
+function evidenceLocations() {
+  const discovered = qa.readQaArtifact('discovered-behavior');
+  const visited = (discovered?.locations ?? [])
+    .filter((l) => l?.status === 'VISITED' && typeof l.url === 'string')
+    .map((l) => l.url);
+  if (visited.length > 0) return [...new Set(visited)];
+  const surface = surfaceLib.readSurface();
+  return surface ? surface.locations.filter((l) => l.status !== 'SKIPPED').map((l) => l.url) : [];
+}
+
 const record = { phase: 1, target: target ?? null, startedAt: runStarted.toISOString(), from, attempts, stages: [] };
 const recordPath = join(qa.QA_ARTIFACT_ROOT, 'phase1-run.json');
 const saveRecord = () => {
@@ -230,6 +245,32 @@ for (const stage of plan) {
     qaArtifactPath: qa.qaArtifactPath,
     onProgress: saveRecord,
   });
+  // Deterministic browser evidence, collected while the browser is still up.
+  // This runs on the host, in its own session, and replays the locations the
+  // agent reported reaching — see scripts/lib/evidence.mjs for why it cannot
+  // read the agent's session instead. Never fatal: evidence enriches the run,
+  // and a collector problem must not discard a valid discovery artifact.
+  if (stage.key === 'discovery' && passed && target) {
+    try {
+      const { collectBrowserEvidence } = await import('./lib/evidence.mjs');
+      const evidence = await collectBrowserEvidence({
+        mcpUrl: mcpUrl(),
+        target,
+        origin: new URL(target).origin,
+        locations: evidenceLocations(),
+        runId: stamp,
+      });
+      if (evidence) {
+        const { evidenceSummary } = await import(resolve(ROOT, 'src/lib/browser-evidence.ts'));
+        record.evidence = { ...evidence.totals, locations: evidence.locations.length, overflow: evidence.overflow };
+        console.log(`Browser evidence: ${evidenceSummary(evidence)}`);
+      }
+    } catch (error) {
+      record.evidence = { error: error.message };
+      console.log(`Browser evidence: not collected (${error.message})`);
+    }
+  }
+
   if (stage.browser) {
     // Later stages need no browser; release it now if we started it.
     record.mcpStoppedCleanly = await stopMcpAndWait();
@@ -300,6 +341,10 @@ const requirements = qa.readQaArtifact('requirements-analysis');
 const suite = qa.readQaArtifact('test-cases');
 const coverage = requirements && suite ? coverageSummary(requirements, suite) : undefined;
 if (coverage) record.coverage = coverage;
+// Analysis coverage: how discovery's behaviors fared on their way into
+// requirements. Host-derived from the two artifacts, like every other total.
+const analysis = requirements ? analysisCoverageSummary(discovery, requirements) : undefined;
+if (analysis) record.analysisCoverage = analysis;
 record.result = 'COMPLETE';
 record.finishedAt = new Date().toISOString();
 saveRecord();
@@ -315,14 +360,39 @@ if (record.discoveryCoverage) {
     ` -> ${d.behaviors} behavior(s) across ${d.areas} area(s)` +
     `${record.observations ? `, from ${record.observations.recorded} recorded observation(s)` : ''}`);
 }
+if (analysis) {
+  const types = Object.entries(analysis.validationTypes).sort((a, b) => b[1] - a[1]);
+  console.log(`Analysis        : ${analysis.analyzed}/${analysis.behaviors} behavior(s) analyzed` +
+    `${analysis.excluded > 0 ? `, ${analysis.excluded} excluded with a reason` : ''}` +
+    ` -> ${analysis.acceptancePoints} acceptance point(s), ${analysis.businessRules} business rule(s), ` +
+    `${analysis.openQuestions} open question(s)`);
+  if (types.length > 0) {
+    console.log(`Validation types: ${types.map(([k, n]) => `${n} ${k}`).join(', ')}`);
+  }
+  if (analysis.unaccounted > 0) {
+    console.log(`WARNING         : unanalyzed behavior(s): ${analysis.unaccountedIds.join(', ')}`);
+  }
+}
 console.log(`Test cases      : ${counts.total}  (${counts.manual} MANUAL, ${counts.automation} AUTOMATION)`);
 if (coverage) {
   const pct = coverage.testable === 0 ? 100 : Math.round((coverage.covered / coverage.testable) * 100);
   console.log(`Coverage        : ${coverage.covered}/${coverage.testable} testable requirements (${pct}%)` +
     `${coverage.exempt > 0 ? `, ${coverage.exempt} marked not testable` : ''}`);
+  const scenarios = Object.entries(coverage.scenarioTypes).sort((a, b) => b[1] - a[1]);
+  if (scenarios.length > 0) {
+    console.log(`Scenario types  : ${scenarios.map(([k, n]) => `${n} ${k}`).join(', ')}`);
+  }
   if (coverage.uncovered > 0) console.log(`WARNING         : uncovered: ${coverage.uncoveredIds.join(', ')}`);
+  // Coverage can be 100% while the suite classifies itself into two kinds.
+  // A diagnostic, not a gate — see scenarioDiversityDiagnostic().
+  const diversity = scenarioDiversityDiagnostic(coverage);
+  if (diversity) console.log(`NOTE            : ${diversity}`);
 }
 console.log(`Automation      : ${counts.automationHigh} HIGH, ${counts.automationMedium} MEDIUM, ${counts.automationLow} LOW`);
+const strategies = Object.entries(prioritization ? strategySummary(prioritization) : {}).sort((a, b) => b[1] - a[1]);
+if (strategies.length > 0) {
+  console.log(`Strategy        : ${strategies.map(([k, n]) => `${n} ${k}`).join(', ')}`);
+}
 if (leaked.length > 0) console.log(`WARNING         : Phase 2 artifacts appeared during this run: ${leaked.join(', ')}`);
 console.log('\nNext:');
 console.log(`  jq . ${qa.qaArtifactPath('test-cases')}`);

@@ -75,11 +75,50 @@ as a substitute for product evidence.
 - Do not silently convert observed behavior into expected behavior.
 - Do not infer unstated business rules.
 
+## Account for every discovered behavior
+Discovery hands you a numbered list of behaviors. Each one must end up in exactly one of two
+places, and the host checks this:
+
+- **Analysed** — cited in the \`evidenceIds\` of an acceptance point or business rule.
+- **Excluded** — listed in \`excludedBehaviors\` as \`{ "id": "BEH-n", "reason": "..." }\`.
+
+A behavior you simply do not mention is a rejected write. There is no target number of
+acceptance points: how many you produce follows from the behaviors you were given.
+
+Exclusion is not a way to reduce work — it is how you say something honestly cannot become a
+requirement. Legitimate reasons include: the behavior is a suspected issue, so it becomes an
+open question instead; it is INFERRED rather than observed; it restates another behavior you
+already covered; it is environmental rather than product behavior.
+
+Do NOT collapse materially different behaviors into one vague requirement to make the list
+shorter. A success path and its error path are two acceptance points. If you find yourself
+writing "the form works correctly", split it back into the outcomes discovery actually saw.
+
+## Validation type
+Each acceptance point and business rule may carry \`validationType\`, one of:
+
+- \`UI\` — verified through what the interface renders and does
+- \`API\` — verified through a request and its response
+- \`VISUAL\` — requires comparing appearance, not just the DOM
+- \`CONTRACT\` — a schema or interface agreement between parts
+- \`MANUAL\` — needs a human judgement
+- \`UNKNOWN\` — you considered it and the evidence does not settle it
+
+Only state one the evidence supports. If discovery never observed a network request, you do
+not know that a rule is API-verifiable — leave the field out, or use \`UNKNOWN\`. Omitting it
+is always acceptable; guessing is not. You may add \`validationTypeReason\` to say what in the
+evidence decided it.
+
+An item marked \`testable: false\` may not also claim \`UI\`, \`API\`, \`VISUAL\` or
+\`CONTRACT\` — if it can be verified that way, it is testable.
+
 ## Output
 Write your analysis with the \`write_qa_artifact\` tool, name "requirements-analysis".
 Required top-level keys: feature, acceptancePoints, businessRules, openQuestions, risks.
+Include \`excludedBehaviors\` whenever any discovered behavior does not become a requirement.
 Each acceptance point and business rule may optionally carry \`testable\` (boolean, default
-true) and \`notTestableReason\` (string). Omitting them means the item owes a test case.
+true), \`notTestableReason\` (string), \`validationType\` and \`validationTypeReason\`.
+Omitting \`testable\` means the item owes a test case.
 
 The tool checks the schema AND checks your work against the discovered-behavior artifact:
 every evidence ID must exist there and actually relate to your statement, and no product fact

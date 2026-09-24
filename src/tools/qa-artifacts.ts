@@ -2,6 +2,7 @@ import { defineTool } from '@flue/runtime';
 import * as v from 'valibot';
 import { readQaArtifact, writeQaArtifact, type QaArtifactName } from '../lib/qa-artifacts.ts';
 
+/** Artifacts an agent may WRITE. `discovery-evidence` is deliberately absent. */
 const ARTIFACT_NAMES = [
   'discovered-behavior',
   'requirements-analysis',
@@ -13,8 +14,25 @@ const ARTIFACT_NAMES = [
   'automation-plan',
 ] as const satisfies readonly QaArtifactName[];
 
-// Note: `phase1-approval.json` is deliberately absent. Approval is written only
-// by trusted host code (`npm run qa:approve`); no agent can read or write it.
+/**
+ * Artifacts an agent may READ: everything writable, plus the host-collected
+ * browser evidence.
+ *
+ * `discovery-evidence` is readable but not writable, and that asymmetry is the
+ * point. The host reads console and network facts out of the browser itself;
+ * a model may interpret them, and may not author, amend or contradict them.
+ * Leaving it out of the write picklist is what enforces that — the tool's
+ * input schema rejects the name before `run` executes, so it does not depend
+ * on any instruction the model could ignore.
+ */
+const READABLE_ARTIFACT_NAMES = [
+  ...ARTIFACT_NAMES,
+  'discovery-evidence',
+] as const satisfies readonly QaArtifactName[];
+
+// Note: `phase1-approval.json` is deliberately absent from both lists. Approval
+// is written only by trusted host code (`npm run qa:approve`); no agent can
+// read or write it.
 
 export const readQaArtifactTool = defineTool({
   name: 'read_qa_artifact',
@@ -22,7 +40,7 @@ export const readQaArtifactTool = defineTool({
     'Read one QA hand-off artifact by its logical name (not a filesystem path). Returns the ' +
     'parsed JSON, or { exists: false } if that artifact has not been written yet.',
   input: v.object({
-    name: v.picklist(ARTIFACT_NAMES, 'name must be one of: ' + ARTIFACT_NAMES.join(', ')),
+    name: v.picklist(READABLE_ARTIFACT_NAMES, 'name must be one of: ' + READABLE_ARTIFACT_NAMES.join(', ')),
   }),
   async run({ data }) {
     const artifact = readQaArtifact(data.name as QaArtifactName);

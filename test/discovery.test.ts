@@ -269,6 +269,13 @@ describe('the downstream contract still holds', () => {
       businessRules: [],
       openQuestions: [],
       risks: [],
+      // Completeness is its own rule (see analysis.test.ts). This test is about
+      // locations not interfering, so the remaining behaviors are accounted for
+      // rather than left to trip a different check.
+      excludedBehaviors: discovery.behaviors.slice(1).map((b) => ({
+        id: b.id,
+        reason: 'Outside this fixture, which exercises location handling only.',
+      })),
     };
     assert.deepEqual(validateRequirementsAnalysis(discovery, requirements), []);
   });

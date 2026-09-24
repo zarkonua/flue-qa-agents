@@ -18,5 +18,11 @@
   ],
   "businessRules": [],
   "openQuestions": [],
-  "risks": []
+  "risks": [],
+  "excludedBehaviors": [
+    {
+      "id": "BEH-3",
+      "reason": "Notes editing is outside this analysis, whose feature is Authentication."
+    }
+  ]
 }

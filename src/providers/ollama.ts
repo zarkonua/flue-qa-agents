@@ -3,6 +3,7 @@ import { setProvider } from '@flue/runtime';
 import { createProvider } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import { envBool, envInt, envString } from '../config/env.ts';
+import { describeRequest, isParserFailure, recordHarmonyFailure } from '../lib/harmony-diagnostic.ts';
 
 // Local Ollama server, exposed through its OpenAI-compatible endpoint.
 // Keyless, zero-cost, and fully local — no cloud provider is contacted.
@@ -208,11 +209,58 @@ function reasoningTrimmingApi() {
     return { ...(options ?? {}), onPayload } as T;
   };
 
+  // The payload we last handed to the server, so a failure can be described
+  // without the caller having to thread it through. Structural only — see
+  // `harmony-diagnostic.ts` for why nothing here is a payload dump.
+  let lastRequest: Record<string, unknown> | undefined;
+
+  const withCapture = <T extends { onPayload?: unknown }>(options: T | undefined) => {
+    const hooked = withHook(options) as T & { onPayload: (p: unknown, m: unknown) => unknown };
+    const inner = hooked.onPayload;
+    return {
+      ...hooked,
+      onPayload: async (payload: unknown, model: unknown) => {
+        const result = await inner(payload, model);
+        // Describe what actually goes on the wire: the transformed payload when
+        // a hook changed it, the original when none did.
+        lastRequest = describeRequest(result === undefined ? payload : result);
+        return result;
+      },
+    } as T;
+  };
+
+  /**
+   * Record a provider parse failure and rethrow it unchanged.
+   *
+   * The run stays failed on purpose. Turning malformed output into a tool call
+   * — by regex or otherwise — would hide the interaction we are trying to
+   * understand, and would put invented content into an evidence-graded
+   * artifact.
+   */
+  const capturing = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isParserFailure(message)) {
+        const status = Number(/\b(\d{3})\b/.exec(message)?.[1]);
+        const where = recordHarmonyFailure({
+          error: { status: Number.isFinite(status) ? status : undefined, message },
+          request: lastRequest ?? { note: 'no payload was captured before the failure' },
+          replayReasoning: REPLAY_REASONING,
+        });
+        if (where) console.error(`[ollama] provider parse failure recorded: ${where}`);
+      }
+      throw error;
+    }
+  };
+
   return {
     ...base,
-    stream: (model: never, context: never, options?: never) => base.stream(model, context, withHook(options)),
+    stream: (model: never, context: never, options?: never) =>
+      capturing(() => base.stream(model, context, withCapture(options))),
     streamSimple: (model: never, context: never, options?: never) =>
-      base.streamSimple(model, context, withHook(options)),
+      capturing(() => base.streamSimple(model, context, withCapture(options))),
   } as ReturnType<typeof openAICompletionsApi>;
 }
 

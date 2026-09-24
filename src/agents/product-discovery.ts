@@ -5,6 +5,10 @@ import { useModel, useTool } from '@flue/runtime';
 import { writeQaArtifactToolFor } from '../tools/qa-artifacts.ts';
 import { recordObservationTool } from '../tools/observations.ts';
 import { browserTools, DISCOVERY_BROWSER_TOOLS, playwrightMcpUrl } from '../connections/playwright-mcp.ts';
+import { auxiliaryOriginsNote } from '../config/auxiliary-origins.ts';
+// Side effect: folds every browser result into the surface this agent must
+// account for, so signing in enlarges the job rather than completing it.
+import '../lib/surface-instrumentation.ts';
 import { targetUrl } from '../lib/target.ts';
 
 /** Can write only its own artifact — enforced by the tool, not the prompt. */
@@ -35,10 +39,13 @@ Your FIRST tool call must be \`browser_navigate\` to the target URL below. Never
 \`browser_snapshot\` before navigating: the browser is shared and may still be showing a
 page from an unrelated earlier run, and describing that page would be a false report.
 
-After every snapshot, check the "Page URL" it reports. If it is not on the target you were
-given, you are looking at the wrong application — navigate to the target again. If you still
-cannot reach it, reply BLOCKED and name the URL that failed. Never describe a page whose URL
-you did not verify.
+After every snapshot, check the "Page URL" it reports. It must be on the same **origin** as
+the target you were given — the same scheme, host and port. A different *path* on that origin
+is not a problem, it is progress: signing in, opening a section, or submitting a form all move
+you to one, and those pages are exactly what you are here to explore. Only a URL on a
+*different* origin means you are looking at the wrong application — navigate back to the
+target. If you cannot reach the target at all, reply BLOCKED and name the URL that failed.
+Never describe a page whose URL you did not verify.
 
 Record routes as the full URL you actually landed on, not a bare path.
 
@@ -57,17 +64,48 @@ guessing about.
 You are given a list of locations the browser already found on the entry page. Every one of
 them must reach a terminal state before you write:
 
-- **VISITED** — you navigated there and snapshotted it.
-- **UNREACHABLE** — you tried and could not get there. Say what stopped you (a login wall,
+- **EXPLORED** — you navigated there and snapshotted it.
+- **BLOCKED** — you tried and could not get there. Say what stopped you (a login wall,
   an error page, a redirect somewhere else).
-- **SKIPPED** — you deliberately did not follow it. Say why.
+- **SKIPPED_WITH_REASON** — you deliberately did not follow it. Say why.
 
 The host checks this. A location you simply never mention is a rejected write. There is no
 target number of behaviors: the amount of discovery follows from the surface you were given,
 not from your judgement that you have seen enough.
 
-If, while exploring, you land on a same-origin location that was not on the list, that is a
-real find — visit it too and report it with the others.
+**The list is not fixed — it grows as you explore.** When you reach a page that was not on it,
+that page and the links it renders are added to the list you must account for. Signing in is
+the usual way this happens: the landing page may expose almost nothing, and the product proper
+appears only once you are through it. So a short starting list is not a small job. It means
+the surface is behind a control you have not used yet, and the run is not finished while
+anything on the list is still unaccounted for.
+
+## Authentication is a transition, not the end
+Finding a Sign In or Sign Up form is the beginning of the interesting part, never the end of
+the run. Most of a product lives behind it, and a run that stops at the login screen has seen
+the doormat and reported on the house.
+
+When the product offers registration or sign-in:
+
+1. Explore the unauthenticated state first — what the forms validate, what they reject, what
+   they say. That is real product behavior and it is yours to record.
+2. Decide whether you can complete the transition safely. Use test data you invented; never
+   use a real person's details.
+3. If the flow needs something from trusted auxiliary infrastructure — a confirmation link or
+   code sent by mail — and such an origin is listed for you below, go there, take only what
+   the flow needs, and come straight back to the product.
+4. Complete the sign-up or sign-in.
+5. Snapshot the page you land on. The route may not even change; the product will have.
+6. Keep going. The authenticated product is a new surface, and the major things it lets a
+   user do are exactly what this run exists to find.
+
+If you cannot complete the transition, do not pretend the run is finished. Record the location
+you were stopped at with:
+
+    { "status": "BLOCKED", "reason": "POST_AUTH_DISCOVERY_BLOCKED" }
+
+and say plainly in the reason what stopped you — no credentials, no mailbox configured, a
+confirmation you could not reach. A stated blocker is a good outcome; a silent stop is not.
 
 ## What to look for inside each location
 For each location you visit, look for state you can actually produce and observe. Only
@@ -122,7 +160,7 @@ a finding you already knew.
 ## Stay observational — do not break anything
 You are looking, not testing. Do not click a control that would log you out, delete, cancel,
 pay, send, or otherwise make a change you cannot undo — record that it exists instead. Do not
-leave the application's own origin; an external link is SKIPPED, not followed. If a location
+leave the application's own origin; an external link is SKIPPED_WITH_REASON, not followed. If a location
 cannot be explored safely, say so in its reason rather than pretending you inspected it.
 
 Typing into a form and submitting it is fine when the form is clearly a normal product
@@ -224,8 +262,8 @@ Required shape (this is the tool argument, never reply text):
 {
   "product": "<name as shown on the page>",
   "excludedObservations": [{ "id": "OBS-n", "reason": "<why it is not a behavior>" }],
-  "locations": [{ "url": "<exact url>", "status": "VISITED",
-                  "reason": "<required for UNREACHABLE and SKIPPED>", "area": "<area name>" }],
+  "locations": [{ "url": "<exact url>", "status": "EXPLORED",
+                  "reason": "<required for BLOCKED and SKIPPED_WITH_REASON>", "area": "<area name>" }],
   "areas": [{ "name": "...", "routes": ["..."], "notes": ["..."] }],
   "behaviors": [{ "id": "BEH-1", "area": "<area name>", "statement": "...",
                   "observations": ["OBS-1"],
@@ -255,6 +293,7 @@ that TARGET_URL must be exported. Do not write an artifact.`;
 // `useTool()` in either a root or a delegate render. See browserTools().
 const DISCOVERY_TOOLS = await browserTools(DISCOVERY_BROWSER_TOOLS);
 
+
 export function productDiscoveryCore() {
   const browserAvailable = playwrightMcpUrl() !== undefined;
   for (const tool of DISCOVERY_TOOLS) useTool(tool);
@@ -267,7 +306,7 @@ export function productDiscoveryCore() {
   const target = targetUrl();
   if (!browserAvailable) return INSTRUCTIONS + NO_BROWSER_NOTE;
   if (target === undefined) return INSTRUCTIONS + NO_TARGET_NOTE;
-  return `${INSTRUCTIONS}\n\n## Target application\nExplore: ${target}`;
+  return `${INSTRUCTIONS}\n\n## Target application\nExplore: ${target}${auxiliaryOriginsNote(target)}`;
 }
 
 export function ProductDiscovery() {

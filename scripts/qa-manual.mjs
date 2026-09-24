@@ -26,11 +26,14 @@ import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node
 import { join, resolve } from 'node:path';
 import { EXIT, ROOT, ensureMcp, mcpUrl, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
+import { acquireRunLock } from './lib/run-lock.mjs';
+import { preserveRun } from './lib/run-record.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { summarize, coverageSummary, analysisCoverageSummary, strategySummary, scenarioDiversityDiagnostic } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
 const { APPROVAL_PATH } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
 const surfaceLib = await import(resolve(ROOT, 'src/lib/discovery-surface.ts'));
+const auxLib = await import(resolve(ROOT, 'src/config/auxiliary-origins.ts'));
 const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
 
 // ---------------------------------------------------------------------------
@@ -48,7 +51,9 @@ const STAGES = [
     // Replaced at run time with the surface briefing, when there is one.
     withSurface: (brief, count) =>
       `Begin.\n\nThe browser found these same-origin locations on the entry page:\n\n${brief}\n\n` +
-      `Account for every one before you write — visit it, or record it UNREACHABLE/SKIPPED with a reason.` +
+      `Account for every one before you write — visit it, or record it BLOCKED/SKIPPED_WITH_REASON with a reason. ` +
+      `The list grows as you go: a page you reach that is not on it, and the links that page renders, are ` +
+      `added to it.` +
       (count <= 1
         ? ` This list is short because the entry page exposes few links; most of this application's ` +
           `surface is reached by USING it — signing in, submitting forms, opening panels. Accounting for ` +
@@ -152,6 +157,21 @@ const runStarted = new Date();
 const stamp = runStarted.toISOString().replace(/[:.]/g, '-');
 const archiveDir = join(qa.QA_ARTIFACT_ROOT, 'archive', stamp);
 
+// One run at a time. Two concurrent runs share Flue's conversation store, this
+// artifact root and one browser: they corrupt each other instead of queueing,
+// and the surviving artifacts belong to neither. Taken before the archive step,
+// so a refused run never moves the previous run's output aside.
+const envForLock = await import(resolve(ROOT, 'src/config/env.ts'));
+const lock = acquireRunLock(qa.QA_ARTIFACT_ROOT, {
+  runId: stamp,
+  model: envForLock.QA_MODEL,
+  command: 'qa:manual',
+});
+if (!lock.ok) {
+  console.error(`\n${lock.message}\n`);
+  process.exit(EXIT.BAD_CONFIG);
+}
+
 function archive(path) {
   if (!existsSync(path)) return;
   mkdirSync(archiveDir, { recursive: true });
@@ -182,14 +202,26 @@ if (existsSync(archiveDir)) console.log(`Archived        : previous artifacts mo
 function evidenceLocations() {
   const discovered = qa.readQaArtifact('discovered-behavior');
   const visited = (discovered?.locations ?? [])
-    .filter((l) => l?.status === 'VISITED' && typeof l.url === 'string')
+    .filter((l) => l?.status === 'EXPLORED' && typeof l.url === 'string')
     .map((l) => l.url);
   if (visited.length > 0) return [...new Set(visited)];
   const surface = surfaceLib.readSurface();
-  return surface ? surface.locations.filter((l) => l.status !== 'SKIPPED').map((l) => l.url) : [];
+  return surface ? surface.locations.filter((l) => l.status !== 'SKIPPED_WITH_REASON').map((l) => l.url) : [];
 }
 
-const record = { phase: 1, target: target ?? null, startedAt: runStarted.toISOString(), from, attempts, stages: [] };
+// Which model produced this run. Without it every artifact on disk is
+// unattributable, and a local-vs-hosted comparison is guesswork — the archive
+// this project already holds cannot say which model wrote any of it.
+const env = envForLock;
+const record = {
+  phase: 1,
+  target: target ?? null,
+  model: env.QA_MODEL,
+  startedAt: runStarted.toISOString(),
+  from,
+  attempts,
+  stages: [],
+};
 const recordPath = join(qa.QA_ARTIFACT_ROOT, 'phase1-run.json');
 const saveRecord = () => {
   mkdirSync(qa.QA_ARTIFACT_ROOT, { recursive: true });
@@ -198,7 +230,11 @@ const saveRecord = () => {
 
 let browserStarted = false;
 if (plan.some((s) => s.browser)) {
-  await ensureMcp();
+  // `--fresh-browser` (or QA_FRESH_BROWSER=true) restarts the MCP server so this
+  // run owns its browser. Required for an A/B trial: otherwise the second model
+  // inherits the first one's cookies and sign-in.
+  const freshBrowser = process.argv.includes('--fresh-browser') || process.env.QA_FRESH_BROWSER === 'true';
+  await ensureMcp({ fresh: freshBrowser });
   browserStarted = true;
   // The preflight snapshot is what establishes the product surface: the
   // same-origin links the browser actually rendered. Written fresh for this
@@ -213,7 +249,7 @@ if (plan.some((s) => s.browser)) {
       surfaceLib.writeSurface(surface);
       record.surface = {
         discovered: surface.locations.length,
-        preSkipped: surface.locations.filter((l) => l.status === 'SKIPPED').length,
+        preSkipped: surface.locations.filter((l) => l.status === 'SKIPPED_WITH_REASON').length,
         overflow: surface.overflow,
         externalOrigins: surface.externalOrigins,
       };
@@ -329,9 +365,9 @@ if (discovery?.locations) {
   const by = (st) => discovery.locations.filter((l) => l.status === st).length;
   record.discoveryCoverage = {
     reported: discovery.locations.length,
-    visited: by('VISITED'),
-    unreachable: by('UNREACHABLE'),
-    skipped: by('SKIPPED'),
+    visited: by('EXPLORED'),
+    unreachable: by('BLOCKED'),
+    skipped: by('SKIPPED_WITH_REASON'),
     behaviors: discovery.behaviors?.length ?? 0,
     areas: discovery.areas?.length ?? 0,
   };
@@ -394,6 +430,25 @@ if (strategies.length > 0) {
   console.log(`Strategy        : ${strategies.map(([k, n]) => `${n} ${k}`).join(', ')}`);
 }
 if (leaked.length > 0) console.log(`WARNING         : Phase 2 artifacts appeared during this run: ${leaked.join(', ')}`);
+// Preserve this run under its own id, with the metadata that makes the numbers
+// attributable to a model rather than to "the last run".
+const preserved = preserveRun({
+  artifactRoot: qa.QA_ARTIFACT_ROOT,
+  projectRoot: ROOT,
+  runId: stamp,
+  model: env.QA_MODEL,
+  target,
+  startedAt: runStarted,
+  files: [
+    'discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json',
+    'automation-prioritization.json', 'discovery-surface.json', 'discovery-observations.json',
+    'discovery-evidence.json', 'phase1-run.json',
+  ],
+  outcome: 'completed',
+  extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins() },
+});
+console.log(`Run preserved   : ${preserved.dir}`);
+
 console.log('\nNext:');
 console.log(`  jq . ${qa.qaArtifactPath('test-cases')}`);
 console.log(`  jq . ${qa.qaArtifactPath('automation-prioritization')}`);

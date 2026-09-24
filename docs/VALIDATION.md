@@ -40,23 +40,33 @@ Behavior Analyst and Test Designer can only work with what was observed.
 Host code now establishes the surface before the agent runs. The preflight snapshot of the
 entry page is parsed for the `/url:` entries Playwright emits for links; same-origin links are
 normalised, deduplicated and capped, and obviously session-ending or destructive ones are
-pre-marked `SKIPPED`. The result is written to `discovery-surface.json` for the current run.
+pre-marked `SKIPPED_WITH_REASON`. The result is written to `discovery-surface.json` for the current run.
 
 Every location on that surface must reach a terminal state in the artifact:
 
 | Status | Means |
 |---|---|
-| `VISITED` | navigated there and snapshotted it |
-| `UNREACHABLE` | tried and could not — a reason is required |
-| `SKIPPED` | deliberately not followed — a reason is required |
+| `EXPLORED` | navigated there and snapshotted it |
+| `BLOCKED` | tried and could not — a reason is required |
+| `SKIPPED_WITH_REASON` | deliberately not followed — a reason is required |
 
 A location the artifact never mentions is a rejected write. There is **no** minimum number of
 behaviors: how much discovery is enough follows from the surface, not from the model's
 judgement.
 
-A same-origin location the agent reaches that was *not* on the host's list is accepted and
-recorded — most applications only reveal their real surface after signing in. Only an
-off-origin or malformed URL is rejected.
+The surface is **not fixed for the run**. Every browser result the agent gets is read by host
+code on the way back: the page the session landed on, and the same-origin links that page
+renders, join the list that must be accounted for (same origin rule, same `MAX_LOCATIONS` cap,
+same pre-skipping of destructive links). This is what carries the rule past a sign-in — an
+application whose landing page is a login form offers one location, and without this,
+accounting for that one location satisfies every host-enforced rule while the product itself
+goes unseen.
+
+A location the artifact *itself* names — in an area's routes, in a behavior, or in an
+observation — must also reach a terminal state. A run that recorded "navigated to
+/account/notes" while listing only the entry page is rejected (`UNACCOUNTED_LOCATION`).
+
+Only an off-origin or malformed URL is rejected outright.
 
 ## Browser evidence the model does not supply
 
@@ -65,7 +75,7 @@ never completed. Asking the model to notice those makes evidence a matter of att
 model asked "were there console errors?" can answer "no" without having looked.
 
 So the host collects them. After Discovery passes, while the browser is still up, host code
-opens its **own** session and replays the locations the artifact reports as `VISITED`,
+opens its **own** session and replays the locations the artifact reports as `EXPLORED`,
 recording console and network facts per page load into `discovery-evidence.json`.
 
 It cannot read the agent's session: @playwright/mcp isolates sessions, so a second connection
@@ -167,6 +177,7 @@ case's own wording is not evidence that an API exists.
 | `UNKNOWN_COVERAGE_ID` | A `covers` entry that is not a real acceptance point or business rule. |
 | `UNCOVERED_ACCEPTANCE_POINT` | A testable requirement that no test case covers. The error names the ID. |
 | `UNEXPLORED_LOCATION` | A location on the host-established surface with no terminal state in the artifact. |
+| `UNACCOUNTED_LOCATION` | A page the artifact itself refers to — a route, a behavior, an observation — with no terminal state in `locations`. |
 | `UNKNOWN_LOCATION` | A reported location outside the application's origin, or not a URL. |
 | `UNKNOWN_OBSERVATION` | A behavior citing an observation ID the ledger does not contain. |
 | `UNACCOUNTED_OBSERVATION` | A recorded observation that reaches no behavior and is not excluded with a reason. |
@@ -216,10 +227,11 @@ useful**. Known gaps, all of which pass today:
 - **A closed feature vocabulary.** An invented feature outside the fixed list passes.
 - **Prose is never fact-checked** — `purpose`, `rule`, `risks`, `unknowns`, and prioritization
   reasons are judgements, and checking them would reject reasonable wording.
-- **Discovery depth beyond the entry page.** The surface is built from links on the entry
-  page. An application whose navigation happens after sign-in, or through buttons rather than
-  links, contributes only its entry page — the completeness rule then adds no pressure, and
-  depth still rests on the agent's exploration.
+- **Discovery depth behind a control the agent never uses.** The surface now grows from every
+  page the browser actually reaches, so signing in enlarges the job rather than completing it.
+  What it cannot do is force the first step: a state reachable only by pressing a button the
+  agent never presses is never rendered, never seen by the host, and so never joins the list.
+  The completeness rule compounds exploration; it does not start it.
 - **Depth.** Coverage is checked against the requirements that were *written down*. If the
   Behavior Analyst never derived a requirement, nothing demands a test for it — a thin
   discovery still yields a thin suite, honestly labelled as fully covered.

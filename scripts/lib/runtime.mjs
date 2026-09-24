@@ -119,12 +119,63 @@ function verifyConfined(port) {
   return { ok: true, pid, cwd };
 }
 
+/**
+ * Stop whatever is listening on `port`, and wait for it to actually go.
+ *
+ * Two escalations, because the server we need to stop is often not one we
+ * started: a manually launched `npm run mcp:playwright` is not a process-group
+ * leader, so a group signal alone reaches nothing. Try the group, then the
+ * process, then the same pair with SIGKILL.
+ */
+async function stopListener(port, url) {
+  const gone = async () => !(await mcpReachable(url));
+  for (const signal of ['SIGTERM', 'SIGKILL']) {
+    const pid = listenerPid(port);
+    if (!pid) return true;
+    for (const target of [-pid, pid]) {
+      try {
+        process.kill(target, signal);
+      } catch {
+        // Already gone, or not ours to signal in that form.
+      }
+    }
+    const deadline = Date.now() + (signal === 'SIGTERM' ? 15_000 : 10_000);
+    while (Date.now() < deadline) {
+      if (await gone()) return true;
+      await new Promise((done) => setTimeout(done, 250));
+    }
+  }
+  return gone();
+}
+
 let startedMcp;
 
-/** Make sure a confined MCP server is listening. Returns whether we started it. */
-export async function ensureMcp() {
+/**
+ * Make sure a confined MCP server is listening. Returns whether we started it.
+ *
+ * `fresh` demands a browser this run owns from the first navigation. A reused
+ * server keeps its cookies, local storage, open pages and sign-in — so a second
+ * model would start already authenticated, "discover" a product state it never
+ * reached, and its numbers would not be comparable with the first model's. For
+ * an ordinary run that reuse is a convenience; for an A/B trial it is the
+ * difference between a measurement and an artefact.
+ */
+export async function ensureMcp({ fresh = false } = {}) {
   const url = mcpUrl();
   const port = new URL(url).port || '8931';
+
+  if (fresh && (await mcpReachable(url))) {
+    const check = verifyConfined(port);
+    if (!check.ok) {
+      console.error(`\nRefusing to stop the running Playwright MCP server: ${check.reason}\n`);
+      process.exit(EXIT.BAD_CONFIG);
+    }
+    console.log(`Playwright MCP  : restarting for a clean browser (no inherited session)`);
+    if (!(await stopListener(port, url))) {
+      console.error(`\nCould not stop the Playwright MCP server on port ${port}; stop it and retry.\n`);
+      process.exit(EXIT.FAILED);
+    }
+  }
 
   if (await mcpReachable(url)) {
     const check = verifyConfined(port);

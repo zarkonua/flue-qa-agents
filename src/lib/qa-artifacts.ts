@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { validateAgainstSchema, type JsonSchemaNode } from './schema-validate.ts';
 import { collectRepoEvidence } from './repo-evidence.ts';
 import { expectedLocations, readSurface } from './discovery-surface.ts';
+import { redactDeep } from './redaction.ts';
 import { readLedger } from './observation-ledger.ts';
 import {
   formatSemanticErrors,
@@ -215,7 +216,11 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
       };
       return validateDiscoveredBehavior(
         data as DiscoveredBehavior,
-        surface && { expected: expectedLocations(surface), origin: surface.origin },
+        surface && {
+          expected: expectedLocations(surface),
+          origin: surface.origin,
+          auxiliaryOrigins: surface.auxiliaryOrigins ?? [],
+        },
         observed,
       );
     }
@@ -307,9 +312,17 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
   }
 }
 
-export function writeQaArtifact(name: QaArtifactName, data: unknown): void {
+export function writeQaArtifact(name: QaArtifactName, rawData: unknown): void {
   const def = ARTIFACTS[name];
   if (!def) throw new Error(`Unknown QA artifact name: ${name}`);
+
+  // Redact before anything else looks at it, so the validated object and the
+  // bytes on disk are the same object. A run that confirms an account carries
+  // a one-time code through the browser; it has no business reaching a route,
+  // a behavior statement, a quoted observation or a test case. Deterministic
+  // and host-side: the model is never asked to redact its own output.
+  const data = redactDeep(rawData);
+
   const schema = loadSchema(def.schemaFile);
   const errors = validateAgainstSchema(data, schema);
   if (errors.length > 0) {

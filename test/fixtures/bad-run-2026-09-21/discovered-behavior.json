@@ -3,7 +3,7 @@
   "locations": [
     {
       "url": "http://localhost:4444/",
-      "status": "VISITED"
+      "status": "EXPLORED"
     }
   ],
   "areas": [

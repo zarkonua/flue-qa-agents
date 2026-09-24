@@ -14,7 +14,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  absorbBrowserResult,
   buildSurface,
+  currentPageUrl,
   expandSurface,
   expectedLocations,
   extractLinks,
@@ -22,7 +24,12 @@ import {
   MAX_LOCATIONS,
   normaliseUrl,
 } from '../src/lib/discovery-surface.ts';
-import { validateDiscoveredBehavior, type DiscoveredBehavior, type SurfaceFacts } from '../src/lib/semantic-validate.ts';
+import {
+  productUrls,
+  validateDiscoveredBehavior,
+  type DiscoveredBehavior,
+  type SurfaceFacts,
+} from '../src/lib/semantic-validate.ts';
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TARGET = 'http://localhost:4444/';
@@ -53,7 +60,7 @@ describe('the shallow completion contract is gone', () => {
   });
 
   it('states the terminal states the host enforces', () => {
-    for (const word of ['VISITED', 'UNREACHABLE', 'SKIPPED']) assert.ok(prompt.includes(word));
+    for (const word of ['EXPLORED', 'BLOCKED', 'SKIPPED_WITH_REASON']) assert.ok(prompt.includes(word));
   });
 });
 
@@ -83,17 +90,33 @@ describe('building the surface from what the browser rendered', () => {
     assert.deepEqual(expectedLocations(s), ['http://localhost:4444/', 'http://localhost:4444/notes']);
   });
 
-  it('keeps a query string, which usually selects a different view', () => {
+  it('folds a query string into the route it belongs to', () => {
+    // Query *values* are not identity. A confirmation link differs every run,
+    // and keying on it made one flow mint a new location each time — consuming
+    // the budget and demanding terminal states for pages that never existed.
     const s = buildSurface(TARGET, snapshot('/notes?tab=archive', '/notes'));
-    assert.equal(expectedLocations(s).length, 3);
+    assert.deepEqual(expectedLocations(s), ['http://localhost:4444/', 'http://localhost:4444/notes']);
   });
 
-  it('marks session-ending and destructive links SKIPPED rather than following them', () => {
+  it('records the parameter names a route takes, never their values', () => {
+    const s = buildSurface(TARGET, snapshot('/confirm?confirm_code=424242&email=a@b.c'));
+    const confirm = s.locations.find((l) => l.url.endsWith('/confirm'))!;
+    assert.deepEqual(confirm.queryParameters, ['confirm_code', 'email']);
+    assert.equal(confirm.containsSensitiveTransientData, true);
+    assert.ok(!JSON.stringify(s).includes('424242'), 'the code must not reach the surface');
+  });
+
+  it('gives every location a kind', () => {
+    const s = buildSurface(TARGET, snapshot('/notes'));
+    assert.deepEqual([...new Set(s.locations.map((l) => l.kind))], ['PRODUCT']);
+  });
+
+  it('marks session-ending and destructive links SKIPPED_WITH_REASON rather than following them', () => {
     const s = buildSurface(TARGET, snapshot('/logout', '/notes/1/delete', '/notes'));
     const byUrl = Object.fromEntries(s.locations.map((l) => [l.url, l]));
-    assert.equal(byUrl['http://localhost:4444/logout'].status, 'SKIPPED');
+    assert.equal(byUrl['http://localhost:4444/logout'].status, 'SKIPPED_WITH_REASON');
     assert.ok(byUrl['http://localhost:4444/logout'].reason);
-    assert.equal(byUrl['http://localhost:4444/notes/1/delete'].status, 'SKIPPED');
+    assert.equal(byUrl['http://localhost:4444/notes/1/delete'].status, 'SKIPPED_WITH_REASON');
     assert.equal(byUrl['http://localhost:4444/notes'].status, 'PENDING');
   });
 
@@ -112,7 +135,7 @@ describe('building the surface from what the browser rendered', () => {
   it('reads the accessible name so an unsafe link can be recognised by its label', () => {
     const snap = ['- link "Log out" [ref=e2]:', '  - /url: http://localhost:4444/session/end'].join('\n');
     const s = buildSurface(TARGET, snap);
-    assert.equal(s.locations[1].status, 'SKIPPED');
+    assert.equal(s.locations[1].status, 'SKIPPED_WITH_REASON');
   });
 
   it('parses only real /url: lines', () => {
@@ -169,7 +192,7 @@ describe('completeness: the surface must be accounted for', () => {
     conflicts: [],
   });
 
-  const all = (): DiscoveredBehavior['locations'] => surface.expected.map((url) => ({ url, status: 'VISITED' as const }));
+  const all = (): DiscoveredBehavior['locations'] => surface.expected.map((url) => ({ url, status: 'EXPLORED' as const }));
   const codes = (e: { code: string }[]) => e.map((x) => x.code);
 
   it('accepts a run that visited everything', () => {
@@ -188,40 +211,40 @@ describe('completeness: the surface must be accounted for', () => {
     assert.deepEqual(missing.sort(), ['http://localhost:4444/notes', 'http://localhost:4444/profile']);
   });
 
-  it('accepts UNREACHABLE and SKIPPED when a reason is given', () => {
+  it('accepts BLOCKED and SKIPPED_WITH_REASON when a reason is given', () => {
     const locations = all();
-    locations[1] = { url: locations[1].url, status: 'UNREACHABLE', reason: 'redirected to a login wall' };
-    locations[2] = { url: locations[2].url, status: 'SKIPPED', reason: 'link ends the session' };
+    locations[1] = { url: locations[1].url, status: 'BLOCKED', reason: 'redirected to a login wall' };
+    locations[2] = { url: locations[2].url, status: 'SKIPPED_WITH_REASON', reason: 'link ends the session' };
     assert.deepEqual(validateDiscoveredBehavior(base(locations), surface), []);
   });
 
-  it('rejects UNREACHABLE or SKIPPED with no reason', () => {
+  it('rejects BLOCKED or SKIPPED_WITH_REASON with no reason', () => {
     const locations = all();
-    locations[1] = { url: locations[1].url, status: 'UNREACHABLE' };
+    locations[1] = { url: locations[1].url, status: 'BLOCKED' };
     assert.ok(codes(validateDiscoveredBehavior(base(locations), surface)).includes('MISSING_EVIDENCE'));
   });
 
   it('treats a trailing slash as the same location', () => {
     const locations = all();
-    locations[1] = { url: 'http://localhost:4444/notes/', status: 'VISITED' };
+    locations[1] = { url: 'http://localhost:4444/notes/', status: 'EXPLORED' };
     assert.deepEqual(validateDiscoveredBehavior(base(locations), surface), []);
   });
 
   it('accepts a same-origin location found during exploration', () => {
     // Most applications reveal their surface only after signing in; the entry
     // page's links are a starting point, not the whole product.
-    const locations = [...all(), { url: 'http://localhost:4444/account/notes', status: 'VISITED' as const }];
+    const locations = [...all(), { url: 'http://localhost:4444/account/notes', status: 'EXPLORED' as const }];
     assert.deepEqual(validateDiscoveredBehavior(base(locations), surface), []);
   });
 
   it('rejects a location outside the application', () => {
-    const locations = [...all(), { url: 'https://some-other-site.test/page', status: 'VISITED' as const }];
+    const locations = [...all(), { url: 'https://some-other-site.test/page', status: 'EXPLORED' as const }];
     const errors = validateDiscoveredBehavior(base(locations), surface);
     assert.ok(errors.some((e) => e.code === 'UNKNOWN_LOCATION' && e.value === 'https://some-other-site.test/page'));
   });
 
   it('rejects a malformed location', () => {
-    const locations = [...all(), { url: 'not a url', status: 'VISITED' as const }];
+    const locations = [...all(), { url: 'not a url', status: 'EXPLORED' as const }];
     assert.ok(codes(validateDiscoveredBehavior(base(locations), surface)).includes('UNKNOWN_LOCATION'));
   });
 
@@ -285,8 +308,12 @@ describe('the downstream contract still holds', () => {
     for (const forbidden of ['repo.ts', 'test-code', 'readRepoFileTool', 'child_process', 'node:fs']) {
       assert.ok(!source.includes(forbidden), `must not import ${forbidden}`);
     }
-    // The surface is host state; the agent reads it only as prompt text.
-    assert.ok(!source.includes('discovery-surface'), 'the agent must not read the surface file itself');
+    // The surface is host state. The agent may be *told* what is on it, as
+    // prompt text, but must hold nothing that reads or writes the file — the
+    // name of a module matters less than the capability it hands over.
+    for (const capability of ['readSurface', 'writeSurface', 'surfacePath', 'expandSurface', 'registerState']) {
+      assert.ok(!source.includes(capability), `the agent must not reach the surface via ${capability}`);
+    }
   });
 });
 
@@ -372,7 +399,7 @@ describe('observations must survive synthesis', () => {
 
   const withBehaviors = (behaviors: DiscoveredBehavior['behaviors'], excluded?: { id: string; reason: string }[]): DiscoveredBehavior => ({
     product: 'Demo',
-    locations: [{ url: 'http://localhost:4444/', status: 'VISITED' }],
+    locations: [{ url: 'http://localhost:4444/', status: 'EXPLORED' }],
     excludedObservations: excluded,
     areas: [{ name: 'Main', routes: ['http://localhost:4444/'], notes: [] }],
     behaviors,
@@ -591,5 +618,262 @@ describe('Product Discovery capabilities', () => {
     for (const f of ['tools/repo', 'test-code', 'child_process', 'node:fs']) {
       assert.ok(!source.includes(f), `must not import ${f}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('the surface absorbs what the browser reveals', () => {
+  /** A result shaped like the ones Playwright MCP returns for navigate/snapshot. */
+  const result = (page: string, ...urls: string[]) =>
+    [`- Page URL: ${page}`, '- Page Snapshot:', snapshot(...urls)].join('\n');
+
+  it('reads the page the session is on', () => {
+    assert.equal(currentPageUrl(result('http://localhost:4444/account/notes')), 'http://localhost:4444/account/notes');
+    assert.equal(currentPageUrl('- Page Snapshot:\n- main [ref=e1]'), undefined);
+  });
+
+  it('adds the page reached after signing in, and the links it renders', () => {
+    // The real failure this exists for: a landing page that is a sign-in form
+    // has no links, so the entry surface is one location and accounting for it
+    // is satisfied without ever seeing the product.
+    const s = buildSurface(TARGET, snapshot());
+    assert.equal(s.locations.length, 1, 'entry page offers nothing');
+
+    const added = absorbBrowserResult(s, result('http://localhost:4444/account/notes', '/account/profile'));
+
+    assert.deepEqual(
+      added.map((l) => l.url).sort(),
+      ['http://localhost:4444/account/notes', 'http://localhost:4444/account/profile'],
+    );
+    assert.ok(expectedLocations(s).includes('http://localhost:4444/account/notes'));
+    assert.ok(expectedLocations(s).includes('http://localhost:4444/account/profile'));
+  });
+
+  it('resolves a link against the page that rendered it, not the entry page', () => {
+    const s = buildSurface(TARGET, snapshot());
+    absorbBrowserResult(s, result('http://localhost:4444/account/notes', 'edit'));
+    assert.ok(expectedLocations(s).includes('http://localhost:4444/account/edit'));
+  });
+
+  it('adds nothing twice, and nothing off-origin', () => {
+    const s = buildSurface(TARGET, snapshot());
+    const once = absorbBrowserResult(s, result('http://localhost:4444/notes', 'https://elsewhere.test/x'));
+    assert.deepEqual(once.map((l) => l.url), ['http://localhost:4444/notes']);
+    assert.deepEqual(absorbBrowserResult(s, result('http://localhost:4444/notes')), [], 'already known');
+    assert.ok(s.externalOrigins.includes('https://elsewhere.test'));
+  });
+
+  it('still respects the cap', () => {
+    const s = buildSurface(TARGET, snapshot(...Array.from({ length: MAX_LOCATIONS - 1 }, (_, i) => `/p${i}`)));
+    assert.deepEqual(absorbBrowserResult(s, result('http://localhost:4444/one-too-many')), []);
+    assert.ok(s.overflow > 0);
+  });
+
+  it('does nothing with a result that is not a page', () => {
+    const s = buildSurface(TARGET, snapshot());
+    assert.deepEqual(absorbBrowserResult(s, 'Error: element not found'), []);
+    assert.equal(s.locations.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('a location the run names itself must be accounted for', () => {
+  const surface: SurfaceFacts = { origin: 'http://localhost:4444', expected: ['http://localhost:4444/'] };
+
+  /** The artifact gpt-oss-20b actually wrote: signed in, said so, listed only the entry page. */
+  const signedIn = (locations: DiscoveredBehavior['locations']): DiscoveredBehavior => ({
+    product: 'Notes Console',
+    locations,
+    areas: [{ name: 'Home', routes: ['http://localhost:4444/'], notes: [] }],
+    behaviors: [
+      {
+        id: 'BEH-1',
+        area: 'Home',
+        statement: 'Submitting the Sign In form with valid credentials signs the user in and navigates to /account/notes.',
+        observations: ['OBS-1'],
+        status: 'OBSERVED',
+        source: ['browser snapshot'],
+        confidence: 'high',
+        suspectedIssue: false,
+      },
+    ],
+    openQuestions: [],
+    conflicts: [],
+  });
+
+  const observed = {
+    ids: ['OBS-1'],
+    describe: () => "Submitted Sign In form -> Navigated to /account/notes and status banner shows 'Signed in.'",
+  };
+
+  it('rejects an artifact that reports reaching a page it never accounts for', () => {
+    const errors = validateDiscoveredBehavior(
+      signedIn([{ url: 'http://localhost:4444/', status: 'EXPLORED' }]),
+      surface,
+      observed,
+    );
+    assert.ok(
+      errors.some((e) => e.code === 'UNACCOUNTED_LOCATION' && e.value === 'http://localhost:4444/account/notes'),
+      `expected UNACCOUNTED_LOCATION, got ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it('accepts it once that page has a terminal state', () => {
+    const errors = validateDiscoveredBehavior(
+      signedIn([
+        { url: 'http://localhost:4444/', status: 'EXPLORED' },
+        { url: 'http://localhost:4444/account/notes', status: 'EXPLORED' },
+      ]),
+      surface,
+      observed,
+    );
+    assert.deepEqual(errors, []);
+  });
+
+  it('accepts BLOCKED with a reason, the same as any other location', () => {
+    const errors = validateDiscoveredBehavior(
+      signedIn([
+        { url: 'http://localhost:4444/', status: 'EXPLORED' },
+        { url: 'http://localhost:4444/account/notes', status: 'BLOCKED', reason: 'session expired before I got there' },
+      ]),
+      surface,
+      observed,
+    );
+    assert.deepEqual(errors, []);
+  });
+});
+
+describe('productUrls reads locations out of prose without inventing them', () => {
+  const origin = 'http://localhost:4444';
+
+  it('finds absolute and root-relative forms, normalised to one', () => {
+    assert.deepEqual(productUrls('went to http://localhost:4444/account/notes/', origin), ['http://localhost:4444/account/notes']);
+    assert.deepEqual(productUrls('navigated to /account/notes.', origin), ['http://localhost:4444/account/notes']);
+    // The same identity the surface uses: query values are not part of it, so
+    // a URL mentioned in prose can actually match the location that was reported.
+    assert.deepEqual(productUrls('see "/notes?sort=asc"', origin), ['http://localhost:4444/notes']);
+  });
+
+  it('reduces a mentioned URL to the identity a location can actually match', () => {
+    // The rule is only satisfiable if both sides normalise the same way. A run
+    // that opened `/app?confirm_code=...` can only report the canonical `/app`;
+    // comparing the raw URL against it matched nothing, and no status the agent
+    // wrote could clear the error — 78 minutes and 502 tool calls of trying.
+    assert.deepEqual(
+      productUrls('Opened http://localhost:4444/app?confirm_email=a@b.c&confirm_code=683410', origin),
+      ['http://localhost:4444/app'],
+    );
+  });
+
+  it('agrees with the surface, so an accounted location clears the error', () => {
+    const surface: SurfaceFacts = { origin, expected: ['http://localhost:4444/'] };
+    const artifact: DiscoveredBehavior = {
+      product: 'Demo',
+      locations: [
+        { url: 'http://localhost:4444/', status: 'EXPLORED' },
+        { url: 'http://localhost:4444/app', status: 'EXPLORED' },
+      ],
+      areas: [{ name: 'Auth', routes: ['http://localhost:4444/'], notes: [] }],
+      behaviors: [{
+        id: 'BEH-1', area: 'Auth',
+        statement: 'Opening http://localhost:4444/app?confirm_code=683410 confirms the account',
+        status: 'OBSERVED', source: ['browser snapshot'], confidence: 'high', suspectedIssue: false,
+      }],
+      openQuestions: [], conflicts: [],
+    };
+    assert.deepEqual(validateDiscoveredBehavior(artifact, surface), []);
+  });
+
+  it('does not mistake ordinary prose for a path', () => {
+    assert.deepEqual(productUrls('shown to the owner and/or an admin', origin), []);
+    assert.deepEqual(productUrls('the banner read 9/24 and then cleared', origin), []);
+    assert.deepEqual(productUrls('no location here at all', origin), []);
+  });
+
+  it('ignores another origin', () => {
+    assert.deepEqual(productUrls('linked out to https://elsewhere.test/notes', origin), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('browser results feed the surface', () => {
+  /** Instrumentation driven in its own temp artifact root, via a child process. */
+  const inTracked = (code: string) => {
+    const root = mkdtempSync(join(tmpdir(), 'qa-surface-'));
+    const r = spawnSync(
+      process.execPath,
+      ['--experimental-strip-types', '-e',
+       'const S = await import("./src/lib/discovery-surface.ts");' +
+       'const I = await import("./src/lib/surface-instrumentation.ts");' + code],
+      { cwd: PROJECT, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, QA_ARTIFACT_ROOT: root, QA_ENV_FILE: join(tmpdir(), 'no-env') } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout.trim().split('\n').pop()!);
+  };
+
+  /** The envelope shape a Flue-mounted MCP tool actually settles with. */
+  const MCP_RESULT = `{ output: { content: [{ type: "text", text: [
+      "- Page URL: http://localhost:4444/account/notes",
+      '- link "Profile" [ref=e2]:',
+      "  - /url: /account/profile",
+    ].join("\\n") }] } }`;
+
+  it('collects the strings instead of stringifying the envelope', () => {
+    // Regression: `JSON.stringify` spliced the envelope's own punctuation into
+    // the text, and the last `/url:` line came back carrying `"}]}}` — the page
+    // was then recorded under a URL-encoded corruption of its path.
+    const out = inTracked(`console.log(JSON.stringify({ text: I.resultText(${MCP_RESULT}) }));`);
+    assert.ok(out.text.includes('- Page URL: http://localhost:4444/account/notes'));
+    assert.ok(!out.text.includes('"}]}}'), 'envelope punctuation must not reach the text');
+  });
+
+  it('adds the page reached after signing in, and the links it renders', () => {
+    const out = inTracked(`
+      S.writeSurface(S.buildSurface("http://localhost:4444/", "- main [ref=e1]"));
+      const added = I.absorbIntoSurface(${MCP_RESULT});
+      console.log(JSON.stringify({ added, locations: S.readSurface().locations.map((l) => l.url) }));`);
+    assert.deepEqual(out.added.sort(), [
+      'http://localhost:4444/account/notes',
+      'http://localhost:4444/account/profile',
+    ]);
+    assert.ok(out.locations.includes('http://localhost:4444/account/notes'));
+  });
+
+  it('persists an external origin even though it adds no location', () => {
+    // Regression: writing only when a location was added dropped the external
+    // origin entirely, so a run that visited one reported none.
+    const out = inTracked(`
+      S.writeSurface(S.buildSurface("http://localhost:4444/", "- main [ref=e1]"));
+      const added = I.absorbIntoSurface({ output: "- Page URL: http://localhost:8025/" });
+      const s = S.readSurface();
+      console.log(JSON.stringify({ added, external: s.externalOrigins, locations: s.locations.length }));`);
+    assert.deepEqual(out.added, [], 'an off-origin page is not a product location');
+    assert.deepEqual(out.external, ['http://localhost:8025']);
+    assert.equal(out.locations, 1);
+  });
+
+  it('does nothing when no surface was established', () => {
+    const out = inTracked(`console.log(JSON.stringify({ added: I.absorbIntoSurface(${MCP_RESULT}) }));`);
+    assert.deepEqual(out.added, []);
+  });
+
+  it('never lets a bookkeeping failure escape into the browser call', () => {
+    // The surface file is a directory here: every read or write of it throws.
+    const out = inTracked(`
+      const fs = await import("node:fs");
+      fs.mkdirSync(S.surfacePath(), { recursive: true });
+      console.log(JSON.stringify({ added: I.absorbIntoSurface(${MCP_RESULT}) }));`);
+    assert.deepEqual(out.added, []);
+  });
+
+  it('installs its interceptor once, however often it is imported', () => {
+    const out = inTracked(`
+      I.trackDiscoverySurface(); I.trackDiscoverySurface();
+      console.log(JSON.stringify({ ok: true }));`);
+    assert.equal(out.ok, true);
   });
 });

@@ -17,6 +17,9 @@
 // Types
 // ---------------------------------------------------------------------------
 
+// `redaction.ts` is pure too, so importing it keeps this module free of I/O.
+import { locationIdentity } from './redaction.ts';
+
 export type SemanticErrorCode =
   | 'UNKNOWN_EVIDENCE_ID'
   | 'MISSING_EVIDENCE'
@@ -48,6 +51,8 @@ export type SemanticErrorCode =
   | 'MISSING_COVERAGE'
   | 'UNCOVERED_ACCEPTANCE_POINT'
   | 'UNEXPLORED_LOCATION'
+  | 'UNACCOUNTED_LOCATION'
+  | 'AUXILIARY_AS_PRODUCT'
   | 'UNKNOWN_LOCATION'
   | 'UNKNOWN_OBSERVATION'
   | 'UNACCOUNTED_OBSERVATION'
@@ -93,12 +98,14 @@ export interface SurfaceFacts {
   /** Absolute URLs the run is expected to account for. */
   expected: string[];
   origin: string;
+  /** Host-configured support origins this run was permitted to visit. */
+  auxiliaryOrigins?: string[];
 }
 
 export interface DiscoveredBehavior {
   product: string;
   /** One terminal state per location the host put on the surface. */
-  locations: { url: string; status: 'VISITED' | 'UNREACHABLE' | 'SKIPPED'; reason?: string; area?: string }[];
+  locations: { url: string; status: 'EXPLORED' | 'BLOCKED' | 'SKIPPED_WITH_REASON'; reason?: string; area?: string }[];
   /** Observations deliberately not turned into a behavior, each with a reason. */
   excludedObservations?: { id: string; reason: string }[];
   areas: { name: string; routes: string[]; notes: string[] }[];
@@ -837,6 +844,54 @@ function sameLocation(a: string, b: string): boolean {
   return strip(a) === strip(b);
 }
 
+/** Is this URL on a host-configured auxiliary origin? */
+function isAuxiliary(url: string, surface: SurfaceFacts): boolean {
+  if (!surface.auxiliaryOrigins?.length) return false;
+  try {
+    return surface.auxiliaryOrigins.includes(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
+
+/** Absolute URLs, and root-relative paths, anywhere in a line of prose. */
+const ABSOLUTE_URL = /https?:\/\/[^\s"'<>)\]]+/g;
+// One leading slash then a letter, at a word boundary: `/account/notes` counts,
+// the `/or` of "and/or" and the `/24` of a date do not. `.` stays inside the
+// class for `/index.html` and is trimmed off a sentence-ending match below.
+const ROOT_RELATIVE = /(?<=^|[\s"'([,>])\/[A-Za-z][A-Za-z0-9._~-]*(?:\/[A-Za-z0-9._~-]+)*(?:\?[^\s"'<>)\]]*)?/g;
+
+/**
+ * Pages of the product under test that a piece of text refers to, normalised.
+ *
+ * Deliberately conservative: only this origin, and only shapes that are
+ * unambiguously a location. A false positive costs the agent a location it
+ * must account for; the run said it was there, so that is a fair bill.
+ */
+export function productUrls(text: string, origin: string): string[] {
+  if (typeof text !== 'string' || text === '') return [];
+  const out = new Set<string>();
+  const candidates = [...(text.match(ABSOLUTE_URL) ?? []), ...(text.match(ROOT_RELATIVE) ?? [])];
+  for (const raw of candidates) {
+    // Prose punctuation clings to the end of a match: "went to /notes." and
+    // "see /notes," are the same page.
+    const trimmed = raw.replace(/[.,;:!?'")\]]+$/, '');
+    if (trimmed === '') continue;
+    // The SAME identity the surface and the artifact's own locations use.
+    // They must agree or the rule is unsatisfiable: a run that opened
+    // `/app?confirm_code=…` can only ever report the canonical `/app`, so
+    // comparing the raw mentioned URL against it never matches, and no status
+    // the agent writes can clear the error. Measured: one run spent 78 minutes
+    // and 502 tool calls cycling EXPLORED/BLOCKED/SKIPPED_WITH_REASON against
+    // an error it had no way to satisfy.
+    const identity = locationIdentity(trimmed, origin);
+    if (identity === undefined) continue;
+    if (new URL(identity.url).origin !== origin) continue;
+    out.add(identity.url);
+  }
+  return [...out];
+}
+
 /**
  * `surface` is what host code established from the browser before the agent
  * ran. When it is absent — no browser, or a run that never built one — the
@@ -867,7 +922,7 @@ export function validateDiscoveredBehavior(
   //
   // Not "did you find enough" — that is a judgement no host can make — but
   // "did every location we know the browser rendered reach a terminal state".
-  // UNREACHABLE and SKIPPED are answers; silence is not.
+  // BLOCKED and SKIPPED_WITH_REASON are answers; silence is not.
   const reported = discovery.locations ?? [];
   reported.forEach((l, i) => {
     if (typeof l?.url !== 'string') return;
@@ -883,7 +938,8 @@ export function validateDiscoveredBehavior(
       } catch {
         sameOrigin = false;
       }
-      if (!sameOrigin) {
+      const auxiliary = !sameOrigin && isAuxiliary(l.url, surface);
+      if (!sameOrigin && !auxiliary) {
         errors.push({
           code: 'UNKNOWN_LOCATION',
           path: `locations[${i}].url`,
@@ -891,8 +947,21 @@ export function validateDiscoveredBehavior(
           details: `outside the application (${surface.origin}). Report only locations of the product itself.`,
         });
       }
+      // A configured mailbox is infrastructure the run was allowed to pass
+      // through, never a part of the product. Giving it an area is what turns
+      // "I read the confirmation mail" into a product feature.
+      if (auxiliary && typeof l.area === 'string' && l.area !== '') {
+        errors.push({
+          code: 'AUXILIARY_AS_PRODUCT',
+          path: `locations[${i}].area`,
+          value: l.area,
+          details:
+            `${l.url} is trusted test infrastructure, not the product. Record it without an area; ` +
+            'it may support a transition, but it is not a product area.',
+        });
+      }
     }
-    if ((l.status === 'UNREACHABLE' || l.status === 'SKIPPED') && !l.reason) {
+    if ((l.status === 'BLOCKED' || l.status === 'SKIPPED_WITH_REASON') && !l.reason) {
       errors.push({
         code: 'MISSING_EVIDENCE',
         path: `locations[${i}].reason`,
@@ -909,9 +978,61 @@ export function validateDiscoveredBehavior(
           code: 'UNEXPLORED_LOCATION',
           path: '$.locations',
           value: url,
-          details: 'no terminal state reported. Visit it, or record it UNREACHABLE/SKIPPED with a reason.',
+          details: 'no terminal state reported. Visit it, or record it BLOCKED/SKIPPED_WITH_REASON with a reason.',
         });
       }
+    }
+
+    // ---- auxiliary origins are infrastructure, not product --------------
+    //
+    // A trusted mailbox exists so registration can complete. Everything the
+    // run learns there is a means to a product transition; none of it is
+    // product functionality, and an area rooted there would carry straight
+    // through analysis into acceptance points and test cases.
+    discovery.areas.forEach((a, i) =>
+      (a.routes ?? []).forEach((route, j) => {
+        if (typeof route === 'string' && isAuxiliary(route, surface)) {
+          errors.push({
+            code: 'AUXILIARY_AS_PRODUCT',
+            path: `areas[${i}].routes[${j}]`,
+            value: route,
+            details:
+              'trusted test infrastructure cannot be a product area. Use what you saw there to ' +
+              'complete the product flow, and describe the product, not the mailbox.',
+          });
+        }
+      }),
+    );
+
+    // ---- locations the run named itself --------------------------------
+    //
+    // The surface check asks about places the host knew of. This asks about
+    // places the agent said it went. A measured run recorded "Navigated to
+    // /account/notes and ... 'Signed in.'", listed only the entry page in
+    // `locations`, and passed clean — the whole authenticated product went
+    // unreported because nothing compared the two.
+    //
+    // A page named in an area's routes, in a behavior, or in an observation is
+    // a page this run reached or saw offered. Either state is fine; silence is
+    // not, exactly as for the host's own list.
+    const named = new Map<string, string>();
+    const note = (raw: string, where: string) => {
+      for (const url of productUrls(raw, surface.origin)) if (!named.has(url)) named.set(url, where);
+    };
+    discovery.areas.forEach((a, i) => (a.routes ?? []).forEach((r, j) => note(String(r), `areas[${i}].routes[${j}]`)));
+    discovery.behaviors.forEach((b, i) => note(String(b.statement ?? ''), `behaviors[${i}].statement`));
+    for (const id of observed?.ids ?? []) note(observed!.describe(id), id);
+
+    for (const [url, where] of named) {
+      if (reported.some((l) => typeof l?.url === 'string' && sameLocation(l.url, url))) continue;
+      errors.push({
+        code: 'UNACCOUNTED_LOCATION',
+        path: '$.locations',
+        value: url,
+        details:
+          `${where} refers to this page, and no entry in "locations" accounts for it. ` +
+          'Add it as EXPLORED, or as BLOCKED/SKIPPED_WITH_REASON with a reason.',
+      });
     }
   }
 
@@ -1801,6 +1922,8 @@ const ORDER: SemanticErrorCode[] = [
   'UNEXPLORED_DIRECTORY',
   'UNINSPECTED_DIRECTORY',
   'UNEXPLORED_LOCATION',
+  'UNACCOUNTED_LOCATION',
+  'AUXILIARY_AS_PRODUCT',
   'UNKNOWN_OBSERVATION',
   'UNACCOUNTED_OBSERVATION',
   'UNANALYZED_BEHAVIOR',
@@ -1845,8 +1968,12 @@ const HOW_TO_FIX: Record<SemanticErrorCode, string> = {
   UNKNOWN_COVERAGE_ID: 'covers must name acceptance point or business rule IDs that exist',
   MISSING_COVERAGE: 'say which requirement each test case demonstrates',
   UNCOVERED_ACCEPTANCE_POINT: 'Every testable requirement needs a test case. Add one for each ID below.',
-  UNEXPLORED_LOCATION: 'Account for every location below: VISITED, or UNREACHABLE/SKIPPED with a reason.',
+  UNEXPLORED_LOCATION: 'Account for every location below: EXPLORED, or BLOCKED/SKIPPED_WITH_REASON with a reason.',
   UNKNOWN_LOCATION: 'report only locations the browser actually offered',
+  AUXILIARY_AS_PRODUCT:
+    'Trusted test infrastructure is not the product. It may support a transition; it may not become an area, a feature or a behavior.',
+  UNACCOUNTED_LOCATION:
+    'You referred to these pages but did not account for them. Add each to "locations" as EXPLORED, or as BLOCKED/SKIPPED_WITH_REASON with a reason.',
   UNACCOUNTED_OBSERVATION: 'Every observation you recorded must reach a behavior, or be excluded with a reason.',
   UNANALYZED_BEHAVIOR:
     'Every discovered behavior must be cited as evidence by a requirement, or listed in excludedBehaviors with a reason.',

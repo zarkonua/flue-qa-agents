@@ -20,7 +20,7 @@
 //      connection either.
 //
 // What remains, and what `scripts/lib/evidence.mjs` does: the host opens its
-// OWN session and replays the locations discovery recorded as VISITED,
+// OWN session and replays the locations discovery recorded as EXPLORED,
 // collecting console and network facts per page load.
 //
 // The honest limitation, stated here because it belongs with the data: this

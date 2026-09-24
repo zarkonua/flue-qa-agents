@@ -164,9 +164,9 @@
           },
           "status": {
             "enum": [
-              "VISITED",
-              "UNREACHABLE",
-              "SKIPPED"
+              "EXPLORED",
+              "BLOCKED",
+              "SKIPPED_WITH_REASON"
             ]
           },
           "reason": {

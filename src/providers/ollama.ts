@@ -18,6 +18,18 @@ import { envBool, envInt, envString } from '../config/env.ts';
  * prompt, tool definitions included. `npm run check:ollama` compares the two.
  */
 const CONTEXT_WINDOW = envInt('OLLAMA_CONTEXT_WINDOW', 8192);
+/**
+ * Whether the operator set these explicitly.
+ *
+ * Both variables have a per-model default — 8192/2048 for Qwen, and the real
+ * `num_ctx` of each gpt-oss build. Without this distinction the same variable
+ * meant two different things: it set Qwen's window outright, while for gpt-oss
+ * it was ignored (context) or acted only as a floor (output). Setting
+ * OLLAMA_MAX_OUTPUT_TOKENS=4096 to constrain gpt-oss silently did nothing.
+ * Explicit now always wins, for every model.
+ */
+const CONTEXT_WINDOW_IS_EXPLICIT = envString('OLLAMA_CONTEXT_WINDOW') !== undefined;
+const MAX_OUTPUT_IS_EXPLICIT = envString('OLLAMA_MAX_OUTPUT_TOKENS') !== undefined;
 // Phase 1 artifacts fit comfortably in 2048. The Phase 2 repo-analysis is
 // several times larger, and Qwen emits its reasoning *before* the tool call in
 // the same turn: when the two together exceed the cap, the call is truncated
@@ -68,6 +80,61 @@ function resolveBaseUrl(): string {
 }
 
 export const OLLAMA_BASE_URL = resolveBaseUrl();
+
+/**
+ * Locally built gpt-oss-20b variants, whose tag encodes the context window the
+ * Modelfile was built with (`-49k` -> 49152). Declaring them here is what makes
+ * `QA_MODEL=ollama/gpt-oss-20b-q5-49k` resolve at all: Pi only knows the models
+ * a provider lists, so an id that is pulled in Ollama but absent from this array
+ * fails the run at startup with "unknown model".
+ *
+ * The context comes from the tag rather than OLLAMA_CONTEXT_WINDOW because that
+ * single env var cannot describe five variants at once, and budgeting a 49k
+ * model against 8192 would waste six sevenths of its window.
+ *
+ * The numbers are the Modelfiles' real `num_ctx`, read from `/api/show`, NOT
+ * derived from the tag. The tag is approximate: `-49k` is built at 49152, which
+ * is 48 * 1024, so computing `49 * 1024` gives 50176 and overshoots the real
+ * window by 1024 tokens. Flue would then budget against a window the server
+ * does not have, and the server silently truncates the prompt — dropping the
+ * tail of the system prompt, tool definitions included. `npm run check:ollama`
+ * is the way to confirm these against a running server.
+ *
+ * Unlike Qwen, this family emits a clean structured tool call at its default
+ * sampling — verified against the running server — so no sampling override is
+ * imposed. It does reason before answering, in a channel of its own, which is
+ * why `reasoning` is true and why the output budget is generous: the reasoning
+ * and the tool call share one turn, and a truncated turn yields no call at all.
+ */
+const GPT_OSS_CONTEXTS: Record<string, number> = {
+  'gpt-oss-20b-q5-49k': 49_152,
+  'gpt-oss-20b-q5-32k': 32_768,
+  'gpt-oss-20b-q5-24k': 24_576,
+  'gpt-oss-20b-q5-16k': 16_384,
+  'gpt-oss-20b-q5': 8_192,
+};
+
+const GPT_OSS_MODELS = Object.entries(GPT_OSS_CONTEXTS).map(([tag, measuredContext]) => {
+  // An explicitly configured window overrides the measured one, so the operator
+  // can budget below the server's num_ctx deliberately. It must never exceed it:
+  // Ollama truncates silently, dropping the tail of the system prompt.
+  const contextWindow = CONTEXT_WINDOW_IS_EXPLICIT ? CONTEXT_WINDOW : measuredContext;
+  return {
+    id: tag,
+    name: `GPT-OSS 20B (local, ${Math.round(contextWindow / 1024)}k)`,
+    api: 'openai-completions' as const,
+    provider: 'ollama',
+    baseUrl: OLLAMA_BASE_URL,
+    reasoning: true,
+    input: ['text'] as const,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow,
+    // Default: a quarter of the window — enough for the reasoning plus a large
+    // artifact in the same turn, without crowding out the prompt. An explicit
+    // OLLAMA_MAX_OUTPUT_TOKENS wins outright, including a smaller value.
+    maxTokens: MAX_OUTPUT_IS_EXPLICIT ? MAX_OUTPUT_TOKENS : Math.floor(contextWindow / 4),
+  };
+});
 
 /**
  * Qwen3 returns a `reasoning` block on every assistant turn, and the transcript
@@ -161,6 +228,7 @@ setProvider(
       },
     },
     models: [
+      ...GPT_OSS_MODELS,
       {
         id: 'qwen3:14b',
         name: 'Qwen3 14B (local)',

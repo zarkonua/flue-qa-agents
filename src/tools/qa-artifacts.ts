@@ -28,6 +28,7 @@ const ARTIFACT_NAMES = [
 const READABLE_ARTIFACT_NAMES = [
   ...ARTIFACT_NAMES,
   'discovery-evidence',
+  'automation-project-contract',
 ] as const satisfies readonly QaArtifactName[];
 
 // Note: `phase1-approval.json` is deliberately absent from both lists. Approval

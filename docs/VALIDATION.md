@@ -58,6 +58,51 @@ A same-origin location the agent reaches that was *not* on the host's list is ac
 recorded — most applications only reveal their real surface after signing in. Only an
 off-origin or malformed URL is rejected.
 
+## Browser evidence the model does not supply
+
+A snapshot says nothing about a console error, a 404 on a background image, or a request that
+never completed. Asking the model to notice those makes evidence a matter of attention, and a
+model asked "were there console errors?" can answer "no" without having looked.
+
+So the host collects them. After Discovery passes, while the browser is still up, host code
+opens its **own** session and replays the locations the artifact reports as `VISITED`,
+recording console and network facts per page load into `discovery-evidence.json`.
+
+It cannot read the agent's session: @playwright/mcp isolates sessions, so a second connection
+sees an empty context — collecting there would report "no errors" as a fact. Flue also refuses
+direct MCP invocation from host code, so the agent's connection cannot be borrowed.
+
+`discovery-evidence` is in the **read** picklist and absent from the **write** picklist, so
+`write_qa_artifact` rejects the name at its input schema before `run()` executes. A model may
+interpret these facts; it cannot author, amend or contradict them.
+
+Two limits travel with the artifact in its own `coverageNote`:
+
+- **Page-load only** — an error raised only when a form is submitted is not captured.
+- **The session is unauthenticated** — for a location behind a sign-in this describes what an
+  anonymous visitor receives, which may be a logged-out view served under the same URL.
+
+A finding at a URL carrying a one-time credential (`confirm_code`, `token`, `reset_token`, …)
+is kept but marked `replaySuspect`, with a `replayCaveat` on the location: discovery spends
+such a token, so replaying it produces a real failure that is an artifact of the replay.
+
+## Analysis: no discovered behavior may vanish
+
+The same rule as the surface, one stage later. A run once analysed fourteen of fifteen
+behaviors and validated cleanly, because every statement it *did* write was well evidenced —
+the dropped one was a suspected issue nothing objected to losing. Per-item checks cannot see
+silence.
+
+Every discovered behavior must be either cited as evidence by an acceptance point or business
+rule, or listed in `excludedBehaviors` with a reason. A behavior that cannot become a
+requirement — a suspected issue, or an `INFERRED` one — is excluded and raised as an open
+question; that is what the error message tells the agent to do.
+
+Acceptance points and business rules may carry `validationType`
+(`UI | API | VISUAL | CONTRACT | MANUAL | UNKNOWN`). It is optional: omitting it means
+undecided, `UNKNOWN` means considered and unsettled by the evidence. Stating a type the
+evidence does not support is the failure mode being guarded against, not a missing field.
+
 ## Coverage: the other direction
 
 Evidence validation asks *"is this test case supported?"*. That alone cannot make a suite
@@ -75,10 +120,30 @@ business rules both count; open questions never do. A requirement is testable un
 Behavior Analyst marked it `testable: false` with a `notTestableReason` — that judgement is
 recorded in the artifact, not inferred by the host.
 
+A `covers` claim must also be *true*, not merely present: the case must cite the requirement
+itself, or a behavior that requirement rests on. Without that a case can list a requirement it
+never exercises, and the count rises while nothing is tested. One case may cover several
+requirements only when it genuinely shares their evidence.
+
 Suite size follows from coverage. There is no minimum number of test cases anywhere.
 
 The counts (`coverage` in `phase1-run.json`) are computed from the two artifacts, never taken
-from a total the model reports about itself.
+from a total the model reports about itself. Alongside them the host records the suite's
+**scenario shape** — how many cases of each `type`, how many cover more than one requirement —
+because complete coverage made entirely of happy paths is not a good suite, and a percentage
+cannot say so.
+
+## Automation strategy: only capabilities that were observed
+
+Prioritization records four separate judgements, and none may be copied from another: test
+priority (`P0`-`P3`), `executionMode`, `automationPriority`, and `automationStrategy`
+(`UI | API | UI_API | VISUAL | MANUAL | UNKNOWN`). A `P0` case may be MANUAL; a HIGH-priority
+automation may have an `UNKNOWN` strategy.
+
+The strategy may not contradict the mode, and may not name a capability this run did not
+observe. The host derives what was observed from upstream facts only — a requirement typed
+`API`/`CONTRACT`/`VISUAL`, or browser evidence that recorded real HTTP requests. A test
+case's own wording is not evidence that an API exists.
 
 ## Phase 1 codes
 
@@ -103,6 +168,14 @@ from a total the model reports about itself.
 | `UNCOVERED_ACCEPTANCE_POINT` | A testable requirement that no test case covers. The error names the ID. |
 | `UNEXPLORED_LOCATION` | A location on the host-established surface with no terminal state in the artifact. |
 | `UNKNOWN_LOCATION` | A reported location outside the application's origin, or not a URL. |
+| `UNKNOWN_OBSERVATION` | A behavior citing an observation ID the ledger does not contain. |
+| `UNACCOUNTED_OBSERVATION` | A recorded observation that reaches no behavior and is not excluded with a reason. |
+| `UNANALYZED_BEHAVIOR` | A discovered behavior neither cited as evidence nor excluded with a reason. |
+| `UNKNOWN_BEHAVIOR_REFERENCE` | An `excludedBehaviors` ID that does not exist upstream, or is also cited as evidence. |
+| `CONTRADICTORY_VALIDATION_TYPE` | `testable: false` together with a `UI`/`API`/`VISUAL`/`CONTRACT` validation type. |
+| `COVERAGE_NOT_EVIDENCED` | A `covers` entry whose requirement's evidence the case never cites. |
+| `CONTRADICTORY_STRATEGY` | An automation strategy that contradicts the execution mode. |
+| `UNSUPPORTED_STRATEGY` | A strategy naming a capability (`API`, `UI_API`, `VISUAL`) this run did not observe. |
 | `MISSING_UPSTREAM` / `UPSTREAM_INVALID` | An input artifact is absent, or no longer consistent with the current discovery. The agent is told it cannot fix this and must stop |
 
 `qa:approve` treats the structural ones (`MISSING_UPSTREAM`, `UNKNOWN_TEST_CASE`,

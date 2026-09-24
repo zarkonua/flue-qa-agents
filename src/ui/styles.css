@@ -161,3 +161,12 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .advisory th { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
 .empty { color: var(--muted); font-size: 0.88rem; }
 footer { margin-top: 36px; color: var(--faint); font-size: 0.78rem; }
+
+/* Requirements table — coverage read from the requirement's side. */
+table.reqs { width: 100%; border-collapse: collapse; font-size: .86rem; margin-top: 10px; }
+table.reqs th, table.reqs td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.reqs th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+table.reqs tr.uncovered td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+table.reqs td code { font-size: .82rem; }
+table.reqs .why { color: var(--muted); font-size: .78rem; margin-top: 3px; }
+.badge.b-strategy { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }

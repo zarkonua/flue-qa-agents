@@ -5,7 +5,7 @@
 // constructs a path, and never posts anything but the two fixed actions.
 
 const app = document.getElementById('app');
-const state = { model: null, root: '', priority: 'ALL', mode: 'ALL', ap: 'ALL', query: '', busy: false, flash: null };
+const state = { model: null, root: '', priority: 'ALL', mode: 'ALL', ap: 'ALL', strategy: 'ALL', tab: 'cases', query: '', busy: false, flash: null };
 
 const esc = (v) =>
   String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -53,9 +53,11 @@ function visible() {
     if (state.priority !== 'ALL' && tc.priority !== state.priority) return false;
     if (state.mode !== 'ALL' && tc.executionMode !== state.mode) return false;
     if (state.ap !== 'ALL' && tc.automationPriority !== state.ap) return false;
+    if (state.strategy !== 'ALL' && tc.automationStrategy !== state.strategy) return false;
     if (!q) return true;
     const hay = [
       tc.id, tc.title, tc.expectedResult, tc.automationReason, tc.prioritizationReason,
+      tc.automationStrategy, tc.strategyReason,
       ...tc.types, ...tc.tags, ...tc.preconditions,
       ...tc.covers.map((c) => `${c.id} ${c.statement ?? ''}`),
       ...tc.evidenceIds,
@@ -171,6 +173,7 @@ function caseCard(tc) {
           <span class="badge b-${esc(tc.priority)}">${esc(tc.priority)}</span>
           ${tc.executionMode ? `<span class="badge b-${esc(tc.executionMode)}">${esc(tc.executionMode)}</span>` : ''}
           ${ap ? `<span class="badge b-ap">AUTO ${esc(ap)}</span>` : ''}
+          ${tc.automationStrategy ? `<span class="badge b-strategy" title="${esc(tc.strategyReason ?? 'automation strategy')}">via ${esc(tc.automationStrategy)}</span>` : ''}
           ${tc.reviewIssues.length ? `<span class="badge b-issue">${tc.reviewIssues.length} review issue${tc.reviewIssues.length > 1 ? 's' : ''}</span>` : ''}
         </span>
       </header>
@@ -193,8 +196,56 @@ function caseCard(tc) {
         <div class="field"><div class="k">Evidence</div><div class="meta">${tc.evidenceIds.map((e) => `<span class="tag evidence">${esc(e)}</span>`).join('') || '<span class="empty">none</span>'}</div></div>
         ${tc.prioritizationReason ? `<div class="field"><div class="k">Why this execution mode</div><p>${esc(tc.prioritizationReason)}${tc.blockingFactors?.length ? ` <span style="color:var(--muted)">(blocked by: ${tc.blockingFactors.map(esc).join(', ')})</span>` : ''}</p></div>` : ''}
         ${tc.automationReason ? `<div class="field"><div class="k">Designer's automation note</div><p>${esc(tc.automationReason)}</p></div>` : ''}
+        ${tc.strategyReason ? `<div class="field"><div class="k">Why this automation strategy</div><p>${esc(tc.strategyReason)}</p></div>` : ''}
       </details>
     </article>`;
+}
+
+/** Strategy chips, shown only once the prioritizer has assigned any. */
+function strategyChips(m) {
+  const present = [...new Set(m.testCases.map((tc) => tc.automationStrategy).filter(Boolean))].sort();
+  if (present.length === 0) return '';
+  return `<span class="group-label">Strategy</span>${['ALL', ...present].map((s) => chip(s, 'strategy', s, state.strategy)).join('')}`;
+}
+
+/**
+ * Coverage from the requirement's side.
+ *
+ * The cards answer "what does this case cover?". A reviewer's question is the
+ * reverse — "is this requirement tested, and by what?" — and answering it from
+ * the cards means reading all of them. Both views come from the same two
+ * artifacts, so they cannot disagree.
+ */
+function requirementsSection(m) {
+  if (!m.requirements.length) return '';
+  const a = m.analysisCoverage;
+  const row = (r) => {
+    const uncovered = r.testable && r.coveredBy.length === 0;
+    return `
+      <tr class="${uncovered ? 'uncovered' : ''}">
+        <td><code>${esc(r.id)}</code></td>
+        <td>${esc(r.statement)}
+          ${r.notTestableReason ? `<div class="why">not testable: ${esc(r.notTestableReason)}</div>` : ''}
+          ${r.validationTypeReason ? `<div class="why">${esc(r.validationTypeReason)}</div>` : ''}</td>
+        <td>${r.validationType ? `<span class="tag">${esc(r.validationType)}</span>` : '<span class="empty">—</span>'}</td>
+        <td>${r.evidenceIds.map((e) => `<span class="tag evidence">${esc(e)}</span>`).join('') || '<span class="empty">—</span>'}</td>
+        <td>${
+          r.coveredBy.length
+            ? r.coveredBy.map((id) => `<span class="tag cover">${esc(id)}</span>`).join('')
+            : r.testable
+              ? '<span class="badge b-issue">uncovered</span>'
+              : '<span class="empty">exempt</span>'
+        }</td>
+      </tr>`;
+  };
+  return `
+    <h2>Requirements</h2>
+    ${a ? `<p class="sub">${a.analyzed} of ${a.behaviors} discovered behaviour(s) analysed${a.excluded ? `, ${a.excluded} excluded with a reason` : ''}${a.unaccounted ? ` — <strong>${a.unaccounted} unaccounted</strong>` : ''}. ${a.openQuestions} open question(s).</p>` : ''}
+    ${m.scenarioDiversityNote ? `<div class="notice">${esc(m.scenarioDiversityNote)}</div>` : ''}
+    <table class="reqs">
+      <thead><tr><th>ID</th><th>Statement</th><th>Validation</th><th>Evidence</th><th>Covered by</th></tr></thead>
+      <tbody>${m.requirements.map(row).join('')}</tbody>
+    </table>`;
 }
 
 function reviewSection(m) {
@@ -265,11 +316,13 @@ function render() {
       ${['ALL', 'AUTOMATION', 'MANUAL'].map((p) => chip(p, 'mode', p, state.mode)).join('')}
       <span class="group-label">Auto</span>
       ${['ALL', 'HIGH', 'MEDIUM', 'LOW', 'NONE'].map((p) => chip(p, 'ap', p, state.ap)).join('')}
+      ${strategyChips(m)}
       <input id="q" type="search" placeholder="Search id, title, steps, covers…" value="${esc(state.query)}">
       <span class="count">${shown.length} of ${m.testCases.length}</span>
     </div>
     <div class="cards">${shown.map(caseCard).join('') || '<p class="empty">No test case matches these filters.</p>'}</div>
 
+    ${requirementsSection(m)}
     ${reviewSection(m)}
     <footer>Approving here calls the same host code as <code>npm run qa:approve</code>. Read-only otherwise.</footer>`;
 

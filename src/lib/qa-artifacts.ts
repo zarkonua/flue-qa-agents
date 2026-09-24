@@ -99,7 +99,10 @@ export type QaArtifactName =
   // Host-written only. Collected by `scripts/lib/evidence.mjs` from the
   // browser; deliberately absent from the agents' write picklist, so no model
   // can author, amend or contradict it. See `src/tools/qa-artifacts.ts`.
-  | 'discovery-evidence';
+  | 'discovery-evidence'
+  // Host-projected from repo-analysis; see src/lib/automation-contract.ts.
+  // Readable by the automation agents, writable by none of them.
+  | 'automation-project-contract';
 
 interface ArtifactDef {
   fileName: string;
@@ -116,6 +119,7 @@ const ARTIFACTS: Record<QaArtifactName, ArtifactDef> = {
   'ui-exploration': { fileName: 'ui-exploration.json', schemaFile: 'ui-exploration.schema.json' },
   'automation-plan': { fileName: 'automation-plan.json', schemaFile: 'automation-plan.schema.json' },
   'discovery-evidence': { fileName: 'discovery-evidence.json', schemaFile: 'discovery-evidence.schema.json' },
+  'automation-project-contract': { fileName: 'automation-project-contract.json', schemaFile: 'automation-project-contract.schema.json' },
 };
 
 function loadSchema(schemaFile: string): JsonSchemaNode {

@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "runId",
+    "collectedAt",
+    "target",
+    "origin",
+    "locations",
+    "findings",
+    "totals",
+    "overflow",
+    "coverageNote"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "collectedAt": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
+    },
+    "origin": {
+      "type": "string"
+    },
+    "coverageNote": {
+      "type": "string"
+    },
+    "overflow": {
+      "type": "number"
+    },
+    "locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "requestedUrl",
+          "redirected",
+          "collected"
+        ],
+        "properties": {
+          "requestedUrl": {
+            "type": "string"
+          },
+          "finalUrl": {
+            "type": "string"
+          },
+          "status": {
+            "type": "number"
+          },
+          "redirected": {
+            "type": "boolean"
+          },
+          "collected": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          },
+          "replayCaveat": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "location",
+          "detail",
+          "occurrences"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CONSOLE_ERROR",
+              "CONSOLE_WARNING",
+              "REQUEST_FAILED",
+              "BROKEN_RESOURCE",
+              "NAVIGATION_FAILED"
+            ]
+          },
+          "location": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "status": {
+            "type": "number"
+          },
+          "occurrences": {
+            "type": "number"
+          },
+          "replaySuspect": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "required": [
+        "consoleErrors",
+        "consoleWarnings",
+        "failedRequests",
+        "brokenResources",
+        "navigationFailures"
+      ],
+      "properties": {
+        "consoleErrors": {
+          "type": "number"
+        },
+        "consoleWarnings": {
+          "type": "number"
+        },
+        "failedRequests": {
+          "type": "number"
+        },
+        "brokenResources": {
+          "type": "number"
+        },
+        "navigationFailures": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

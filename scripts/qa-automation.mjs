@@ -164,6 +164,38 @@ const saveRecord = () => {
   writeFileSync(recordPath, JSON.stringify(record, null, 2));
 };
 
+/**
+ * Project the analysis into `automation-project-contract`.
+ *
+ * Read back from disk rather than taken from the agent's tool call, so what is
+ * projected is exactly what was validated and written.
+ */
+async function buildContract() {
+  const analysis = qa.readQaArtifact('repo-analysis');
+  if (analysis === undefined) return undefined;
+  const { buildAutomationContract, contractGaps, contractSummary, validateAutomationContract } =
+    await import(resolve(ROOT, 'src/lib/automation-contract.ts'));
+  const { collectRepoEvidence } = await import(resolve(ROOT, 'src/lib/repo-evidence.ts'));
+  const { createHash } = await import('node:crypto');
+  const { readFileSync } = await import('node:fs');
+
+  const evidence = collectRepoEvidence();
+  const sourceAnalysisSha256 = createHash('sha256')
+    .update(readFileSync(qa.qaArtifactPath('repo-analysis')))
+    .digest('hex');
+
+  const contract = buildAutomationContract(analysis, evidence, { sourceAnalysisSha256 });
+  // Built from verified facts, so this should always pass; checked anyway,
+  // because a contract that quietly disagreed with the repository is worse
+  // than none at all.
+  const problems = validateAutomationContract(contract, evidence, sourceAnalysisSha256);
+  if (problems.length > 0) {
+    throw new Error(`contract failed its own validation: ${problems.map((p) => p.code).join(', ')}`);
+  }
+  qa.writeQaArtifact('automation-project-contract', contract);
+  return { summary: contractSummary(contract), gaps: contractGaps(contract) };
+}
+
 for (const stage of plan) {
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
@@ -178,6 +210,24 @@ for (const stage of plan) {
     qaArtifactPath: qa.qaArtifactPath,
     onProgress: saveRecord,
   });
+
+  // The automation project contract: a deterministic projection of the analysis
+  // into what a later agent needs, with every path and script re-checked on
+  // disk. Host-written — no agent holds it in a write picklist. Never fatal:
+  // a projection problem must not discard a valid repo-analysis.
+  if (stage.artifact === 'repo-analysis' && passed) {
+    try {
+      const built = await buildContract();
+      if (built) {
+        record.contract = built.summary;
+        console.log(`Contract        : ${built.summary}`);
+        for (const gap of built.gaps) console.log(`  gap           : ${gap}`);
+      }
+    } catch (error) {
+      record.contract = { error: error.message };
+      console.log(`Contract        : not built (${error.message})`);
+    }
+  }
 
   if (!passed) {
     record.result = 'FAILED';

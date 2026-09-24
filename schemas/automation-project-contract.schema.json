@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "generatedAt",
+    "sourceAnalysisSha256",
+    "repository",
+    "locations",
+    "conventions",
+    "scripts",
+    "unknowns",
+    "verification"
+  ],
+  "properties": {
+    "generatedAt": {
+      "type": "string"
+    },
+    "sourceAnalysisSha256": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "type": "string"
+        },
+        "packageManager": {
+          "type": "string"
+        },
+        "testRunner": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "testRoot": {
+      "type": "object",
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": {
+          "type": "string"
+        },
+        "evidencePath": {
+          "type": "string"
+        },
+        "evidenceLine": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "framework": {
+      "type": "object",
+      "properties": {
+        "configPath": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "testDir": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "baseURL": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "usesStorageState": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "boolean"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "locations": {
+      "type": "object",
+      "properties": {
+        "testDir": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "pageObjects": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "fixtures": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "helpers": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "apiClients": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "testData": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "auth": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "config": {
+          "type": "object",
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string"
+            },
+            "evidencePath": {
+              "type": "string"
+            },
+            "evidenceLine": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "conventions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "topic",
+          "rule",
+          "evidencePath"
+        ],
+        "properties": {
+          "topic": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "evidencePath": {
+            "type": "string"
+          },
+          "evidenceLine": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "scripts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "command"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "pathsChecked",
+        "pathsMissing",
+        "scriptsChecked",
+        "scriptsMissing"
+      ],
+      "properties": {
+        "pathsChecked": {
+          "type": "number"
+        },
+        "pathsMissing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scriptsChecked": {
+          "type": "number"
+        },
+        "scriptsMissing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

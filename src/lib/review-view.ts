@@ -17,11 +17,15 @@ import {
 } from './qa-artifacts.ts';
 import { APPROVAL_PATH, inspectPhase1, PHASE1_LOCKED, sha256Of, type Phase1Approval } from './phase1-gate.ts';
 import {
+  analysisCoverageSummary,
   coverageSummary,
+  scenarioDiversityDiagnostic,
   summarize,
   testableRequirements,
   type AutomationPrioritization,
   type CoverageSummary,
+  type AnalysisCoverageSummary,
+  type DiscoveredBehavior,
   type RequirementsAnalysis,
   type ReviewSummary,
   type TestCases,
@@ -46,10 +50,38 @@ export interface ReviewCase {
   /** From automation-prioritization; undefined when that stage has not run. */
   executionMode?: string;
   automationPriority?: string;
+  /** How it would be automated — UI / API / UI_API / VISUAL / MANUAL / UNKNOWN. */
+  automationStrategy?: string;
+  strategyReason?: string;
   prioritizationReason?: string;
   blockingFactors?: string[];
   /** Advisory reviewer issues that name this case. */
   reviewIssues: { severity: string; category?: string; message: string }[];
+}
+
+/**
+ * One upstream requirement, with the cases that demonstrate it.
+ *
+ * The case cards already show `covers`, which is traceability in one
+ * direction. A reviewer's actual question is the other one — "is this
+ * requirement tested, and by what?" — and answering it from the case list
+ * means reading every card. Both directions are derived from the same two
+ * artifacts, so they cannot disagree.
+ */
+export interface ReviewRequirement {
+  id: string;
+  statement: string;
+  /** 'acceptancePoint' or 'businessRule' — different kinds, one coverage rule. */
+  kind: 'acceptancePoint' | 'businessRule';
+  /** False only when the analyst said so, with a reason. */
+  testable: boolean;
+  notTestableReason?: string;
+  validationType?: string;
+  validationTypeReason?: string;
+  /** Behaviour IDs this rests on. */
+  evidenceIds: string[];
+  /** Test case IDs whose `covers` names it. Empty means uncovered. */
+  coveredBy: string[];
 }
 
 export interface ReviewModel {
@@ -74,6 +106,12 @@ export interface ReviewModel {
   priorityCounts: Record<string, number>;
   feature?: string;
   testCases: ReviewCase[];
+  /** Upstream requirements with their coverage. Empty when analysis has not run. */
+  requirements: ReviewRequirement[];
+  /** How discovery's behaviors fared on the way into requirements. */
+  analysisCoverage?: AnalysisCoverageSummary;
+  /** Non-blocking note when a large suite classifies itself very narrowly. */
+  scenarioDiversityNote?: string;
   review?: {
     status: string;
     summary: ReviewSummary;
@@ -119,6 +157,9 @@ export function buildReviewModel(): ReviewModel {
   const testCases = readValid<TestCases>('test-cases');
   const prioritization = readValid<AutomationPrioritization>('automation-prioritization');
   const requirements = readValid<RequirementsAnalysis>('requirements-analysis');
+  // Read only for the analysis-coverage figures; the screen never renders
+  // raw discovery, and a missing one simply leaves those counts out.
+  const discovery = readValid<DiscoveredBehavior>('discovered-behavior');
   const review = readValid<TestCasesReview>('test-cases-review');
 
   // Approval state, read through the same fields the gate locks on.
@@ -145,6 +186,7 @@ export function buildReviewModel(): ReviewModel {
     priorityCounts: {},
     feature: testCases.data?.feature,
     testCases: [],
+    requirements: [],
   };
 
   if (!testCases.data) return model;
@@ -180,6 +222,8 @@ export function buildReviewModel(): ReviewModel {
       automationReason: String(tc.automationReason ?? ''),
       executionMode: p?.executionMode,
       automationPriority: p?.automationPriority,
+      automationStrategy: p?.automationStrategy,
+      strategyReason: p?.strategyReason,
       prioritizationReason: p?.reason,
       blockingFactors: p?.blockingFactors,
       reviewIssues: issuesByCase.get(tc.id) ?? [],
@@ -191,7 +235,38 @@ export function buildReviewModel(): ReviewModel {
   }
 
   if (prioritization.data) model.counts ??= summarize(prioritization.data);
-  if (requirements.data) model.coverage = coverageSummary(requirements.data, testCases.data);
+  if (requirements.data) {
+    model.coverage = coverageSummary(requirements.data, testCases.data);
+    model.scenarioDiversityNote = scenarioDiversityDiagnostic(model.coverage);
+    model.analysisCoverage = analysisCoverageSummary(discovery.data, requirements.data);
+
+    // Coverage read from the requirement's side. Derived here from the same
+    // two artifacts the coverage totals come from, so the list and the count
+    // can never tell different stories.
+    const coveredBy = new Map<string, string[]>();
+    for (const tc of testCases.data.testCases) {
+      for (const id of tc?.covers ?? []) {
+        coveredBy.set(id, [...(coveredBy.get(id) ?? []), tc.id]);
+      }
+    }
+    const rows: [ReviewRequirement['kind'], typeof requirements.data.acceptancePoints][] = [
+      ['acceptancePoint', requirements.data.acceptancePoints ?? []],
+      ['businessRule', requirements.data.businessRules ?? []],
+    ];
+    model.requirements = rows.flatMap(([kind, items]) =>
+      items.map((r) => ({
+        id: r.id,
+        statement: r.statement,
+        kind,
+        testable: r.testable !== false,
+        notTestableReason: r.notTestableReason,
+        validationType: r.validationType,
+        validationTypeReason: r.validationTypeReason,
+        evidenceIds: r.evidenceIds ?? [],
+        coveredBy: coveredBy.get(r.id) ?? [],
+      })),
+    );
+  }
 
   if (review.data) {
     let olderThanTestCases = false;

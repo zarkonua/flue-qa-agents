@@ -35,7 +35,7 @@ const { APPROVAL_PATH } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
 const surfaceLib = await import(resolve(ROOT, 'src/lib/discovery-surface.ts'));
 const auxLib = await import(resolve(ROOT, 'src/config/auxiliary-origins.ts'));
 const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
-const { runFunnel, stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
+const { completionMetrics, runFunnel, stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
@@ -250,7 +250,9 @@ if (plan.some((s) => s.browser)) {
   const entrySnapshot = await preflightTarget(target);
   if (entrySnapshot) {
     try {
-      const surface = surfaceLib.buildSurface(target, entrySnapshot);
+      // Tracked: every state-changing browser action and snapshot is recorded,
+      // and Product Discovery's finalization is gated on them.
+      const surface = surfaceLib.buildSurface(target, entrySnapshot, new Date(), { trackCompletion: true });
       surfaceLib.writeSurface(surface);
       record.surface = {
         discovered: surface.locations.length,
@@ -324,6 +326,31 @@ for (const stage of plan) {
     }
   }
 
+  // What the Discovery Completion Gate decided, attempt by attempt. Recorded
+  // whether or not tracing is on: a run that was refused finalization and never
+  // wrote is exactly the one worth reading.
+  if (stage.key === 'discovery') {
+    const finalSurface = surfaceLib.readSurface();
+    // The application handed the flow to an origin this run may not visit. That
+    // is operator configuration, not something a model may decide: say so.
+    const heldBack = [...new Set((finalSurface?.navigation ?? [])
+      .filter((t) => t.exposedBy !== undefined && t.scope === 'EXTERNAL')
+      .map((t) => t.origin))];
+    if (heldBack.length > 0) {
+      entry.continuationOriginsNotAllowed = heldBack;
+      console.log(`NOTE            : after an action the product showed a link to ${heldBack.join(', ')}, which this run ` +
+        'may not visit. If that is test infrastructure the flow needs (a mailbox, say), add it to QA_DISCOVERY_AUX_ORIGINS.');
+    }
+    const gate = completionMetrics(finalSurface?.completion);
+    if (gate.finalizationAttemptCount) {
+      entry.completionGate = gate;
+      saveRecord();
+      console.log(`Completion gate : ${gate.finalizationAttemptCount} finalization attempt(s), ` +
+        `${gate.finalizationRejectedCount} rejected` +
+        `${gate.rejectionReasonCodes ? ` (${Object.entries(gate.rejectionReasonCodes).map(([k, n]) => `${n} ${k}`).join(', ')})` : ''}`);
+    }
+  }
+
   // QA counts from the artifact just validated — evaluated only when tracing.
   await stageTrace.end({
     passed,
@@ -331,6 +358,7 @@ for (const stage of plan) {
       const ledger = stage.key === 'discovery' ? ledgerLib.readLedger(stamp) : undefined;
       return stageMetrics(stage.key, qa.readQaArtifact, {
         observationCount: ledger ? ledgerLib.ledgerSummary(ledger).recorded : undefined,
+        completion: stage.key === 'discovery' ? surfaceLib.readSurface()?.completion : undefined,
       });
     },
   });

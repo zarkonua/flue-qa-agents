@@ -159,6 +159,8 @@ export interface DiscoveryState {
   status: 'PENDING' | 'EXPLORED' | 'BLOCKED' | 'SKIPPED_WITH_REASON';
   reason?: string;
   firstSeenAt: string;
+  /** What the page's own controls say about authentication. See discovery-actions.ts. */
+  auth?: { authForm: boolean; signOut: boolean; password: boolean; signIn: boolean };
 }
 
 /**

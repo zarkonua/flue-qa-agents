@@ -114,6 +114,21 @@ object.
 `/api/ps`: `ollama.contextLength`, `ollama.sizeBytes`, `ollama.sizeVramBytes`, and
 `ollama.fullyGpuResident` (only when all of it is in VRAM; no GPU/CPU percentage is derived).
 
+**Discovery completion gate** (see [VALIDATION.md](VALIDATION.md#discovery-finalizing-is-gated)):
+each finalization attempt is an `evaluate-discovery-completion` event under its
+`write_qa_artifact` call, with `canFinalize`, `reasonCodes`, `reasonCount`, and the gate's
+counts (`unverifiedOutcomeCount`, `unexploredAreaCount`, `authUnresolved`, …). The discovery
+stage carries `qa.finalizationAttemptCount`, `qa.finalizationRejectedCount`,
+`qa.finalizationPassed`, `qa.rejectionReasonCodes` and `qa.lastReasonCodes`, plus the
+navigation counts `qa.visibleNavigationCount`, `qa.newlyVisibleNavigationCount`,
+`qa.crossOriginNavigationCount`, `qa.followedRelevantNavigationCount` and
+`qa.unexploredRelevantNavigationCount`, and the BLOCKED roll-up `qa.blockedAttemptCount`,
+`qa.blockedAcceptedCount`, `qa.blockedRejectedCount`, `qa.blockedWithoutEvidenceCount`,
+`qa.authAttemptCount`, `qa.surfaceDeltaCount`. The first snapshot after an action carries the
+host delta's counts on its tool observation: `surfaceDeltaGenerated`, `newInteractiveCount`,
+`newNavigationCount`, `newStatusCount`, `removedRelevantElementCount`, `pageChanged`. No link
+URL and no delta text is ever sent — counts and codes only.
+
 ### QA metrics
 
 Counted by the host from the validated artifact, prefixed `qa.` on the stage, so a trace shows

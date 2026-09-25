@@ -20,8 +20,10 @@
 // grows, which is exactly the bug this file replaces. `instrument()` wraps the
 // execution itself, so it sees MCP results the same as any other tool's.
 //
-// Read-only with respect to the agent: `next()`'s value is returned untouched,
-// and a failure here never fails a browser call. The agent learns what it owes
+// The browser's own result is never edited. After a state-changing action, the
+// first snapshot gains one extra, clearly labelled content block — the host's
+// delta (src/lib/discovery-delta.ts) — and a failure here never fails a
+// browser call. The agent learns what it owes
 // when `write_qa_artifact` rejects an unaccounted location — the same
 // correction loop every other completeness rule already uses.
 //
@@ -31,7 +33,8 @@
 // import this.
 
 import { instrument } from '@flue/runtime';
-import { absorbBrowserResult, readSurface, writeSurface } from './discovery-surface.ts';
+import { absorbToolResult, readSurface, writeSurface } from './discovery-surface.ts';
+import { deltaCounts, formatDelta, publishDeltaCounts, type SurfaceDelta } from './discovery-delta.ts';
 
 /** Tool names whose results describe a page. Flue namespaces MCP tools. */
 function isBrowserTool(name: string): boolean {
@@ -61,27 +64,47 @@ export function resultText(result: unknown): string {
   return parts.join('\n');
 }
 
-/** Fold one browser result into the persisted surface. Never throws. */
-export function absorbIntoSurface(result: unknown): string[] {
+/**
+ * Fold one browser result into the persisted surface — its locations, its
+ * product state, and, when it was a state-changing action or a snapshot, the
+ * action log the completion gate reads. Never throws.
+ */
+export function absorbIntoSurface(result: unknown, toolName = 'browser_snapshot'): string[] {
+  return absorbWithDelta(result, toolName).added;
+}
+
+/** `absorbIntoSurface`, plus the delta when this result was the first look after an action. */
+export function absorbWithDelta(result: unknown, toolName = 'browser_snapshot'): { added: string[]; delta?: SurfaceDelta } {
   try {
     const surface = readSurface();
-    if (surface === undefined) return [];
+    if (surface === undefined) return { added: [] };
     const text = resultText(result);
-    if (text === '') return [];
+    if (text === '') return { added: [] };
     // Persist on any change, not only on an added location: an off-origin page
     // records an external origin and adds nothing, and a page found past the
     // cap bumps `overflow`. Writing only when `added` was non-empty dropped
     // both — the run then reported no external origins it had actually visited.
     const before = JSON.stringify(surface);
-    const added = absorbBrowserResult(surface, text);
+    const { added, delta } = absorbToolResult(surface, toolName, text);
     if (JSON.stringify(surface) !== before) writeSurface(surface);
-    return added.map((l) => l.url);
+    return { added: added.map((l) => l.url), ...(delta ? { delta } : {}) };
   } catch {
     // Bookkeeping must never cost the agent a browser call. A surface that
     // failed to grow degrades to the old behaviour; a failed navigation would
     // end the run.
-    return [];
+    return { added: [] };
   }
+}
+
+/**
+ * The browser's result with the host's delta beside it — a separate content
+ * block, never an edit to the browser's own text. Any shape other than the MCP
+ * `{ content: [...] }` envelope is returned untouched.
+ */
+export function withHostHint(result: unknown, hint: string): unknown {
+  if (result === null || typeof result !== 'object' || !Array.isArray((result as { content?: unknown }).content)) return result;
+  const envelope = result as { content: unknown[] };
+  return { ...envelope, content: [...envelope.content, { type: 'text', text: hint }] };
 }
 
 let installed = false;
@@ -97,8 +120,13 @@ export function trackDiscoverySurface(): void {
     observe: () => {},
     interceptor: async (operation, _ctx, next) => {
       const result = await next();
-      if (operation.type === 'tool' && isBrowserTool(operation.toolName)) absorbIntoSurface(result);
-      return result;
+      if (operation.type !== 'tool' || !isBrowserTool(operation.toolName)) return result;
+      const { delta } = absorbWithDelta(result, operation.toolName);
+      if (delta === undefined) return result;
+      // The first look after a state-changing action: say what changed, next
+      // to — never inside — what the browser returned.
+      publishDeltaCounts(operation.toolCallId, deltaCounts(delta));
+      return withHostHint(result, formatDelta(delta));
     },
     dispose: () => {},
   });

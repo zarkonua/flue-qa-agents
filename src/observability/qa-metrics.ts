@@ -31,11 +31,65 @@ function ratio(a: number, b: number): number | undefined {
   return b > 0 ? Math.round((a / b) * 100) / 100 : undefined;
 }
 
-function discoveryMetrics(read: Read, extra: { observationCount?: number }): Metrics {
+/** The completion gate's verdicts for this run, as the surface recorded them. */
+export interface CompletionHistory {
+  attempts: { canFinalize: boolean; reasonCodes: string[]; metrics?: Record<string, number | boolean> }[];
+}
+
+/**
+ * Finalization attempts, from the Discovery Completion Gate's own log. Present
+ * even when discovery failed — a run rejected five times and never written is
+ * exactly the one worth reading.
+ */
+export function completionMetrics(history: CompletionHistory | undefined): Metrics {
+  const attempts = history?.attempts ?? [];
+  if (attempts.length === 0) return {};
+  const rejected = attempts.filter((a) => !a.canFinalize);
+  const reasonCodeCounts: Record<string, number> = {};
+  for (const a of rejected) for (const code of a.reasonCodes) reasonCodeCounts[code] = (reasonCodeCounts[code] ?? 0) + 1;
+  const last = attempts[attempts.length - 1];
+  const m = last.metrics ?? {};
+  // BLOCKED conclusions the gate was asked to accept, and what it decided.
+  const proposed = attempts.filter((a) => a.metrics?.blockedProposed === true);
+  const blocked = proposed.length
+    ? {
+        blockedAttemptCount: proposed.length,
+        blockedAcceptedCount: proposed.filter((a) => a.canFinalize).length,
+        blockedRejectedCount: proposed.filter((a) => !a.canFinalize).length,
+        blockedWithoutEvidenceCount: attempts.filter((a) => a.reasonCodes.includes('BLOCKED_WITHOUT_EVIDENCE')).length,
+      }
+    : {};
+  return {
+    finalizationAttemptCount: attempts.length,
+    finalizationRejectedCount: rejected.length,
+    finalizationPassed: last.canFinalize,
+    ...(Object.keys(reasonCodeCounts).length ? { rejectionReasonCodes: reasonCodeCounts } : {}),
+    ...(last.canFinalize ? {} : { lastReasonCodes: last.reasonCodes.join(',') }),
+    ...(typeof m.unverifiedOutcomeCount === 'number' ? { unverifiedOutcomeCount: m.unverifiedOutcomeCount } : {}),
+    ...(typeof m.unexploredAreaCount === 'number' ? { unexploredAreaCount: m.unexploredAreaCount } : {}),
+    ...(typeof m.fileOnlySnapshotCount === 'number' && m.fileOnlySnapshotCount > 0 ? { fileOnlySnapshotCount: m.fileOnlySnapshotCount } : {}),
+    ...(typeof m.stateChangingActions === 'number' ? { stateChangingActions: m.stateChangingActions } : {}),
+    ...(typeof m.productStateCount === 'number' ? { productStateCount: m.productStateCount } : {}),
+    ...(typeof m.authUnresolved === 'boolean' ? { authUnresolved: m.authUnresolved } : {}),
+    ...blocked,
+    ...(typeof m.authAttemptCount === 'number' ? { authAttemptCount: m.authAttemptCount } : {}),
+    ...(typeof m.surfaceDeltaCount === 'number' ? { surfaceDeltaCount: m.surfaceDeltaCount } : {}),
+    // Newly exposed navigation: what the application handed over, and what was followed.
+    ...Object.fromEntries(
+      ['visibleNavigationCount', 'newlyVisibleNavigationCount', 'crossOriginNavigationCount', 'followedRelevantNavigationCount', 'unexploredRelevantNavigationCount']
+        .filter((k) => typeof m[k] === 'number')
+        .map((k) => [k, m[k] as number]),
+    ),
+  };
+}
+
+function discoveryMetrics(read: Read, extra: { observationCount?: number; completion?: CompletionHistory }): Metrics {
+  const gate = completionMetrics(extra.completion);
   const d = read('discovered-behavior');
-  if (!d) return {};
+  if (!d) return gate;
   const locations = d.locations ?? [];
   return {
+    ...gate,
     behaviourCount: len(d.behaviors),
     behaviourStatus: countBy<any>(d.behaviors, (b) => b?.status),
     areaCount: len(d.areas),
@@ -135,7 +189,11 @@ function repoMetrics(read: Read): Metrics {
  * artifact that is absent (a failed stage) yields `{}` rather than zeros, so a
  * missing count is never mistaken for a real one.
  */
-export function stageMetrics(stageKey: string, read: Read, extra: { observationCount?: number } = {}): Metrics {
+export function stageMetrics(
+  stageKey: string,
+  read: Read,
+  extra: { observationCount?: number; completion?: CompletionHistory } = {},
+): Metrics {
   try {
     switch (stageKey) {
       case 'discovery':

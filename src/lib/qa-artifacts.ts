@@ -12,7 +12,13 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateAgainstSchema, type JsonSchemaNode } from './schema-validate.ts';
 import { collectRepoEvidence } from './repo-evidence.ts';
-import { expectedLocations, readSurface } from './discovery-surface.ts';
+import { expectedLocations, readSurface, recordCompletionAttempt, writeSurface } from './discovery-surface.ts';
+import {
+  completionTracked,
+  DiscoveryIncompleteError,
+  evaluateDiscoveryCompletion,
+  type DiscoveryCompletionResult,
+} from './discovery-completion.ts';
 import { redactDeep } from './redaction.ts';
 import { readLedger } from './observation-ledger.ts';
 import {
@@ -312,7 +318,48 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
   }
 }
 
-export function writeQaArtifact(name: QaArtifactName, rawData: unknown): void {
+/**
+ * Completion-gate rejections returned in this process. Each Product Discovery
+ * attempt is its own `flue run` process, so this is a per-attempt count.
+ */
+let finalizationRejections = 0;
+
+/**
+ * The Discovery Completion Gate, applied to a discovered-behavior write that
+ * has already passed schema and semantic validation. Kept apart from both:
+ * those judge the artifact, this judges whether exploration is finished.
+ * Every verdict is recorded on the surface for the run log and for tracing.
+ */
+function gateDiscoveryFinalization(data: unknown): DiscoveryCompletionResult | undefined {
+  const surface = readSurface();
+  // Only a run whose orchestrator turned tracking on is gated; no browser, or
+  // a surface built without tracking, is not judged on evidence it never had.
+  if (!completionTracked(surface)) return undefined;
+  const result = evaluateDiscoveryCompletion({
+    surface,
+    artifact: data as { locations?: [] },
+    rejectionsSoFar: finalizationRejections,
+  });
+  recordCompletionAttempt(surface, {
+    at: new Date().toISOString(),
+    canFinalize: result.canFinalize,
+    reasonCodes: [...new Set(result.reasons.map((r) => r.code))],
+    metrics: { ...result.metrics },
+  });
+  writeSurface(surface);
+  if (!result.canFinalize) {
+    finalizationRejections += 1;
+    throw new DiscoveryIncompleteError(result);
+  }
+  return result;
+}
+
+export interface WriteResult {
+  /** The completion verdict, for a discovered-behavior write that was gated. */
+  completion?: DiscoveryCompletionResult;
+}
+
+export function writeQaArtifact(name: QaArtifactName, rawData: unknown): WriteResult {
   const def = ARTIFACTS[name];
   if (!def) throw new Error(`Unknown QA artifact name: ${name}`);
 
@@ -332,7 +379,11 @@ export function writeQaArtifact(name: QaArtifactName, rawData: unknown): void {
   const semantic = semanticErrorsFor(name, data);
   if (semantic.length > 0) throw new SemanticValidationError(name, semantic);
 
+  // Well-formed and supported by evidence — but is exploration finished?
+  const completion = name === 'discovered-behavior' ? gateDiscoveryFinalization(data) : undefined;
+
   const path = resolveArtifactPath(name);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(data, null, 2), 'utf8');
+  return completion ? { completion } : {};
 }

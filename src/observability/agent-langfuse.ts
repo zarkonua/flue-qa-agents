@@ -29,6 +29,8 @@ import { contentPolicy, redactSecrets } from './content-policy.ts';
 import type { AgentModelInfo } from './agent.ts';
 import { FLUE_OTEL_SCOPE, bounded, createLangfuseProcessor, traceAttributes, traceTags } from './langfuse.ts';
 import { readAgentTraceContext, type AgentTraceContext, type RemoteParent } from './propagation.ts';
+import { COMPLETION_LOG } from '../lib/discovery-completion.ts';
+import { takeDeltaCounts } from '../lib/discovery-delta.ts';
 import { classifyError, contextPressure, endToEndTokensPerSecond, pressureLevel, wasTruncated, type ErrorKind } from './signals.ts';
 
 type EnabledConfig = Extract<ObservabilityConfig, { enabled: true }>;
@@ -276,6 +278,8 @@ export function createAgentInstrumentation(o: AgentInstrumentationOptions): Open
       : undefined;
     const errorKind = event.isError ? classifyError(message) : undefined;
     if (errorKind && stats) stats.errorKinds.add(errorKind);
+    // The host's delta for this snapshot, if it produced one: counts only.
+    const delta = takeDeltaCounts(event.toolCallId);
 
     span.setAttributes(
       createObservationAttributes('tool', {
@@ -291,6 +295,7 @@ export function createAgentInstrumentation(o: AgentInstrumentationOptions): Open
           errorType: event.errorInfo?.type,
           hadSchemaError: errorKind === 'schema_validation_error' ? true : undefined,
           hadSemanticError: errorKind === 'semantic_validation_error' ? true : undefined,
+          ...(delta ?? {}),
         }),
       }),
     );
@@ -329,8 +334,40 @@ export function createAgentInstrumentation(o: AgentInstrumentationOptions): Open
     );
   }
 
+  /**
+   * A Discovery Completion Gate verdict, logged by `write_qa_artifact`: an
+   * event observation under that tool call, carrying the reason codes. The
+   * attributes are already flat and content-free (codes and counts).
+   */
+  function onLog(event: any): void {
+    if (event.message !== COMPLETION_LOG) return;
+    const attributes = event.attributes ?? {};
+    const tool = spans.get(toolKey({ instanceId: event.instanceId, toolCallId: attributes.toolCallId }));
+    const parent = tool ?? (event.operationId !== undefined ? spans.get(operationKey(event)) : undefined);
+    const passed = attributes.canFinalize === true;
+    o.tracer
+      .startSpan(
+        'evaluate-discovery-completion',
+        {
+          attributes: {
+            ...traceLevel(attributes),
+            ...createObservationAttributes('event', {
+              level: passed ? 'DEFAULT' : 'WARNING',
+              statusMessage: passed ? undefined : `finalization rejected: ${String(attributes.reasonCodes ?? '')}`,
+              output: { canFinalize: passed, reasonCodes: attributes.reasonCodes, reasonCount: attributes.reasonCount },
+              metadata: defined({ ...qaMetadata, ...Object.fromEntries(Object.entries(attributes).filter(([k]) => k !== 'tool' && k !== 'toolCallId')) }),
+            }),
+          },
+        },
+        parent ? trace.setSpan(ROOT_CONTEXT, parent) : (rootContext ?? ROOT_CONTEXT),
+      )
+      .end();
+  }
+
   function enrich(event: any): void {
     switch (event.type) {
+      case 'log':
+        return onLog(event);
       case 'turn_request':
         requests.set(turnKey(event), { maxTokens: event.request?.maxTokens });
         return;

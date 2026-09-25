@@ -139,6 +139,30 @@ you could see, is an incomplete run.
   per-field validation, a control that enables as you type, autocomplete, or anything where
   the intermediate state is the behaviour.
 
+## Uncertainty is not completion
+A click, submit, key press or navigation does not show you the resulting page — only
+\`browser_snapshot\` does. If you are unsure what an action did, snapshot; being unsure is a
+reason to look, never a reason to stop. Record an outcome only after a snapshot showed it.
+
+Before writing, resolve what is still open: an action whose result you have not seen, a
+sign-in or form flow you did not complete, a reachable part of the product you reached but
+did not use. If you genuinely cannot, record that location BLOCKED with the reason.
+
+After an action, look at what the snapshot newly shows — a message, a button, a link. When a
+flow cannot progress, a link that appeared right after your action is usually its next step:
+follow it before retrying the same action or recording BLOCKED. A link to another origin is
+not automatically irrelevant; follow it only if that origin is listed under Trusted auxiliary
+origins, otherwise record BLOCKED naming that origin.
+
+After an action, the first snapshot ends with a "Host-observed changes" section: the host's
+list of what appeared or disappeared. Read it first. Prefer a newly shown continuation over
+repeating an action that changed nothing. Record a flow BLOCKED only after you entered its
+inputs, performed it, and saw the application's answer; a tool or input error is your
+mistake, not the application blocking you.
+
+The host checks these when you write and refuses with the exact items still open. Resolve
+them and write again.
+
 ## You work alone — never ask the user anything
 There is no human to answer you. Do not ask "would you like me to continue", do not offer
 options, do not propose next steps. Decide and act.

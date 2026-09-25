@@ -1,6 +1,19 @@
 import { defineTool } from '@flue/runtime';
 import * as v from 'valibot';
 import { readQaArtifact, writeQaArtifact, type QaArtifactName } from '../lib/qa-artifacts.ts';
+import { COMPLETION_LOG, DiscoveryIncompleteError, type DiscoveryCompletionResult } from '../lib/discovery-completion.ts';
+
+/** Flat, machine-readable attributes of one verdict. Codes, never messages. */
+export function completionAttributes(result: DiscoveryCompletionResult): Record<string, unknown> {
+  const codes = [...new Set(result.reasons.map((r) => r.code))];
+  return {
+    canFinalize: result.canFinalize,
+    reasonCodes: codes.join(','),
+    reasonCount: result.reasons.length,
+    exhausted: result.exhausted,
+    ...result.metrics,
+  };
+}
 
 /** Artifacts an agent may WRITE. `discovery-evidence` is deliberately absent. */
 const ARTIFACT_NAMES = [
@@ -73,8 +86,16 @@ export function writeQaArtifactToolFor<const T extends readonly QaArtifactName[]
       name: v.picklist(names, 'you may only write: ' + names.join(', ')),
       data: v.record(v.string(), v.unknown()),
     }),
-    async run({ data }) {
-      writeQaArtifact(data.name as QaArtifactName, data.data);
+    async run({ data, log }) {
+      try {
+        const { completion } = writeQaArtifact(data.name as QaArtifactName, data.data);
+        if (completion) log.info(COMPLETION_LOG, completionAttributes(completion));
+      } catch (error) {
+        // A completion-gate rejection is a finalization attempt, not a broken
+        // write: logged with its reason codes so a trace can show it.
+        if (error instanceof DiscoveryIncompleteError) log.warn(COMPLETION_LOG, completionAttributes(error.result));
+        throw error;
+      }
       return { output: { written: true, name: data.name } };
     },
   });

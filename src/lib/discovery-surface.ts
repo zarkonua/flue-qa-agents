@@ -17,13 +17,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { QA_ARTIFACT_ROOT } from './qa-artifacts.ts';
 import { auxiliaryOrigins } from '../config/auxiliary-origins.ts';
-import { locationIdentity } from './redaction.ts';
+import { locationIdentity, redactText } from './redaction.ts';
 import {
   MAX_STATES,
   MAX_STATES_PER_LOCATION,
   stateSignature,
   type DiscoveryState,
 } from './discovery-state.ts';
+import { authSignals, classifyBrowserAction, isAuthAction, isErrorResult, ranCode, type ActionKind } from './discovery-actions.ts';
+import { controlNames, deltaCounts, diffViews, extractMessages, type DeltaCounts, type SurfaceDelta, type SurfaceView } from './discovery-delta.ts';
 
 /** How many product locations one discovery run is asked to account for. */
 export const MAX_LOCATIONS = 12;
@@ -78,7 +80,105 @@ export interface DiscoverySurface {
   states?: DiscoveryState[];
   /** States dropped because a cap was reached. */
   stateOverflow?: number;
+  /** State-changing browser actions, in order, and whether their outcome was observed. */
+  actions?: ActionRecord[];
+  /** The product state the most recent snapshot showed. */
+  currentStateId?: string;
+  /** Locations the host itself saw a snapshot of — what EXPLORED can be checked against. */
+  observedLocations?: string[];
+  /** Every finalization attempt the completion gate judged. See discovery-completion.ts. */
+  completion?: CompletionLog;
+  /** Every link target the browser rendered, and whether a state-changing action exposed it. */
+  navigation?: NavigationTarget[];
+  /** What the most recent inline snapshot showed — the "before" of the next delta. */
+  lastView?: SurfaceView;
+  /** Successful input into a form field, by product state. Evidence that an attempt was real. */
+  inputs?: { stateId?: string; at: string }[];
 }
+
+/** Where a rendered link leads, relative to what this run may visit. */
+export type NavigationScope = 'PRODUCT' | 'AUXILIARY' | 'EXTERNAL';
+
+/**
+ * A link target the browser rendered.
+ *
+ * `exposedBy` is what makes it interesting: a target absent before an action
+ * and present right after it is how an application hands a user the next step
+ * of a flow — a confirmation link after signing up, say — on any origin.
+ * Links present from the start (a footer, a social link) never have it.
+ *
+ * `url` is the location identity: query values dropped and opaque path
+ * segments redacted, so a one-time token in a link is never stored.
+ */
+export interface NavigationTarget {
+  /** Host-assigned, sequential: NAV-001, … */
+  id: string;
+  url: string;
+  origin: string;
+  scope: NavigationScope;
+  /** Accessible name, redacted and shortened. */
+  name: string;
+  firstSeenAt: string;
+  /** The page and product state that first rendered it. */
+  sourceLocation?: string;
+  sourceStateId?: string;
+  /** The state-changing action whose outcome first showed it. */
+  exposedBy?: string;
+  /** When the session first reached it. */
+  followedAt?: string;
+}
+
+/** Link targets kept per run. A guard, not a target. */
+export const MAX_NAVIGATION = 80;
+
+/**
+ * One state-changing browser action, host-recorded from the browser's own
+ * report of it. `verifiedAt` is set by the next snapshot: until then, nothing
+ * in the agent's context shows what the action did.
+ */
+export interface ActionRecord {
+  /** Host-assigned, sequential: ACT-001, … */
+  id: string;
+  tool: string;
+  kind: ActionKind;
+  /** `click on button "Sign In"`, for feedback a person or a model can act on. */
+  label: string;
+  role?: string;
+  name?: string;
+  /** Where a navigation went. */
+  url?: string;
+  /** The page the action ran on, when the result named it. */
+  location?: string;
+  /** The product state the last snapshot before the action showed. */
+  stateId?: string;
+  /** A sign-in / sign-up attempt, judged from the control's accessible name. */
+  auth: boolean;
+  at: string;
+  verifiedAt?: string;
+  /**
+   * Snapshots taken after this action that saved the page to a file instead of
+   * returning it — `browser_snapshot` called with a filename. The agent saw
+   * nothing, so they do not verify; counted so the rejection can say why.
+   */
+  fileOnlySnapshotsAfter?: number;
+  /** What the first inline snapshot after this action showed changing. Counts only. */
+  outcome?: DeltaCounts;
+}
+
+export interface CompletionAttempt {
+  at: string;
+  canFinalize: boolean;
+  reasonCodes: string[];
+  /** The gate's counts at that attempt: unverified outcomes, unexplored areas, … */
+  metrics?: Record<string, number | boolean>;
+}
+
+export interface CompletionLog {
+  attempts: CompletionAttempt[];
+}
+
+/** Actions kept per run. A guard against a runaway loop, not a target. */
+export const MAX_ACTIONS = 400;
 
 export const SURFACE_FILE = 'discovery-surface.json';
 export const surfacePath = () => join(QA_ARTIFACT_ROOT, SURFACE_FILE);
@@ -124,6 +224,11 @@ export function extractLinks(snapshot: string): { url: string; name: string }[] 
   for (let i = 0; i < lines.length; i += 1) {
     const match = /^\s*-?\s*\/url:\s*(\S+)\s*$/.exec(lines[i]);
     if (!match) continue;
+    // Playwright quotes some values as YAML strings (`/url: "#"`). Unquoted,
+    // `"#"` resolved as a relative path and minted a phantom `/%22` location
+    // the agent could never satisfy. A bare fragment is the same page.
+    const url = match[1].replace(/^(['"])(.*)\1$/, '$2');
+    if (url === '' || url.startsWith('#')) continue;
     // The owning element is the nearest preceding line that names one.
     let name = '';
     for (let j = i - 1; j >= 0 && j > i - 6; j -= 1) {
@@ -133,7 +238,7 @@ export function extractLinks(snapshot: string): { url: string; name: string }[] 
         break;
       }
     }
-    out.push({ url: match[1], name });
+    out.push({ url, name });
   }
   return out;
 }
@@ -144,7 +249,12 @@ export function extractLinks(snapshot: string): { url: string; name: string }[] 
  * Same origin only, deduplicated, capped, with unsafe links pre-marked
  * SKIPPED_WITH_REASON so the agent records them without following them.
  */
-export function buildSurface(target: string, snapshot: string, now = new Date()): DiscoverySurface {
+export function buildSurface(
+  target: string,
+  snapshot: string,
+  now = new Date(),
+  options: { trackCompletion?: boolean } = {},
+): DiscoverySurface {
   const entryId = locationIdentity(target, target);
   if (entryId === undefined) throw new Error(`TARGET_URL is not a usable URL: ${target}`);
   const entry = entryId.url;
@@ -191,7 +301,7 @@ export function buildSurface(target: string, snapshot: string, now = new Date())
     });
   }
 
-  return {
+  const surface: DiscoverySurface = {
     target: entry,
     origin,
     createdAt: now.toISOString(),
@@ -201,7 +311,62 @@ export function buildSurface(target: string, snapshot: string, now = new Date())
     auxiliaryOrigins: aux,
     states: [],
     stateOverflow: 0,
+    // Turns on the completion gate for this run: actions and snapshots are
+    // recorded from here on, and finalization is judged against them.
+    ...(options.trackCompletion ? { actions: [], observedLocations: [], navigation: [] } : {}),
   };
+  // What the entry page offers before anything is done is the baseline: none
+  // of it was exposed by an action.
+  if (options.trackCompletion) registerNavigation(surface, snapshot, entry, undefined, undefined, now);
+  return surface;
+}
+
+/**
+ * Record every link target a snapshot renders that is not yet known. New
+ * targets are attributed to `exposedBy` — the action this snapshot is the
+ * first look after — when there is one. Pure; the caller persists.
+ */
+export function registerNavigation(
+  surface: DiscoverySurface,
+  snapshot: string,
+  page: string,
+  stateId: string | undefined,
+  exposedBy: string | undefined,
+  now = new Date(),
+): NavigationTarget[] {
+  const targets = (surface.navigation ??= []);
+  const added: NavigationTarget[] = [];
+  for (const link of extractLinks(snapshot)) {
+    const id = locationIdentity(link.url, page);
+    if (id === undefined) continue;
+    if (targets.some((t) => t.url === id.url)) continue;
+    if (targets.length >= MAX_NAVIGATION) break;
+    const origin = new URL(id.url).origin;
+    const kind = classifyOrigin(origin, surface.origin, surface.auxiliaryOrigins ?? []);
+    const target: NavigationTarget = {
+      id: `NAV-${String(targets.length + 1).padStart(3, '0')}`,
+      url: id.url,
+      origin,
+      scope: kind ?? 'EXTERNAL',
+      name: redactText(link.name).replace(/\s+/g, ' ').trim().slice(0, 80),
+      firstSeenAt: now.toISOString(),
+      sourceLocation: page,
+      ...(stateId ? { sourceStateId: stateId } : {}),
+      ...(exposedBy ? { exposedBy } : {}),
+    };
+    targets.push(target);
+    added.push(target);
+  }
+  return added;
+}
+
+/** Mark targets the session has now reached. Cross-origin targets count by origin: a flow may redirect within it. */
+function markFollowed(surface: DiscoverySurface, location: string, now: Date): void {
+  const origin = new URL(location).origin;
+  for (const t of surface.navigation ?? []) {
+    if (t.followedAt !== undefined) continue;
+    if (t.url === location || (t.scope !== 'PRODUCT' && t.origin === origin)) t.followedAt = now.toISOString();
+  }
 }
 
 /** Only carry the identity extras that say something. */
@@ -290,6 +455,7 @@ export function registerState(
     controls,
     status: 'PENDING',
     firstSeenAt: now.toISOString(),
+    auth: authSignals(snapshot),
   };
   states.push(state);
   return state;
@@ -320,7 +486,7 @@ export function currentPageUrl(text: string): string | undefined {
  * Pure: the caller decides whether to persist. Returns what was added, and the
  * existing `MAX_LOCATIONS` cap still bounds the run.
  */
-export function absorbBrowserResult(surface: DiscoverySurface, text: string): SurfaceLocation[] {
+export function absorbBrowserResult(surface: DiscoverySurface, text: string, now = new Date()): SurfaceLocation[] {
   const added: SurfaceLocation[] = [];
   const page = currentPageUrl(text);
   if (page !== undefined) {
@@ -329,7 +495,7 @@ export function absorbBrowserResult(surface: DiscoverySurface, text: string): Su
     // The same route can show an entirely different product either side of a
     // sign-in; the state ledger is what notices.
     const identity = locationIdentity(page, surface.target);
-    if (identity !== undefined) registerState(surface, identity.url, text);
+    if (identity !== undefined) registerState(surface, identity.url, text, now);
   }
   // Links resolve against the page that rendered them, not the entry page, so
   // a relative href on a sub-page lands where the browser would take it.
@@ -342,9 +508,152 @@ export function absorbBrowserResult(surface: DiscoverySurface, text: string): Su
   return added;
 }
 
-/** Locations the agent is expected to account for — the pre-skipped ones included. */
+/** Does this result carry the page's accessibility tree inline? Only `browser_snapshot` does. */
+export function hasInlineTree(text: string): boolean {
+  return /###\s*Snapshot\s*\n```/i.test(text);
+}
+
+/** A snapshot saved to a file and returned only as a link: nothing reached the agent. */
+export function isFileOnlySnapshot(text: string): boolean {
+  return /###\s*Snapshot\s*\n-\s*\[Snapshot\]\(/i.test(text) && !hasInlineTree(text);
+}
+
+/**
+ * Fold one browser tool result into the surface: everything
+ * `absorbBrowserResult` does, plus the action log.
+ *
+ *   - a state-changing action (a click on a button, a submit, a navigation)
+ *     is appended unverified;
+ *   - a snapshot is the only thing that verifies: it puts the resulting page
+ *     in front of the agent, so every earlier unverified action now has an
+ *     observed outcome.
+ *
+ * Deterministic and host-side. The model's own account of what happened —
+ * "sign-in probably worked" — is never an input.
+ */
+export interface AbsorbResult {
+  added: SurfaceLocation[];
+  /** Set on the first inline snapshot after a state-changing action. */
+  delta?: SurfaceDelta;
+}
+
+/** A page as a hint shows it: a path in the product, the token-free identity elsewhere. */
+function displayUrl(surface: DiscoverySurface, url: string): string {
+  return url.startsWith(surface.origin) ? url.slice(surface.origin.length) || '/' : url;
+}
+
+/** Did this successful browser_type / browser_fill_form call put input into a field? */
+function isInputResult(tool: string, text: string): boolean {
+  if (tool !== 'browser_type' && tool !== 'browser_fill_form') return false;
+  return /\.(fill|type|pressSequentially)\(/.test(ranCode(text));
+}
+
+export function absorbToolResult(surface: DiscoverySurface, toolName: string, text: string, now = new Date()): AbsorbResult {
+  const added = absorbBrowserResult(surface, text, now);
+  const tool = toolName.replace(/^mcp__[a-z0-9_-]+__/i, '');
+  const page = currentPageUrl(text);
+  const location = page === undefined ? undefined : locationIdentity(page, surface.target)?.url;
+  const failed = isErrorResult(text);
+
+  if (location !== undefined && !failed) markFollowed(surface, location, now);
+
+  if (tool === 'browser_snapshot' && !failed && hasInlineTree(text)) {
+    const unverified = (surface.actions ?? []).filter((a) => a.verifiedAt === undefined);
+    // The action this snapshot is the first look after: what it rendered that
+    // was not rendered before is what that action exposed. A navigation
+    // exposes a page, not a continuation, so it is not credited.
+    const firstLookAfter = [...unverified].reverse().find((a) => a.kind !== 'navigate');
+    const lastAction = unverified[unverified.length - 1];
+    let delta: SurfaceDelta | undefined;
+    if (location !== undefined) {
+      const seen = (surface.observedLocations ??= []);
+      if (!seen.includes(location)) seen.push(location);
+      const { id, controls } = stateSignature(location, text);
+      if (controls.length > 0) surface.currentStateId = id;
+      const exposed =
+        surface.navigation !== undefined
+          ? registerNavigation(surface, text, location, controls.length > 0 ? id : undefined, firstLookAfter?.id, now).filter((t) => t.exposedBy)
+          : [];
+      const view: SurfaceView = { location, controls: controlNames(text), messages: extractMessages(text) };
+      // Only after an action: a snapshot for its own sake has nothing to compare.
+      if (lastAction !== undefined && surface.lastView !== undefined) {
+        const diff = diffViews(surface.lastView, view, { compareControls: lastAction.kind !== 'navigate' });
+        delta = {
+          afterAction: { id: lastAction.id, label: lastAction.label },
+          ...diff,
+          ...(diff.pageChanged ? { pageChanged: { from: displayUrl(surface, diff.pageChanged.from), to: displayUrl(surface, diff.pageChanged.to) } } : {}),
+          newNavigation: exposed.map((t) => ({ name: t.name, target: displayUrl(surface, t.url), scope: t.scope })),
+        };
+        // The outcome this action produced, as the host saw it: the evidence a
+        // BLOCKED conclusion needs. Counts only.
+        lastAction.outcome = deltaCounts(delta);
+      }
+      surface.lastView = view;
+    }
+    for (const action of unverified) action.verifiedAt = now.toISOString();
+    return { added, ...(delta ? { delta } : {}) };
+  }
+
+  if (tool === 'browser_snapshot') {
+    if (isFileOnlySnapshot(text)) {
+      for (const action of surface.actions ?? []) {
+        if (action.verifiedAt === undefined) action.fileOnlySnapshotsAfter = (action.fileOnlySnapshotsAfter ?? 0) + 1;
+      }
+    }
+    return { added };
+  }
+
+  // Input that actually reached a field. A failed call typed nothing.
+  if (!failed && isInputResult(tool, text)) {
+    const inputs = (surface.inputs ??= []);
+    inputs.push({ ...(surface.currentStateId ? { stateId: surface.currentStateId } : {}), at: now.toISOString() });
+    if (inputs.length > MAX_ACTIONS) inputs.shift();
+  }
+
+  const action = classifyBrowserAction(tool, text);
+  if (action === undefined) return { added };
+  const actions = (surface.actions ??= []);
+  const state = (surface.states ?? []).find((s) => s.id === surface.currentStateId);
+  actions.push({
+    id: `ACT-${String(actions.length + 1).padStart(3, '0')}`,
+    tool,
+    kind: action.kind,
+    label: action.label,
+    ...(action.role ? { role: action.role } : {}),
+    ...(action.name ? { name: action.name } : {}),
+    ...(action.url ? { url: action.url } : {}),
+    ...(location ? { location } : {}),
+    ...(surface.currentStateId ? { stateId: surface.currentStateId } : {}),
+    // A sign-in / sign-up control by name, or a submit pressed inside a form
+    // that shows a password field next to one.
+    auth: isAuthAction(action) || ((action.kind === 'submit' || action.kind === 'key') && state?.auth?.authForm === true),
+    at: now.toISOString(),
+  });
+  // Oldest *verified* entries go first; an unverified action is never dropped.
+  while (actions.length > MAX_ACTIONS) {
+    const i = actions.findIndex((a) => a.verifiedAt !== undefined);
+    if (i === -1) break;
+    actions.splice(i, 1);
+  }
+  return { added };
+}
+
+/** Record one completion-gate verdict. Pure; the caller persists. */
+export function recordCompletionAttempt(surface: DiscoverySurface, attempt: CompletionAttempt): void {
+  (surface.completion ??= { attempts: [] }).attempts.push(attempt);
+}
+
+/**
+ * Locations the agent is expected to account for — the pre-skipped ones
+ * included. Product locations only: a configured auxiliary origin is
+ * infrastructure the agent is told never to describe as product, so demanding
+ * it in `locations` as well set the two rules against each other — measured,
+ * a run that correctly reached the mailbox gave up on exactly that. The host
+ * already knows it went there; the agent may still report it, and when it
+ * does, the auxiliary rules apply.
+ */
 export function expectedLocations(surface: DiscoverySurface): string[] {
-  return surface.locations.map((l) => l.url);
+  return surface.locations.filter((l) => l.kind !== 'AUXILIARY').map((l) => l.url);
 }
 
 export function writeSurface(surface: DiscoverySurface): void {

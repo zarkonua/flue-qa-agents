@@ -9,8 +9,13 @@ not. The executable reference is `src/lib/semantic-validate.ts` and `test/*.test
 agent calls write_qa_artifact(name, data)
    1. JSON Schema        schemas/<name>.schema.json      -> reject: shape errors
    2. semantic checks    evidence read by HOST code      -> reject: grouped errors
-   3. write                                              -> only if both pass
+   3. completion gate    discovered-behavior only        -> reject: what is still unresolved
+   4. write                                              -> only if all pass
 ```
+
+The completion gate is a separate layer on purpose: an artifact can be well-formed and fully
+supported while the run that produced it clicked Sign In, never looked, and stopped. See
+[Discovery: finalizing is gated](#discovery-finalizing-is-gated).
 
 Schema validation proves the artifact has the right *shape*. Semantic validation asks whether
 the content is *supported*. The evidence is always loaded by host code, never supplied by the
@@ -66,7 +71,62 @@ A location the artifact *itself* names — in an area's routes, in a behavior, o
 observation — must also reach a terminal state. A run that recorded "navigated to
 /account/notes" while listing only the entry page is rejected (`UNACCOUNTED_LOCATION`).
 
-Only an off-origin or malformed URL is rejected outright.
+Only an off-origin or malformed URL is rejected outright. Pages on a configured auxiliary
+origin (a test mailbox) are infrastructure: they may be reported — without an area — but are
+never *required* in `locations`.
+
+## Discovery: finalizing is gated
+
+Product Discovery's `write_qa_artifact("discovered-behavior")` is its proposal to finish. Once
+the artifact passes schema and semantic validation, the **Discovery Completion Gate**
+(`src/lib/discovery-completion.ts`) asks one more question: *is there host-recorded evidence
+that exploration is unfinished?* If so, nothing is written and the agent receives numbered
+reasons, each with a stable code, and continues in the same conversation.
+
+The evidence is the browser's own reports, read by the host interceptor as they pass — never
+the model's reasoning. Every action result names the Playwright code it ran
+(`getByRole('button', { name: 'Sign In' }).click()`) and nothing about the outcome; only
+`browser_snapshot` shows the resulting page. So the host records each **state-changing action**
+(a click on a button, link, tab or checkbox; Enter or Escape; a selection; a navigation) and
+marks it verified at the next snapshot. Typing and focusing a field are not state-changing.
+
+| Code | Rejected when |
+|---|---|
+| `UNVERIFIED_ACTION_OUTCOME` | A state-changing action has no snapshot after it: its result was never seen. |
+| `UNVERIFIED_EXPLORED_LOCATION` | A location reported `EXPLORED` was never shown by a snapshot in this run. |
+| `UNRESOLVED_AUTH_STATE` | A sign-in form was seen, no signed-in state was (a sign-out control, or the same route without the form), and no location is recorded `BLOCKED` with a reason. |
+| `UNEXPLORED_REACHABLE_AREA` | A product state the run reached offers controls no exercised state offered, nothing was done there, and its location is not `BLOCKED`/`SKIPPED_WITH_REASON`. Links to other origins are left to the next rule. |
+| `UNEXPLORED_RELEVANT_NAVIGATION` | A link absent before a state-changing action and present right after it, while the sign-in flow is unresolved, was never followed. On the product or a configured auxiliary origin it must be followed — `BLOCKED` is not accepted while it is reachable. On any other origin the agent is told not to follow it and to record `BLOCKED` naming the origin, and the run prints a hint to add it to `QA_DISCOVERY_AUX_ORIGINS`. It replaces `UNRESOLVED_AUTH_STATE` when both describe the same open flow. |
+
+| `BLOCKED_WITHOUT_EVIDENCE` | The open sign-in flow is resolved `BLOCKED`, but no executed attempt at it shows the whole chain: input entered in that form, the action performed, its result inspected, and a visible change (a status/alert message, a control appearing or disappearing, a new link, a page change). A browser call that failed on its arguments is never recorded, so tool errors can never support `BLOCKED`. Success is not required — an application that visibly answers a real attempt with an error has blocked it. It replaces `UNRESOLVED_AUTH_STATE` when the only answer given was an unsupported `BLOCKED`. |
+
+**Host-observed changes.** On the first snapshot after a state-changing action, the host
+compares it with the previous one and appends a short, separately labelled block to the tool
+result — never an edit to the browser's text: new links (with scope, token-free), new
+status/alert messages, controls that appeared or disappeared, and a page change. Bounded to a
+few lines; an action that changed nothing gets one line saying so. Controls are compared by
+role and normalised name, so a list gaining rows is not a change. The same comparison, as
+counts, is the "visible outcome" `BLOCKED_WITHOUT_EVIDENCE` requires.
+
+**Newly exposed navigation.** Every link target a snapshot renders is recorded with its scope
+(product, configured auxiliary, other) and, when it first appears in the snapshot right after a
+state-changing action, the action that exposed it. Links on the entry page are the baseline and
+are never "exposed", so a footer or social link never blocks anything; nor does a link that
+appears when no flow is open. A target counts as followed once the session reaches it — for
+another origin, anywhere on that origin. Only the location identity is stored (query values
+dropped, opaque path segments redacted), so a one-time token in a continuation link never
+reaches the surface, the run record or a trace.
+
+What the gate never does: count. There is no minimum of behaviours, pages, observations or
+tool calls — an application with one behaviour, observed, finalizes on the first attempt.
+`BLOCKED` and `SKIPPED_WITH_REASON` with a reason are always acceptable answers; the gate only
+refuses *silence* about something the browser showed.
+
+Bounded: after 5 rejections in one agent attempt the gate tells the agent to stop and reply
+BLOCKED, and the stage's existing bounded attempts take over. Exhaustion never turns a
+rejection into a pass. Only runs whose orchestrator turned tracking on are gated
+(`qa:manual`); every verdict is kept on the surface (`discovery-surface.json` →
+`completion.attempts`), in `phase1-run.json`, and in the trace.
 
 ## Browser evidence the model does not supply
 
@@ -232,6 +292,13 @@ useful**. Known gaps, all of which pass today:
   What it cannot do is force the first step: a state reachable only by pressing a button the
   agent never presses is never rendered, never seen by the host, and so never joins the list.
   The completeness rule compounds exploration; it does not start it.
+- **The completion gate reads English accessible names.** Sign-in and sign-out controls are
+  recognised by name (`Sign in`, `Log out`, a `Password` field). An auth form it does not
+  recognise is simply not gated on — the gate fails open, never closed.
+- **The completion gate sees states, not intentions.** It cannot know that a feature exists
+  until the browser shows it; a product title mentioning "Notes" is not evidence of a Notes
+  area. It also cannot tell that an observation was recorded *before* the action it
+  describes.
 - **Depth.** Coverage is checked against the requirements that were *written down*. If the
   Behavior Analyst never derived a requirement, nothing demands a test for it — a thin
   discovery still yields a thin suite, honestly labelled as fully covered.

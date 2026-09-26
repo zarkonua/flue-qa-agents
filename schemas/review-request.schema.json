@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "operation", "baseTestCasesSha256", "status", "history", "createdAt", "updatedAt"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^REQ-[0-9]{4,}$" },
+    "operation": { "enum": ["update", "create", "delete"] },
+    "targetTestCaseId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,40}$" },
+    "baseTestCasesSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "humanComment": { "type": "string" },
+    "manualEdits": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "types": { "type": "array", "items": { "type": "string" } },
+        "preconditions": { "type": "array", "items": { "type": "string" } },
+        "testData": { "type": "object" },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action", "expected"],
+            "properties": { "action": { "type": "string" }, "expected": { "type": "string" } },
+            "additionalProperties": false
+          }
+        },
+        "expectedResult": { "type": "string" },
+        "automationCandidate": { "type": "boolean" },
+        "automationReason": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "status": { "enum": ["PENDING", "PROCESSING", "PROPOSAL_READY", "CHANGES_REQUESTED", "REJECTED", "APPLIED", "FAILED"] },
+    "latestProposalId": { "type": "string", "pattern": "^PRP-[0-9]{4,}$" },
+    "error": { "type": "string" },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at", "event"],
+        "properties": {
+          "at": { "type": "string" },
+          "event": { "enum": ["created", "processing", "proposal", "failed", "rejected", "changes_requested", "applied", "comment"] },
+          "note": { "type": "string" },
+          "proposalId": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" }
+  },
+  "additionalProperties": false
+}

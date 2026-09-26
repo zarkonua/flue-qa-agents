@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "id",
+    "requestId",
+    "operation",
+    "baseTestCasesSha256",
+    "author",
+    "proposedCases",
+    "removedTestCaseIds",
+    "rationale",
+    "evidenceRefs",
+    "unresolvedIssues",
+    "status",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^PRP-[0-9]{4,}$"
+    },
+    "requestId": {
+      "type": "string",
+      "pattern": "^REQ-[0-9]{4,}$"
+    },
+    "operation": {
+      "enum": [
+        "update",
+        "create",
+        "delete"
+      ]
+    },
+    "targetTestCaseId": {
+      "type": "string"
+    },
+    "baseTestCasesSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "author": {
+      "enum": [
+        "agent",
+        "host"
+      ]
+    },
+    "proposedCases": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "removedTestCaseIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "evidenceRefs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unresolvedIssues": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "status": {
+      "enum": [
+        "READY",
+        "APPLIED",
+        "REJECTED",
+        "SUPERSEDED"
+      ]
+    },
+    "createdAt": {
+      "type": "string"
+    },
+    "baseCase": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

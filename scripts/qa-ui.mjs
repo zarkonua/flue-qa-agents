@@ -1,122 +1,147 @@
 #!/usr/bin/env node
-// Local Phase 1 review UI.
+// The QA Review Workspace.
 //
-//   npm run qa:ui        ->  http://127.0.0.1:4445
+//   npm run qa:ui          build the UI if its sources changed, then serve it
+//                          and the host API at http://127.0.0.1:4445
+//   npm run qa:ui:dev      the same host API, plus Vite with hot reload on :5173
 //
-// A read-and-approve screen over the artifacts `npm run qa:manual` produced, so
-// a review does not mean scrolling test-cases.json next to
-// automation-prioritization.json.
-//
-// Trust model, unchanged from the CLI:
-//   - the browser never reads .qa; this process does, through the same host
-//     libraries the scripts use;
-//   - approving calls approvePhase1() — the identical function behind
-//     `npm run qa:approve`. Schema validation, semantic validation, the SHA-256
-//     lock and the structural rules all still apply, and the UI cannot weaken
-//     them because it does not implement them;
-//   - the only writable actions are two fixed ones. No path, command, artifact
-//     name or argument ever comes from the browser;
-//   - bound to 127.0.0.1. Nothing here is authenticated, so nothing here
-//     listens on a public interface.
+// Trust model:
+//   - the browser talks only to the fixed API in src/ui-server/server.ts; it
+//     never reads or writes a file, names a path, or runs a command;
+//   - the review agent PROPOSES through its two tools; the host VALIDATES; a
+//     person APPLIES; the host WRITES test-cases.json;
+//   - approving Phase 1 calls approvePhase1(), the same as `npm run qa:approve`;
+//   - bound to 127.0.0.1 unless QA_UI_HOST says otherwise; there is no login.
 
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { EXIT, ROOT } from './lib/runtime.mjs';
+import { EXIT, ROOT, runAgent } from './lib/runtime.mjs';
+import { acquireRunLock } from './lib/run-lock.mjs';
 
-const { envInt, envString } = await import(resolve(ROOT, 'src/config/env.ts'));
-const { buildReviewModel } = await import(resolve(ROOT, 'src/lib/review-view.ts'));
-const { approvePhase1 } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
+const { envInt, envString, QA_MODEL } = await import(resolve(ROOT, 'src/config/env.ts'));
+const { createUiServer } = await import(resolve(ROOT, 'src/ui-server/server.ts'));
+const { artifactWorkspace, defaultStore } = await import(resolve(ROOT, 'src/review/workspace.ts'));
+const { validateProposal } = await import(resolve(ROOT, 'src/review/test-case-changes.ts'));
 const { QA_ARTIFACT_ROOT } = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
+const { createRunObservability } = await import(resolve(ROOT, 'src/observability/host.ts'));
 
 const PORT = envInt('QA_UI_PORT', 4445);
-// Deliberately not configurable from the browser, and not from a stray env var
-// that a shared machine might set: a local review tool has no login.
 const HOST = envString('QA_UI_HOST') ?? '127.0.0.1';
+const DEV = process.argv.includes('--dev');
+const UI = join(ROOT, 'ui');
+const DIST = join(UI, 'dist');
 
-// A fixed map, not a path join: the URL cannot name a file. Adding a file here
-// is a source change, which is the point.
-const UI_DIR = join(ROOT, 'src', 'ui');
-const STATIC = {
-  '/': ['index.html', 'text/html; charset=utf-8'],
-  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
-  '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
-};
+// ---------------------------------------------------------------------------
+// Build the UI when its sources are newer than the build
+// ---------------------------------------------------------------------------
 
-function send(res, status, body, type = 'application/json; charset=utf-8') {
-  res.writeHead(status, {
-    'content-type': type,
-    // This UI reads local QA artifacts; nothing should embed or fetch it.
-    'cache-control': 'no-store',
-    'x-content-type-options': 'nosniff',
-  });
-  res.end(body);
+function newest(path) {
+  const s = statSync(path);
+  if (!s.isDirectory()) return s.mtimeMs;
+  return Math.max(s.mtimeMs, ...readdirSync(path).map((f) => newest(join(path, f))));
 }
 
-const json = (res, status, value) => send(res, status, JSON.stringify(value));
+async function ensureBuilt() {
+  const built = join(DIST, 'index.html');
+  const sources = Math.max(newest(join(UI, 'src')), newest(join(UI, 'index.html')), newest(join(UI, 'vite.config.ts')));
+  if (existsSync(built) && statSync(built).mtimeMs >= sources) return;
+  console.log('Building the workspace UI…');
+  const { build } = await import('vite');
+  await build({ root: UI, configFile: join(UI, 'vite.config.ts'), logLevel: 'warn' });
+}
 
-/** Run one fixed host command. Nothing about it comes from the request. */
-function runFixed(args) {
+// ---------------------------------------------------------------------------
+// The focused review agent, one request at a time
+// ---------------------------------------------------------------------------
+
+const AGENT = 'src/agents/test-case-change-reviewer.ts';
+const ATTEMPTS = 2;
+
+async function runReviewAgent(request) {
+  // Review agents share Flue's conversation store with QA runs; never both at once.
+  const lock = acquireRunLock(QA_ARTIFACT_ROOT, { runId: request.id, model: QA_MODEL, command: 'qa:ui review' });
+  if (!lock.ok) throw new Error(lock.message.split('\n')[0]);
+  const store = defaultStore();
+  const observability = await createRunObservability();
+  // Ids and booleans only — never the comment, the case or a diff.
+  observability.startRun({
+    command: 'test-case-review',
+    runId: request.id,
+    model: QA_MODEL,
+    input: { requestId: request.id, operation: request.operation },
+    metadata: {
+      operation: request.operation,
+      testCaseId: request.targetTestCaseId ?? null,
+      manualEditsPresent: request.manualEdits !== undefined,
+      humanCommentPresent: request.humanComment !== undefined,
+      verificationRequired: false,
+      verificationPerformed: false,
+    },
+  });
+  const stage = observability.startStage({ key: 'generate-proposal', label: 'Focused review', agent: AGENT, artifact: 'review-proposal' });
+  let proposal;
+  try {
+    const before = new Set((await store.listProposals(request.id)).map((p) => p.id));
+    const id = `review-${request.id}-${Date.now().toString(36)}`;
+    for (let attempt = 1; attempt <= ATTEMPTS && !proposal; attempt += 1) {
+      const resume = attempt > 1;
+      const message = resume
+        ? 'Nothing was submitted. Call submit_test_case_proposal now with the complete proposal.'
+        : `Answer change request ${request.id}: call read_change_request, then submit_test_case_proposal.`;
+      const started = Date.now();
+      const { exitCode, toolCalls } = await runAgent(AGENT, message, id, {
+        resume,
+        extraEnv: { QA_REVIEW_REQUEST_ID: request.id, ...stage.childEnv({ attempt, resumed: resume }) },
+      });
+      proposal = (await store.listProposals(request.id)).filter((p) => !before.has(p.id)).at(-1);
+      stage.recordAttempt({
+        attempt, resumed: resume, agentExitCode: exitCode, durationMs: Date.now() - started,
+        toolCallsTotal: Object.values(toolCalls).reduce((a, b) => a + b, 0), toolCallsByTool: toolCalls,
+        passed: proposal !== undefined, problem: proposal ? null : 'no proposal submitted',
+      });
+    }
+  } finally {
+    const validation = proposal ? validateProposal(artifactWorkspace, proposal) : undefined;
+    await stage.end({
+      passed: proposal !== undefined,
+      metrics: () => ({
+        proposalValid: validation?.status === 'VALID',
+        validationStatus: validation?.status ?? 'NONE',
+        proposedCaseCount: proposal?.proposedCases.length ?? 0,
+        unresolvedIssueCount: proposal?.unresolvedIssues.length ?? 0,
+      }),
+    });
+    await observability.endRun({ outcome: proposal ? 'COMPLETE' : 'FAILED' });
+    lock.release();
+  }
+}
+
+/** Re-run prioritization — and defect analysis after it — through the real orchestrator. Fixed argv. */
+function refreshPrioritization() {
   return new Promise((done) => {
-    const child = spawn(process.execPath, args, { cwd: ROOT, env: process.env });
+    const child = spawn(process.execPath, [join(ROOT, 'scripts', 'qa-manual.mjs'), '--from', 'prioritization'], { cwd: ROOT, env: process.env });
     let output = '';
     const take = (chunk) => {
-      output += chunk;
-      if (output.length > 40_000) output = output.slice(-40_000);
+      output = (output + chunk).slice(-40_000);
     };
     child.stdout.on('data', take);
     child.stderr.on('data', take);
-    child.on('error', (error) => done({ code: 1, output: String(error.message) }));
-    child.on('close', (code) => done({ code: code ?? 1, output }));
+    child.on('error', (error) => done({ ok: false, output: String(error.message) }));
+    child.on('close', (code) => done({ ok: code === 0, output }));
   });
 }
 
-const server = createServer(async (req, res) => {
-  const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
-  const path = url.pathname;
+// ---------------------------------------------------------------------------
 
-  try {
-    if (req.method === 'GET' && STATIC[path]) {
-      const [file, type] = STATIC[path];
-      return send(res, 200, readFileSync(join(UI_DIR, file)), type);
-    }
+if (!DEV) await ensureBuilt();
 
-    if (req.method === 'GET' && path === '/api/review') {
-      return json(res, 200, { ok: true, artifactRoot: QA_ARTIFACT_ROOT, model: buildReviewModel() });
-    }
-
-    if (req.method === 'POST' && path === '/api/approve') {
-      // The same call `npm run qa:approve` makes. `acceptFindings` is NOT
-      // exposed: overriding a semantic finding is a deliberate act that should
-      // carry the friction of a command line.
-      const result = approvePhase1();
-      if (!result.ok) {
-        return json(res, 409, {
-          ok: false,
-          reason: result.reason,
-          missing: result.state.missing,
-          schemaErrors: result.state.schemaErrors,
-          blocking: result.state.hard,
-          findings: result.state.findings,
-        });
-      }
-      return json(res, 200, { ok: true, approval: result.approval });
-    }
-
-    if (req.method === 'POST' && path === '/api/reprioritize') {
-      // Re-runs stage 4 only, through the real orchestrator — the same thing
-      // `npm run qa:prioritize` does. Fixed argv; the browser supplies nothing.
-      const { code, output } = await runFixed([join(ROOT, 'scripts', 'qa-manual.mjs'), '--from', 'prioritization']);
-      return json(res, code === 0 ? 200 : 500, { ok: code === 0, exitCode: code, output: output.slice(-8000) });
-    }
-
-    return json(res, 404, { ok: false, error: 'Not found' });
-  } catch (error) {
-    // Never leak a stack or a path the browser did not already know about.
-    console.error(`[qa:ui] ${path}:`, error);
-    return json(res, 500, { ok: false, error: 'Internal error — see the terminal running npm run qa:ui.' });
-  }
+const server = await createUiServer({
+  store: defaultStore(),
+  workspace: artifactWorkspace,
+  runReviewAgent,
+  refreshPrioritization,
+  uiDir: DEV ? undefined : DIST,
 });
 
 server.on('error', (error) => {
@@ -129,10 +154,14 @@ server.on('error', (error) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log('\nPhase 1 review UI');
-  console.log(`  ${`http://${HOST}:${PORT}`}`);
+  console.log('\nQA Review Workspace');
+  console.log(`  http://${HOST}:${PORT}${DEV ? '   (API only — open http://127.0.0.1:5173)' : ''}`);
   console.log(`  artifacts: ${QA_ARTIFACT_ROOT}`);
-  console.log('\nApproving here is identical to npm run qa:approve. Ctrl-C to stop.\n');
+  console.log('\nProposals change nothing until you apply them. Approving Phase 1 is identical to npm run qa:approve. Ctrl-C to stop.\n');
+  if (DEV) {
+    const vite = spawn(process.execPath, [join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), UI], { cwd: ROOT, stdio: 'inherit', env: { ...process.env, QA_UI_PORT: String(PORT) } });
+    process.on('exit', () => vite.kill());
+  }
 });
 
 export { server };

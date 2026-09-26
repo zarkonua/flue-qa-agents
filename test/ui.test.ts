@@ -54,6 +54,8 @@ async function startUi(root: string, extraEnv: Record<string, string> = {}) {
 }
 
 const getJson = async (url: string) => (await fetch(url)).json() as Promise<Record<string, unknown>>;
+/** Approve Phase 1 through the workspace API — the same call `npm run qa:approve` makes. */
+const approve = (base: string) => fetch(`${base}/api/phase1/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
 
 // ---------------------------------------------------------------------------
 
@@ -133,7 +135,7 @@ describe('approval through the UI', () => {
     const root = completeWorkspace();
     const { base } = await startUi(root);
 
-    const res = await fetch(`${base}/api/approve`, { method: 'POST' });
+    const res = await approve(base);
     assert.equal(res.status, 200);
     const body = (await res.json()) as { ok: boolean; approval: { status: string; approvedBy: string; testCasesSha256: string } };
     assert.equal(body.ok, true);
@@ -153,7 +155,7 @@ describe('approval through the UI', () => {
     const root = completeWorkspace();
     const { base } = await startUi(root);
     assert.equal(((await getJson(`${base}/api/review`)) as { model: { approval: { state: string } } }).model.approval.state, 'NONE');
-    await fetch(`${base}/api/approve`, { method: 'POST' });
+    await approve(base);
     const { model } = (await getJson(`${base}/api/review`)) as { model: { approval: { state: string; approvedAt?: string } } };
     assert.equal(model.approval.state, 'APPROVED');
     assert.ok(model.approval.approvedAt);
@@ -162,7 +164,7 @@ describe('approval through the UI', () => {
   it('represents a stale approval, naming what changed', async () => {
     const root = completeWorkspace();
     const { base } = await startUi(root);
-    await fetch(`${base}/api/approve`, { method: 'POST' });
+    await approve(base);
     // Touch an approved artifact — whitespace is enough, as the gate hashes bytes.
     const p = join(root, 'test-cases.json');
     writeFileSync(p, readFileSync(p, 'utf8') + '\n');
@@ -180,7 +182,7 @@ describe('approval through the UI', () => {
     writeFileSync(p, JSON.stringify(prio));
 
     const { base } = await startUi(root);
-    const res = await fetch(`${base}/api/approve`, { method: 'POST' });
+    const res = await approve(base);
     assert.equal(res.status, 409);
     const body = (await res.json()) as { ok: boolean; reason: string; blocking: { code: string }[] };
     assert.equal(body.ok, false);
@@ -191,8 +193,10 @@ describe('approval through the UI', () => {
   it('does not expose --accept-findings', async () => {
     const source = readFileSync(join(PROJECT, 'scripts', 'qa-ui.mjs'), 'utf8');
     assert.ok(!/acceptFindings:\s*true/.test(source), 'the UI must never approve over findings');
-    const app = readFileSync(join(PROJECT, 'src', 'ui', 'app.js'), 'utf8');
-    assert.ok(!/acceptFindings/.test(app), 'the browser must not be able to ask for the override');
+    const server = readFileSync(join(PROJECT, 'src', 'ui-server', 'server.ts'), 'utf8');
+    assert.ok(!/acceptFindings:\s*true/.test(server), 'the API must never approve over findings');
+    const client = readFileSync(join(PROJECT, 'ui', 'src', 'api', 'client.ts'), 'utf8');
+    assert.ok(!/acceptFindings/.test(client), 'the browser must not be able to ask for the override');
   });
 });
 
@@ -218,7 +222,7 @@ describe('the UI is a local, read-mostly surface', () => {
     }
   });
 
-  it('serves only its three fixed files — the URL cannot name a path', async () => {
+  it('serves only its built files — the URL cannot name a path', async () => {
     const { base } = await startUi(completeWorkspace());
     for (const attempt of [
       '/../.env',
@@ -232,7 +236,9 @@ describe('the UI is a local, read-mostly surface', () => {
       const res = await fetch(base + attempt);
       const text = await res.text();
       assert.ok(!text.includes('OPENROUTER_API_KEY'), `${attempt} must not return .env`);
-      assert.ok(res.status === 404 || res.status === 400 || attempt === '/api/review/../../.env', `${attempt} -> ${res.status}`);
+      assert.ok(!text.includes('"devDependencies"'), `${attempt} must not return package.json`);
+      // Unknown extensionless paths are the app's own routes: they get index.html, never a file.
+      assert.ok(res.status === 404 || res.status === 400 || text.includes('<div id="root">'), `${attempt} -> ${res.status}`);
     }
   });
 
@@ -251,24 +257,27 @@ describe('the UI is a local, read-mostly surface', () => {
     const source = readFileSync(join(PROJECT, 'scripts', 'qa-ui.mjs'), 'utf8');
     // Every spawn argument is a literal or a project-relative join, never a URL part.
     assert.ok(!/spawn\([^)]*url|spawn\([^)]*req\.|exec\(/.test(source), 'no request data reaches a child process');
-    assert.ok(!/readFileSync\(join\(UI_DIR,\s*(url|path|req)/.test(source), 'static files come from a fixed map');
+    const server = readFileSync(join(PROJECT, 'src', 'ui-server', 'server.ts'), 'utf8');
+    assert.ok(!/node:child_process|\bspawn\(|execFile|execSync/.test(server), 'the API server starts no process of its own');
 
     const { base } = await startUi(completeWorkspace());
-    // A request that tries to smuggle a command or an artifact name is simply 404.
-    for (const attempt of ['/api/reprioritize?cmd=rm', '/api/approve?acceptFindings=true']) {
-      const res = await fetch(base + attempt, { method: 'POST' });
-      // The query string is ignored entirely: the route is matched on pathname.
-      assert.ok([200, 409, 404, 500].includes(res.status));
-      if (attempt.includes('acceptFindings')) {
-        const body = (await res.json()) as { ok: boolean; approval?: { acceptedFindings?: unknown[] } };
-        if (body.ok) assert.deepEqual(body.approval?.acceptedFindings, [], 'no findings may be accepted via a query string');
-      }
+    // Not JSON: refused before anything runs.
+    assert.equal((await fetch(`${base}/api/prioritization/refresh?cmd=rm`, { method: 'POST' })).status, 415);
+    // A body naming a command or a path: refused by the strict schema.
+    for (const body of [{ command: 'rm -rf /' }, { path: '../../.env' }]) {
+      const res = await fetch(`${base}/api/prioritization/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      assert.equal(res.status, 400);
     }
+    // The query string is ignored entirely: the route is matched on pathname.
+    const res = await fetch(`${base}/api/phase1/approve?acceptFindings=true`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const body = (await res.json()) as { ok: boolean; approval?: { acceptedFindings?: unknown[] } };
+    if (body.ok) assert.deepEqual(body.approval?.acceptedFindings, [], 'no findings may be accepted via a query string');
   });
 
   it('rejects unknown routes', async () => {
     const { base } = await startUi(completeWorkspace());
     assert.equal((await fetch(`${base}/api/nope`)).status, 404);
-    assert.equal((await fetch(`${base}/api/approve`)).status, 404, 'GET must not approve');
+    assert.equal((await fetch(`${base}/api/phase1/approve`)).status, 404, 'GET must not approve');
+    assert.equal((await fetch(`${base}/api/approve`, { method: 'POST' })).status, 404, 'the old approve route is gone');
   });
 });

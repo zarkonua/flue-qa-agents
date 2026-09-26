@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { formatSchemaIssue, validateWithSchema } from './schema-validation.ts';
+import { atomicWriteFile } from './atomic-write.ts';
 import { collectRepoEvidence } from './repo-evidence.ts';
 import { expectedLocations, readSurface, recordCompletionAttempt, writeSurface } from './discovery-surface.ts';
 import {
@@ -508,6 +509,25 @@ function gateDiscoveryFinalization(data: unknown): DiscoveryCompletionResult | u
     throw new DiscoveryIncompleteError(result);
   }
   return result;
+}
+
+/**
+ * Replace test-cases.json with a suite a person decided to apply in the
+ * review workspace. The same path as an agent write — redaction, schema,
+ * semantic validation against the upstream artifacts on disk — then an atomic
+ * replace, so the file is either the old suite or the new one.
+ *
+ * `allowCodes` names semantic findings the person accepted by applying: a
+ * deletion that leaves a requirement uncovered is their call, and the
+ * approval gate still lists it. Every other finding refuses the write.
+ */
+export function replaceTestCases(candidate: TestCases, { allowCodes = [] }: { allowCodes?: string[] } = {}): void {
+  const data = scrub(candidate);
+  const schema = schemaLines(ARTIFACTS['test-cases'].schemaFile, data);
+  if (schema.length > 0) throw new Error(`"test-cases" does not match test-cases.schema.json:\n${schema.map((e) => `  - ${e}`).join('\n')}`);
+  const semantic = semanticErrorsFor('test-cases', data).filter((e) => !allowCodes.includes(e.code));
+  if (semantic.length > 0) throw new SemanticValidationError('test-cases', semantic);
+  atomicWriteFile(resolveArtifactPath('test-cases'), JSON.stringify(data, null, 2));
 }
 
 export interface WriteResult {

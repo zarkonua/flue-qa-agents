@@ -270,6 +270,26 @@ What this cannot do: judge whether a contradiction is *real*. Word overlap prove
 and actual sides are about the right evidence, not that they conflict. That is why every
 report goes in front of a person before approval.
 
+## Review workspace: proposals are re-validated, never trusted
+
+A change proposal from the workspace's QA agent is an input, not a result. Every time it is
+shown and again when a person applies it, `src/review/test-case-changes.ts` recomputes:
+
+- **Stale** — the SHA-256 of `test-cases.json` must equal the proposal's base hash. Otherwise:
+  conflict, nothing written. Proposals are never rebased or merged.
+- **Shape** — an update keeps its target's id; new cases get host-assigned ids above every id
+  the suite or its review history has used (a deleted id is never reissued); the candidate
+  suite must match `test-cases.schema.json`.
+- **Evidence** — the candidate suite runs through the same semantic validation as a Test
+  Designer write. A finding counts against the proposal when it is in a case the proposal
+  changes, or suite-wide and not already present, so an unrelated problem cannot block a good
+  change. `UNCOVERED_ACCEPTANCE_POINT` is reported as impact and accepted by applying.
+- **Unresolved issues** — any entry disables Apply.
+
+The proposal file itself is schema-checked when read; a hand-edited file is refused or
+re-validated like any other. The write is `replaceTestCases`: redaction, schema, semantic
+validation, then an atomic replace.
+
 ## Phase 1 codes
 
 | Code | Rejects |

@@ -85,7 +85,7 @@ export TARGET_URL="http://localhost:4444/"
 npm run qa:manual                      # Phase 1: 5 stages, then STOP  (~5–15 min)
 #   Discovery → Analysis → Test Design → Automation Prioritization → Defect Analysis
 
-npm run qa:ui                          # review in a browser at http://127.0.0.1:4445
+npm run qa:ui                          # review workspace at http://127.0.0.1:4445: change cases, see bugs
 npm run qa:review                      # AI review; proposes only, edits nothing; summarises defects
 npm run qa:defects                     # list bug reports; decide on each (see below)
 # hand-edit test-cases.json if you want
@@ -113,17 +113,48 @@ A stage that fails all its attempts stops the run, keeps what succeeded, and pri
 `--from` command to resume. Retries alternate: even attempts continue the same conversation
 with a correction naming what went wrong, odd attempts start fresh.
 
-### Reviewing in a browser
+### The QA Review Workspace
 
-`npm run qa:ui` serves a read-and-approve screen at `http://127.0.0.1:4445` (`QA_UI_PORT` to
-change the port; it binds to loopback only and has no login). It merges the Phase 1 artifacts
-into one page — test cases with their execution mode, automation priority, covered
-requirements, steps and evidence, plus coverage, any blocking findings and the optional AI
-review — so a normal review no longer means reading `test-cases.json` beside
-`automation-prioritization.json`.
+`npm run qa:ui` builds the workspace UI when its sources changed (`ui/`, React + TypeScript +
+Vite, output in the git-ignored `ui/dist/`) and serves it with the host API at
+`http://127.0.0.1:4445` (`QA_UI_PORT`; loopback only, no login). `npm run qa:ui:dev` serves the
+API the same way and runs Vite with hot reload on port 5173.
 
-Approving there calls the same `approvePhase1()` as `npm run qa:approve`; the resulting
-approval is the same artifact and the Phase 2 gate treats it identically. The
+| Page | For |
+|---|---|
+| Overview | counts, requirement coverage (which cases cover each requirement), prioritization state, Phase 1 approval |
+| Test Cases | search/filter; open a case to **Edit**, **Request Change**, **Delete**, or **+ Add Test Case** |
+| Reviews | every change request by state; a proposal's diff, validation, impact and the actions |
+| Bugs | bug reports, read-only; decisions stay on `npm run qa:defects` |
+
+**Changing a test case.** Nothing you do in the workspace changes `test-cases.json` until you
+apply a proposal:
+
+1. *Edit* (form over the case's own fields; the id is fixed), *Request Change* (free text) or
+   *+ Add Test Case* (one sentence) creates a **change request** and hands it to the focused QA
+   agent (`src/agents/test-case-change-reviewer.ts`). It can read only its request's context
+   and submit a proposal — no artifact write tool is mounted. *Delete* needs no model: the host
+   proposes the deletion itself.
+2. The **proposal** holds the complete resulting case(s). The host validates it every time it is
+   shown: schema, the same semantic checks as the Test Designer's write, the base-suite hash,
+   possible duplicates, and coverage impact. Anything the evidence could not settle is an
+   **unresolved issue**, and Apply stays disabled.
+3. **Apply Change / Apply Deletion** rebuilds the suite from the file on disk, validates it again
+   and replaces `test-cases.json` atomically. **Reject** (*Keep Test Case* for a deletion) closes
+   the request; **Request Changes** sends it back to the agent with your note.
+4. A proposal made from an older suite is refused with a conflict — re-process the request.
+   Coverage getting worse is shown as impact, not refused; `qa:approve` lists it as a finding.
+
+After an applied change the Overview shows **PRIORITIZATION STALE** and the Phase 1 approval
+**STALE** (the hash of `test-cases.json` changed). *Re-run prioritization and defect analysis*
+there runs `qa:manual --from prioritization`; then approve again.
+
+Requests and proposals are workflow state, stored as `reviews/requests/REQ-NNNN.json` and
+`reviews/proposals/PRP-NNNN.json` under the artifact root through the `ReviewStore` interface.
+They survive a restart; a request left *Processing* by a stopped server comes back as *Failed*
+and can be processed again. Processing takes the run lock, so it never overlaps a QA run.
+
+Approving in the workspace calls the same `approvePhase1()` as `npm run qa:approve`. The
 `--accept-findings` override is deliberately **not** available in the browser — overriding a
 semantic finding stays a terminal action.
 
@@ -173,6 +204,7 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `~/projects/qa-workspace/.qa/`):
 | `discovered-behavior.json` · `requirements-analysis.json` · `test-cases.json` · `automation-prioritization.json` | Phase 1 stages 1–4 |
 | `defect-analysis.json` · `bugs/BUG-NNN.json` | Phase 1 stage 5 (Defect Analyzer); reports edited only by `qa:defects` |
 | `test-cases-review.json` | `qa:review` (advisory) |
+| `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` | the review workspace (workflow state; never approved or hashed) |
 | `phase1-approval.json` | `qa:approve` — host code only |
 | `repo-analysis.json` | Phase 2 stage 1 |
 | `phase1-run.json` · `phase2-run.json` | run logs: stages, attempts, timings |

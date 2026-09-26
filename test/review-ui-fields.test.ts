@@ -12,7 +12,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -202,28 +202,42 @@ describe('the screen stays a read model', () => {
 });
 
 describe('the browser code renders the new data', () => {
-  const app = readFileSync(join(PROJECT, 'src/ui/app.js'), 'utf8');
+  const read = (f: string) => readFileSync(join(PROJECT, 'ui', 'src', f), 'utf8');
+  const sources = () => {
+    const out: [string, string][] = [];
+    const walk = (dir: string) => {
+      for (const f of readdirSync(join(PROJECT, 'ui', 'src', dir), { withFileTypes: true })) {
+        const rel = dir ? `${dir}/${f.name}` : f.name;
+        if (f.isDirectory()) walk(rel);
+        else if (/\.(ts|tsx)$/.test(f.name)) out.push([rel, read(rel)]);
+      }
+    };
+    walk('');
+    return out;
+  };
 
-  it('renders a requirements table', () => {
-    assert.match(app, /function requirementsSection/);
-    assert.match(app, /Covered by/);
+  it('renders a requirements table with reverse traceability', () => {
+    const page = read('pages/OverviewPage.tsx');
+    assert.match(page, /data-testid="requirements"/);
+    assert.match(page, /Covered by/);
   });
 
-  it('shows the automation strategy on a case', () => {
-    assert.match(app, /automationStrategy/);
-    assert.match(app, /b-strategy/);
+  it('shows the automation strategy on a case and lets a reviewer filter and search by it', () => {
+    const list = read('pages/TestCasesPage.tsx');
+    assert.match(list, /automationStrategy/);
+    assert.match(list, /aria-label="Strategy"/);
+    assert.match(list, /strategyReason/);
   });
 
-  it('lets a reviewer filter by strategy and search its reason', () => {
-    assert.match(app, /function strategyChips/);
-    assert.match(app, /state\.strategy/);
-    assert.match(app, /tc\.strategyReason/);
-  });
-
-  it('still fetches only its own endpoints, never an artifact by name', () => {
-    const fetches = [...app.matchAll(/fetch\(\s*['"`]([^'"`]+)/g)].map((m) => m[1]);
-    for (const url of fetches) {
-      assert.match(url, /^\/api\//, `the browser may only call /api/*, saw ${url}`);
+  it('calls only its own fixed endpoints, from one module, never an artifact by name', () => {
+    for (const [file, text] of sources()) {
+      if (file === 'api/client.ts') continue;
+      assert.ok(!/fetch\(/.test(text), `${file} must go through api/client.ts`);
     }
+    const client = read('api/client.ts');
+    const urls = [...client.matchAll(/'(GET|POST)',\s*[`'"]([^`'"]+)/g)].map((m) => m[2]);
+    assert.ok(urls.length >= 10);
+    for (const url of urls) assert.match(url, /^\/api\//, `the browser may only call /api/*, saw ${url}`);
+    assert.ok(!/\.qa\/|\.json['"`]|readFile|writeFile|child_process/.test(client), 'no file or process access');
   });
 });

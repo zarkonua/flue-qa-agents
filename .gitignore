@@ -51,3 +51,6 @@ docs/notes/
 # Logs
 *.log
 npm-debug.log*
+
+# Built QA Review Workspace; `npm run qa:ui` rebuilds it when ui/src changes.
+ui/dist/

@@ -61,6 +61,16 @@ QA counts and errors. With it on, prompts, responses and tool I/O are sent too, 
 - browser tool results (accessibility snapshots) are cut to a 2 KB head;
 - stack traces are never sent. A failure's short, redacted message is sent in both modes.
 
+## Workspace reviews
+
+Each change request the QA Review Workspace hands to its agent is one trace named
+`test-case-review`, with a `generate-proposal` stage holding the agent's turns. Its metadata is
+ids and booleans only — `operation`, `testCaseId`, `manualEditsPresent`,
+`humanCommentPresent`, `verificationRequired`, `verificationPerformed` — and the stage records
+`validationStatus`, `proposalValid`, `proposedCaseCount` and `unresolvedIssueCount`. The
+person's comment, the cases and the diff are not trace metadata; with `LANGFUSE_CAPTURE_IO=true`
+they appear only as the agent's own (redacted) prompt and tool I/O.
+
 ## Trace shape
 
 One QA run is one trace, even though every stage attempt runs in its own `flue run` process.

@@ -116,6 +116,9 @@ completion-gate metadata, observations and artifacts. As a second line:
 Sign-up with invented data is still auth discovery. `credentials` makes an account available;
 it does not stop discovery from exploring the forms around it.
 
+The review workspace's QA agent never uses a browser, so no bootstrap applies to it; it works
+from the evidence the last discovery run recorded.
+
 ## Telemetry
 
 The trace root and `phase1-run.json` record the mode, never an account, path, cookie or token:

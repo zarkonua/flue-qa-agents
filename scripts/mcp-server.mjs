@@ -18,8 +18,13 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { MCP_OUTPUT_ROOT } = await import(resolve(ROOT, 'src/lib/trusted-roots.ts'));
 
-/** Server args; must stay Chromium + isolated profile, headless unless asked. */
-export function mcpServerArgs({ port = '8931', headed = false } = {}) {
+/**
+ * Server args; must stay Chromium + isolated profile, headless unless asked.
+ * `authArgs` is the auth bootstrap's (src/config/auth-bootstrap.ts): with
+ * `--isolated`, a `--storage-state` seeds every new context and is never
+ * written back.
+ */
+export function mcpServerArgs({ port = '8931', headed = false, authArgs = [] } = {}) {
   return [
     '--yes', '@playwright/mcp@latest',
     '--port', String(port),
@@ -27,6 +32,7 @@ export function mcpServerArgs({ port = '8931', headed = false } = {}) {
     '--browser', 'chromium',
     '--output-dir', MCP_OUTPUT_ROOT,
     ...(headed ? [] : ['--headless']),
+    ...authArgs,
   ];
 }
 

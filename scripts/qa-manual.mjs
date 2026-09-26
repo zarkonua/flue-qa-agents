@@ -24,7 +24,7 @@
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { EXIT, ROOT, createObservabilityOrExit, ensureMcp, mcpUrl, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
+import { EXIT, ROOT, createObservabilityOrExit, ensureMcp, mcpUrl, preflightTarget, requireAuthBootstrap, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 import { acquireRunLock } from './lib/run-lock.mjs';
 import { gitCommit, preserveRun } from './lib/run-record.mjs';
@@ -34,6 +34,7 @@ const { summarize, coverageSummary, analysisCoverageSummary, strategySummary, sc
 const { APPROVAL_PATH } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
 const surfaceLib = await import(resolve(ROOT, 'src/lib/discovery-surface.ts'));
 const auxLib = await import(resolve(ROOT, 'src/config/auxiliary-origins.ts'));
+const authLib = await import(resolve(ROOT, 'src/config/auth-bootstrap.ts'));
 const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
 const { completionMetrics, runFunnel, stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
 
@@ -136,6 +137,10 @@ const plan = STAGES.slice(startIndex);
 const artifactProblem = makeArtifactProblem(qa);
 
 const target = plan.some((s) => s.browser) ? requireTarget() : process.env.TARGET_URL;
+// The state the browser starts in: signed out (default), a configured test
+// account, or a stored session. Validated here, before the lock or any
+// browser work — a missing storage-state file or credential is a config error.
+const auth = plan.some((s) => s.browser) ? requireAuthBootstrap() : { mode: 'none' };
 
 // Langfuse tracing, when LANGFUSE_ENABLED=true; a no-op otherwise. Validated
 // here, before the lock, the archive or any browser work.
@@ -197,6 +202,7 @@ console.log(`Target          : ${target ?? '(not needed for this plan)'}`);
 console.log(`Artifacts       : ${qa.QA_ARTIFACT_ROOT}`);
 console.log(`Stages          : ${plan.map((s) => s.label).join(' -> ')} -> STOP`);
 console.log(`Attempts/stage  : ${attempts}`);
+if (plan.some((s) => s.browser)) console.log(`Auth bootstrap  : ${auth.mode}`);
 if (existsSync(archiveDir)) console.log(`Archived        : previous artifacts moved to ${archiveDir}`);
 
 /**
@@ -225,6 +231,9 @@ const record = {
   startedAt: runStarted.toISOString(),
   from,
   attempts,
+  // Mode only — never an account, a path's contents, a cookie or a token.
+  // Applied is not the same as signed in: the application decides that.
+  auth: { mode: auth.mode, applied: false },
   stages: [],
 };
 const recordPath = join(qa.QA_ARTIFACT_ROOT, 'phase1-run.json');
@@ -239,8 +248,9 @@ if (plan.some((s) => s.browser)) {
   // run owns its browser. Required for an A/B trial: otherwise the second model
   // inherits the first one's cookies and sign-in.
   const freshBrowser = process.argv.includes('--fresh-browser') || process.env.QA_FRESH_BROWSER === 'true';
-  await ensureMcp({ fresh: freshBrowser });
+  await ensureMcp({ fresh: freshBrowser, auth });
   browserStarted = true;
+  record.auth.applied = auth.mode !== 'none';
   // The preflight snapshot is what establishes the product surface: the
   // same-origin links the browser actually rendered. Written fresh for this
   // run, so a retry can never inherit a stale queue.
@@ -276,7 +286,13 @@ observability.startRun({
   runId: stamp,
   model: env.QA_MODEL,
   input: { target: target ?? null, from, stages: plan.map((s) => s.key), attemptsPerStage: attempts },
-  metadata: { from, attemptsPerStage: attempts, target: target ?? null, gitCommit: gitCommit(ROOT) ?? null },
+  metadata: {
+    from,
+    attemptsPerStage: attempts,
+    target: target ?? null,
+    gitCommit: gitCommit(ROOT) ?? null,
+    ...authLib.authTelemetry(auth),
+  },
 });
 
 for (const stage of plan) {
@@ -502,7 +518,7 @@ const preserved = preserveRun({
     'discovery-evidence.json', 'phase1-run.json',
   ],
   outcome: 'completed',
-  extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins() },
+  extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins(), authBootstrapMode: auth.mode },
 });
 console.log(`Run preserved   : ${preserved.dir}`);
 

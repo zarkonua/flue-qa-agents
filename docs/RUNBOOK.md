@@ -29,6 +29,12 @@ time, and the process throws rather than relocating anything.
 Tracing to Langfuse is optional and off unless `LANGFUSE_ENABLED=true` — see
 [observability.md](observability.md).
 
+The browser starts signed out unless `QA_AUTH_MODE` says otherwise: `credentials` makes an
+existing test account available without showing its values to the model, and `storage_state`
+starts every browser context from a Playwright storage-state file. Use `storage_state` when
+authentication is not what is being tested, and for model comparisons — see
+[auth-bootstrap.md](auth-bootstrap.md).
+
 ### Choosing the model
 
 One setting, in Flue's `provider/model` form. Every agent uses it; there is no per-agent

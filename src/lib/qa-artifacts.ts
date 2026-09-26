@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateAgainstSchema, type JsonSchemaNode } from './schema-validate.ts';
+import { formatSchemaIssue, validateWithSchema } from './schema-validation.ts';
 import { collectRepoEvidence } from './repo-evidence.ts';
 import { expectedLocations, readSurface, recordCompletionAttempt, writeSurface } from './discovery-surface.ts';
 import {
@@ -145,9 +145,19 @@ const ARTIFACTS: Record<QaArtifactName, ArtifactDef> = {
   'automation-project-contract': { fileName: 'automation-project-contract.json', schemaFile: 'automation-project-contract.schema.json' },
 };
 
-function loadSchema(schemaFile: string): JsonSchemaNode {
-  const raw = readFileSync(join(SCHEMAS_DIR, schemaFile), 'utf8');
-  return JSON.parse(raw) as JsonSchemaNode;
+/** A schema file as plain JSON — for reading a vocabulary out of it, never for validating. */
+function loadSchema(schemaFile: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(SCHEMAS_DIR, schemaFile), 'utf8')) as Record<string, unknown>;
+}
+
+/** Schema errors of `data` against `schemaFile`, one readable line each. Validators are compiled once and cached. */
+function schemaLines(schemaFile: string, data: unknown): string[] {
+  return validateWithSchema(join(SCHEMAS_DIR, schemaFile), data).map(formatSchemaIssue);
+}
+
+/** Every schema file the host validates artifacts against. */
+export function registeredSchemaFiles(): string[] {
+  return [...new Set([...Object.values(ARTIFACTS).map((d) => d.schemaFile), 'bug-report.schema.json'])];
 }
 
 function resolveArtifactPath(name: QaArtifactName): string {
@@ -177,7 +187,7 @@ export function qaArtifactPath(name: QaArtifactName): string {
  * disagree.
  */
 export function scenarioTypeVocabulary(): string[] {
-  const schema = loadSchema(ARTIFACTS['test-cases'].schemaFile) as JsonSchemaNode & {
+  const schema = loadSchema(ARTIFACTS['test-cases'].schemaFile) as {
     properties?: { testCases?: { items?: { properties?: { types?: { items?: { enum?: string[] } } } } } };
   };
   const values = schema.properties?.testCases?.items?.properties?.types?.items?.enum;
@@ -191,7 +201,7 @@ export function scenarioTypeVocabulary(): string[] {
 export function schemaErrorsFor(name: QaArtifactName, data: unknown): string[] {
   const def = ARTIFACTS[name];
   if (!def) throw new Error(`Unknown QA artifact name: ${name}`);
-  return validateAgainstSchema(data, loadSchema(def.schemaFile));
+  return schemaLines(def.schemaFile, data);
 }
 
 export function readQaArtifact(name: QaArtifactName): unknown {
@@ -387,7 +397,7 @@ export function listBugReportIds(): string[] {
 
 /** Schema + evidence errors for a bug report, against the upstream artifacts on disk. */
 export function bugReportErrors(bug: unknown): { schema: string[]; semantic: SemanticError[] } {
-  const schema = validateAgainstSchema(bug, loadSchema('bug-report.schema.json'));
+  const schema = schemaLines('bug-report.schema.json', bug);
   if (schema.length > 0) return { schema, semantic: [] };
   const ctx = defectContext();
   if (typeof ctx === 'string') return { schema, semantic: [{ code: 'MISSING_UPSTREAM', path: '$', details: ctx }] };
@@ -516,8 +526,7 @@ export function writeQaArtifact(name: QaArtifactName, rawData: unknown): WriteRe
   // and host-side: the model is never asked to redact its own output.
   let data = scrub(rawData);
 
-  const schema = loadSchema(def.schemaFile);
-  const errors = validateAgainstSchema(data, schema);
+  const errors = schemaLines(def.schemaFile, data);
   if (errors.length > 0) {
     throw new Error(`"${name}" does not match ${def.schemaFile}:\n${errors.map((e) => `  - ${e}`).join('\n')}`);
   }

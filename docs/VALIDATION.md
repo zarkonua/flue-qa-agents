@@ -7,11 +7,16 @@ not. The executable reference is `src/lib/semantic-validate.ts` and `test/*.test
 
 ```text
 agent calls write_qa_artifact(name, data)
-   1. JSON Schema        schemas/<name>.schema.json      -> reject: shape errors
+   1. JSON Schema        schemas/<name>.schema.json      -> reject: shape errors (Ajv, Draft 2020-12)
    2. semantic checks    evidence read by HOST code      -> reject: grouped errors
    3. completion gate    discovered-behavior only        -> reject: what is still unresolved
    4. write                                              -> only if all pass
 ```
+
+Artifact schemas are validated with Ajv against JSON Schema Draft 2020-12, in strict mode and
+reporting every error in one pass (`src/lib/schema-validation.ts`). Each schema file is compiled
+once per process. Validation never changes the object — no type coercion, no defaults, no
+removal of unknown properties — so what passed is exactly what is written.
 
 The completion gate is a separate layer on purpose: an artifact can be well-formed and fully
 supported while the run that produced it clicked Sign In, never looked, and stopped. See

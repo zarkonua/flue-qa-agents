@@ -293,12 +293,12 @@ describe('defect-analysis and bug report files', () => {
 
   it('severity is accepted only from the enum', () => {
     const bad = replace('DEF-001', { severity: 'HUGE' as never });
-    assert.throws(() => qa.writeQaArtifact('defect-analysis', { findings: bad }), /severity: expected one of/);
+    assert.throws(() => qa.writeQaArtifact('defect-analysis', { findings: bad }), /severity: must be one of/);
     assert.ok(qa.schemaErrorsFor('defect-analysis', { findings: bad }).some((e) => e.includes('severity')));
     // Ids are patterned, and a report needs at least one step.
-    assert.ok(qa.schemaErrorsFor('defect-analysis', { findings: [{ ...base()[0], id: 'D1' }] }).some((e) => e.includes('does not match')));
+    assert.ok(qa.schemaErrorsFor('defect-analysis', { findings: [{ ...base()[0], id: 'D1' }] }).some((e) => e.includes('must match pattern')));
     const [bug] = buildBugReports(analysis(base()), ctx, { target: 'http://localhost:4444/' });
-    assert.ok(qa.bugReportErrors({ ...bug, steps: [] }).schema.some((e) => e.includes('at least 1')));
+    assert.ok(qa.bugReportErrors({ ...bug, steps: [] }).schema.some((e) => e.includes('fewer than 1 items')));
   });
 
   it('secrets and one-time values never reach a bug report or the analysis', () => {

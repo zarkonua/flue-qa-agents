@@ -17,6 +17,7 @@
     "qa:defects": "node scripts/qa-defects.mjs",
     "qa:manual": "node scripts/qa-manual.mjs",
     "qa:prioritize": "node scripts/qa-manual.mjs --from prioritization",
+    "qa:refresh": "node scripts/qa-refresh.mjs",
     "qa:review": "node scripts/qa-review.mjs",
     "qa:ui": "node scripts/qa-ui.mjs",
     "qa:ui:dev": "node scripts/qa-ui.mjs --dev",

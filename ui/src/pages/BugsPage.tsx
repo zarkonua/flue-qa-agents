@@ -16,7 +16,7 @@ export function BugsPage() {
   return (
     <>
       <h1>Bugs</h1>
-      <p className="muted">Read-only here. Decide on a report with <code>npm run qa:defects</code>.</p>
+      <p className="muted">Open a report to accept, reject, downgrade, request changes or edit it (the same decisions as <code>npm run qa:defects</code>).</p>
       <div className="filters">
         <input type="search" placeholder="Search id, title, area…" value={q} onChange={(e) => setQ(e.target.value)} />
         <select value={severity} onChange={(e) => setSeverity(e.target.value)} aria-label="Severity">

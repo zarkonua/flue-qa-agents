@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "bugId",
+    "events"
+  ],
+  "properties": {
+    "bugId": {
+      "type": "string",
+      "pattern": "^BUG-[0-9]{3,}$"
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "at",
+          "action",
+          "by",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "action": {
+            "enum": [
+              "accept",
+              "reject",
+              "downgrade",
+              "request-changes",
+              "edit",
+              "reconcile"
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "via": {
+            "enum": [
+              "cli",
+              "ui"
+            ]
+          },
+          "note": {
+            "type": "string"
+          },
+          "editedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "before": {
+            "$ref": "#/$defs/state"
+          },
+          "after": {
+            "$ref": "#/$defs/state"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "state": {
+      "type": "object",
+      "required": [
+        "status",
+        "decision",
+        "severity",
+        "priority"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "CONFIRMED",
+            "POTENTIAL"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "PENDING",
+            "ACCEPTED",
+            "REJECTED",
+            "CHANGES_REQUESTED"
+          ]
+        },
+        "severity": {
+          "enum": [
+            "BLOCKER",
+            "CRITICAL",
+            "MAJOR",
+            "MINOR",
+            "TRIVIAL"
+          ]
+        },
+        "priority": {
+          "enum": [
+            "UNASSIGNED",
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

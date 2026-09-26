@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node
 import { join, resolve } from 'node:path';
 import { EXIT, ROOT, createObservabilityOrExit, ensureMcp, mcpUrl, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
+import { STAGES } from './lib/phase1-stages.mjs';
 import { acquireRunLock } from './lib/run-lock.mjs';
 import { gitCommit, preserveRun } from './lib/run-record.mjs';
 
@@ -38,62 +39,12 @@ const auxLib = await import(resolve(ROOT, 'src/config/auxiliary-origins.ts'));
 const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
 const { completionMetrics, runFunnel, stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
 const { defectMetrics } = await import(resolve(ROOT, 'src/lib/defects.ts'));
+const depLib = await import(resolve(ROOT, 'src/lib/phase1-dependencies.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
 // ---------------------------------------------------------------------------
 
-const STAGES = [
-  {
-    key: 'discovery',
-    label: 'Product Discovery',
-    agent: 'src/agents/product-discovery.ts',
-    artifact: 'discovered-behavior',
-    browser: true,
-    message: 'Begin.',
-    // Replaced at run time with the surface briefing, when there is one.
-    withSurface: (brief, count) =>
-      `Begin.\n\nThe browser found these same-origin locations on the entry page:\n\n${brief}\n\n` +
-      `Account for every one before you write — visit it, or record it BLOCKED/SKIPPED_WITH_REASON with a reason. ` +
-      `The list grows as you go: a page you reach that is not on it, and the links that page renders, are ` +
-      `added to it.` +
-      (count <= 1
-        ? ` This list is short because the entry page exposes few links; most of this application's ` +
-          `surface is reached by USING it — signing in, submitting forms, opening panels. Accounting for ` +
-          `this one location is the start of your job, not the end of it: work through the controls you ` +
-          `can see and record what each one actually does.`
-        : ''),
-  },
-  {
-    key: 'analysis',
-    label: 'Behavior Analyst',
-    agent: 'src/agents/behavior-analyst.ts',
-    artifact: 'requirements-analysis',
-    message: 'Read the discovered-behavior artifact and write the requirements-analysis artifact.',
-  },
-  {
-    key: 'design',
-    label: 'Test Designer',
-    agent: 'src/agents/test-designer.ts',
-    artifact: 'test-cases',
-    message: 'Read the requirements-analysis and discovered-behavior artifacts and write the test-cases artifact.',
-  },
-  {
-    key: 'prioritization',
-    label: 'Automation Prioritizer',
-    agent: 'src/agents/automation-prioritizer.ts',
-    artifact: 'automation-prioritization',
-    message: 'Read the test-cases artifact and write the automation-prioritization artifact.',
-  },
-  {
-    key: 'defects',
-    label: 'Defect Analyzer',
-    agent: 'src/agents/defect-analyzer.ts',
-    artifact: 'defect-analysis',
-    message:
-      'Read the discovered-behavior, requirements-analysis and test-cases artifacts and write the defect-analysis artifact.',
-  },
-];
 
 /**
  * The only agent modules Phase 1 may ever start. Checked at startup, so an
@@ -315,6 +266,9 @@ for (const stage of plan) {
     onProgress: saveRecord,
     trace: stageTrace,
   });
+  // Record what a derived artifact was generated from, so staleness is exact later.
+  if (passed && depLib.INPUTS[stage.artifact]) depLib.stampDependency(stage.artifact);
+
   // Deterministic browser evidence, collected while the browser is still up.
   // This runs on the host, in its own session, and replays the locations the
   // agent reported reaching — see scripts/lib/evidence.mjs for why it cannot

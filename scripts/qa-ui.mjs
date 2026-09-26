@@ -25,6 +25,8 @@ const { artifactWorkspace, defaultStore } = await import(resolve(ROOT, 'src/revi
 const { validateProposal } = await import(resolve(ROOT, 'src/review/test-case-changes.ts'));
 const { QA_ARTIFACT_ROOT } = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { createRunObservability } = await import(resolve(ROOT, 'src/observability/host.ts'));
+const { traceBugEvent } = await import(resolve(ROOT, 'src/observability/workflow-events.ts'));
+const { readRefreshStatus } = await import('./lib/refresh.mjs');
 
 const PORT = envInt('QA_UI_PORT', 4445);
 const HOST = envString('QA_UI_HOST') ?? '127.0.0.1';
@@ -117,20 +119,27 @@ async function runReviewAgent(request) {
   }
 }
 
-/** Re-run prioritization — and defect analysis after it — through the real orchestrator. Fixed argv. */
-function refreshPrioritization() {
-  return new Promise((done) => {
-    const child = spawn(process.execPath, [join(ROOT, 'scripts', 'qa-manual.mjs'), '--from', 'prioritization'], { cwd: ROOT, env: process.env });
-    let output = '';
-    const take = (chunk) => {
-      output = (output + chunk).slice(-40_000);
-    };
-    child.stdout.on('data', take);
-    child.stderr.on('data', take);
-    child.on('error', (error) => done({ ok: false, output: String(error.message) }));
-    child.on('close', (code) => done({ ok: code === 0, output }));
-  });
-}
+/**
+ * The dependency refresh, as its own process: `npm run qa:refresh`, fixed argv.
+ * It records its progress in phase1-refresh.json, which is what `status` reads —
+ * so a refresh survives this server restarting.
+ */
+const refresh = {
+  async start() {
+    const child = spawn(process.execPath, [join(ROOT, 'scripts', 'qa-refresh.mjs')], { cwd: ROOT, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Streamed to this terminal, like the review agent's output.
+    child.stdout.on('data', (c) => process.stdout.write(c));
+    child.stderr.on('data', (c) => process.stderr.write(c));
+    // Give it a moment to take the lock and record RUNNING (or fail fast on the lock).
+    await new Promise((done) => {
+      const deadline = Date.now() + 5000;
+      const tick = () => (readRefreshStatus().status !== 'IDLE' && readRefreshStatus().startedAt >= startedAt) || Date.now() > deadline || child.exitCode !== null ? done() : setTimeout(tick, 100);
+      const startedAt = new Date().toISOString();
+      tick();
+    });
+  },
+  status: () => readRefreshStatus(),
+};
 
 // ---------------------------------------------------------------------------
 
@@ -140,7 +149,8 @@ const server = await createUiServer({
   store: defaultStore(),
   workspace: artifactWorkspace,
   runReviewAgent,
-  refreshPrioritization,
+  refresh,
+  onBugEvent: traceBugEvent,
   uiDir: DEV ? undefined : DIST,
 });
 

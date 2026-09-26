@@ -24,20 +24,48 @@ const { createUiServer } = await import('../src/ui-server/server.ts');
 const { submitAgentProposal } = await import('../src/review/test-case-changes.ts');
 const { artifactWorkspace, defaultStore } = await import('../src/review/workspace.ts');
 
-qa.writeQaArtifact('defect-analysis', {
-  findings: [{
-    id: 'DEF-001', classification: 'POTENTIAL_DEFECT', sourceBehaviorIds: ['BEH-2'], sourceTestCaseIds: ['TC-1'],
+const deps = await import('../src/lib/phase1-dependencies.ts');
+const { refreshDependents, readRefreshStatus } = await import('../scripts/lib/refresh.mjs');
+
+/** The findings the fake Defect Analyzer produces — the same defects every time, as a stable model would. */
+const findings = () => [
+  {
+    id: 'DEF-001', classification: 'POTENTIAL_DEFECT', sourceBehaviorIds: ['BEH-2'],
+    ...(suite().testCases.some((tc) => tc.id === 'TC-1') ? { sourceTestCaseIds: ['TC-1'] } : {}),
     reason: 'The message may not say which credential is wrong.', title: 'Invalid-credentials error is generic', severity: 'MINOR',
     steps: ['Submit the login form with INVALID_PASSWORD'], expected: 'The message says which credential is wrong.',
     actual: 'An error message is shown for invalid credentials.',
-  }],
-});
+  },
+  {
+    id: 'DEF-002', classification: 'CONFIRMED_DEFECT', sourceBehaviorIds: ['BEH-3'], sourceAcceptancePointIds: ['AC-1'],
+    reason: 'Editing is possible although the login button rule says otherwise.', title: 'Notes editable too early', severity: 'MAJOR',
+    steps: ['Log in', 'Open the notes area'], expected: 'With no credentials the login button is disabled and nothing is editable.',
+    actual: 'The notes area becomes editable after a successful login.',
+  },
+];
+const suite = () => qa.readQaArtifact('test-cases') as { testCases: Record<string, unknown>[] };
+qa.writeQaArtifact('defect-analysis', { findings: findings() });
+deps.stampDependency('automation-prioritization');
+deps.stampDependency('defect-analysis');
 const approved = gate.approvePhase1({ acceptFindings: true });
 if (!approved.ok) throw new Error(`fixture does not approve: ${approved.reason}`);
 
 const store = defaultStore();
 type Request = import('../src/review/review-store.ts').ChangeRequest;
-const suite = () => qa.readQaArtifact('test-cases') as { testCases: Record<string, unknown>[] };
+
+/** The stand-in for the two model stages of a refresh: valid output for the CURRENT suite. */
+async function fakeStage({ stage, entry }: { stage: { artifact: string }; entry: { attempts: unknown[] } }) {
+  await new Promise((r) => setTimeout(r, 600)); // long enough to see RUNNING
+  if (stage.artifact === 'automation-prioritization') {
+    qa.writeQaArtifact('automation-prioritization', {
+      cases: suite().testCases.map((tc) => ({ testCaseId: tc.id, executionMode: 'AUTOMATION', automationPriority: 'MEDIUM', reason: 'Deterministic.', blockingFactors: [] })),
+    });
+  } else {
+    qa.writeQaArtifact('defect-analysis', { findings: findings() });
+  }
+  entry.attempts.push({ attempt: 1, passed: true, problem: null });
+  return true;
+}
 
 /** The stand-in for the model: deterministic, and honest about missing evidence. */
 async function fakeReviewAgent(request: Request) {
@@ -80,7 +108,13 @@ const server = await createUiServer({
   store,
   workspace: artifactWorkspace,
   runReviewAgent: fakeReviewAgent,
-  refreshPrioritization: async () => ({ ok: true, output: 'not run in tests' }),
+  refresh: {
+    start: async () => {
+      void refreshDependents({ runStageFn: fakeStage, log: () => {} });
+      await new Promise((r) => setTimeout(r, 50));
+    },
+    status: () => readRefreshStatus(),
+  },
   uiDir: join(PROJECT, 'ui', 'dist'),
 });
 const port = Number(process.env.QA_UI_PORT ?? 4555);

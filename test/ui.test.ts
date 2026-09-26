@@ -262,10 +262,10 @@ describe('the UI is a local, read-mostly surface', () => {
 
     const { base } = await startUi(completeWorkspace());
     // Not JSON: refused before anything runs.
-    assert.equal((await fetch(`${base}/api/prioritization/refresh?cmd=rm`, { method: 'POST' })).status, 415);
+    assert.equal((await fetch(`${base}/api/phase1/refresh?cmd=rm`, { method: 'POST' })).status, 415);
     // A body naming a command or a path: refused by the strict schema.
     for (const body of [{ command: 'rm -rf /' }, { path: '../../.env' }]) {
-      const res = await fetch(`${base}/api/prioritization/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`${base}/api/phase1/refresh`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       assert.equal(res.status, 400);
     }
     // The query string is ignored entirely: the route is matched on pathname.

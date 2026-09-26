@@ -70,6 +70,18 @@ ids and booleans only — `operation`, `testCaseId`, `manualEditsPresent`,
 person's comment, the cases and the diff are not trace metadata; with `LANGFUSE_CAPTURE_IO=true`
 they appear only as the agent's own (redacted) prompt and tool I/O.
 
+## Human decisions and refreshes
+
+Each bug decision or edit, from the workspace or `qa:defects`, is one short trace named after it —
+`bug_accept`, `bug_reject`, `bug_downgrade`, `bug_request_changes`, `bug_edit` — carrying the bug
+id, the status/decision before and after, the resulting severity and priority, the edited field
+names and whether a note was given; never the note, title, steps or any other report content.
+
+A dependency refresh is one `phase1-refresh` trace (started = `phase1_refresh_started` in its
+metadata; outcome COMPLETE or FAILED) with a stage per model stage — Automation Prioritizer and
+Defect Analyzer — holding the agents' turns as in a QA run, and the reconciliation counts
+(`bugsPreserved`, `bugsReset`, `bugsNew`, `bugsRemoved`) as output.
+
 ## Trace shape
 
 One QA run is one trace, even though every stage attempt runs in its own `flue run` process.

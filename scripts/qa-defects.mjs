@@ -18,6 +18,11 @@ import { EXIT, ROOT } from './lib/runtime.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const review = await import(resolve(ROOT, 'src/lib/defect-review.ts'));
+const { defaultStore } = await import(resolve(ROOT, 'src/review/workspace.ts'));
+const { traceBugEvent } = await import(resolve(ROOT, 'src/observability/workflow-events.ts'));
+
+// The same trusted service the review workspace uses; history goes to the same store.
+const serviceOptions = { via: 'cli', store: defaultStore(), onEvent: traceBugEvent };
 
 const args = process.argv.slice(2);
 const [command, id] = args;
@@ -62,20 +67,25 @@ try {
     const bug = qa.readBugReport(id);
     if (!bug) fail(`No bug report ${id}.`);
     console.log(JSON.stringify(bug, null, 2));
+    const history = await serviceOptions.store.listBugReviewEvents(id);
+    if (history.length > 0) {
+      console.log('\nReview history:');
+      for (const e of history) console.log(`  ${e.at}  ${e.action.padEnd(15)} by ${e.by}${e.via ? ` (${e.via})` : ''}  ${e.before.status}/${e.before.decision} -> ${e.after.status}/${e.after.decision}${e.note ? `  — ${e.note}` : ''}`);
+    }
     process.exit(EXIT.OK);
   }
 
   let bug;
   if (command === 'edit') {
     const steps = options('step');
-    bug = review.edit(id, {
+    ({ bug } = await review.edit(id, {
       title: option('title'),
       severity: option('severity'),
       priority: option('priority'),
       steps: steps.length > 0 ? steps : undefined,
-    });
+    }, { ...serviceOptions, note: option('note') }));
   } else if (review.DECISIONS.includes(command)) {
-    bug = review.decide(id, command, { note: option('note') });
+    ({ bug } = await review.decide(id, command, { ...serviceOptions, note: option('note') }));
   } else {
     fail(`Unknown command "${command}". Use: list, show, ${review.DECISIONS.join(', ')}, edit.`);
   }

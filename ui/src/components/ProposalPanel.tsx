@@ -11,6 +11,7 @@ export function ProposalPanel({ proposal, current }: { proposal: Proposal; curre
   const [raw, setRaw] = useState(false);
   const refresh = () => qc.invalidateQueries();
   const apply = useMutation({ mutationFn: () => api.apply(proposal.id), onSettled: refresh });
+  const affected = apply.data?.affected ?? [];
   const reject = useMutation({ mutationFn: () => api.reject(proposal.id, note || undefined), onSettled: refresh });
   const revise = useMutation({ mutationFn: () => api.requestChanges(proposal.id, note), onSettled: refresh });
   const labels = proposalActions(proposal.operation);
@@ -63,6 +64,14 @@ export function ProposalPanel({ proposal, current }: { proposal: Proposal; curre
             {labels.revise && <button disabled={busy || !note.trim()} onClick={() => revise.mutate()}>{labels.revise}</button>}
           </div>
           {blocked && <p className="muted" data-testid="apply-blocked">{blocked}</p>}
+        </div>
+      )}
+      {apply.data && (
+        <div className="notice warn" data-testid="apply-impact">
+          <b>Applied.</b> {affected.length ? <>Your change affected: {affected.join(', ')}. </> : null}
+          No upstream evidence artifacts were changed.
+          {apply.data.bugsReferencingChangedCases.length > 0 && <> Bug reports naming this case: {apply.data.bugsReferencingChangedCases.join(', ')}.</>}
+          {' '}Refresh the dependent analysis on the Overview, then approve Phase 1 again.
         </div>
       )}
       {error && <p className="notice bad">{error.message}</p>}

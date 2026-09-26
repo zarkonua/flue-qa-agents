@@ -6,7 +6,9 @@
 //   GET  /api/test-cases, /api/test-cases/:id   GET  /api/reviews, /api/reviews/:id
 //   POST /api/reviews                           POST /api/reviews/:id/process
 //   POST /api/proposals/:id/apply | reject | request-changes
-//   POST /api/prioritization/refresh            POST /api/phase1/approve
+//   POST /api/bugs/:id/accept | reject | downgrade | request-changes
+//   POST /api/bugs/:id/edit/preview, /api/bugs/:id/edit
+//   POST /api/phase1/refresh                    POST /api/phase1/approve
 //
 // Every mutation takes a small JSON body checked against a strict schema; ids
 // are pattern-checked before use; nothing in a request names a path, an
@@ -29,6 +31,17 @@ import {
 } from '../lib/qa-artifacts.ts';
 import { approvePhase1, inspectPhase1 } from '../lib/phase1-gate.ts';
 import { buildReviewModel } from '../lib/review-view.ts';
+import { dependencyState } from '../lib/phase1-dependencies.ts';
+import {
+  bugReportSha256,
+  decide,
+  DefectReviewConflictError,
+  DefectReviewError,
+  edit as editBug,
+  EDITABLE_BUG_FIELDS,
+  previewEdit,
+} from '../lib/defect-review.ts';
+import { SemanticValidationError } from '../lib/qa-artifacts.ts';
 import type { BugReport, DefectAnalysis } from '../lib/defects.ts';
 import type {
   AutomationPrioritization,
@@ -41,6 +54,7 @@ import {
   PROPOSAL_ID,
   REQUEST_ID,
   ReviewStoreError,
+  type BugReviewEvent,
   type ChangeProposal,
   type ChangeRequest,
   type ReviewStore,
@@ -68,10 +82,24 @@ export interface UiServerOptions {
   workspace: Workspace;
   /** Runs the review agent for a request. Injected so tests fake the model, never the host. */
   runReviewAgent: (request: ChangeRequest) => Promise<void>;
-  /** Re-runs prioritization (and what follows it) after the suite changed. */
-  refreshPrioritization: () => Promise<{ ok: boolean; output: string }>;
+  /**
+   * The dependency refresh (Automation Prioritizer, then Defect Analyzer). `start`
+   * returns once it has begun; `status` is the persisted state of the last one.
+   */
+  refresh: { start: () => Promise<void>; status: () => RefreshStatus };
+  /** Called after a person's bug decision or edit is written — for metrics. */
+  onBugEvent?: (event: BugReviewEvent & { bugId: string }) => void | Promise<void>;
   /** Built UI directory; absent means the API alone. */
   uiDir?: string;
+}
+
+export interface RefreshStatus {
+  status: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+  stages?: { stage: string; passed: boolean; attempts: number }[];
+  reconciliation?: unknown;
 }
 
 class HttpError extends Error {
@@ -107,6 +135,17 @@ const CreateReviewBody = v.strictObject({
   manualEdits: v.optional(manualEdits),
 });
 const NoteBody = v.strictObject({ note: v.optional(text(4000)) });
+const sha256 = v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/));
+const BugDecisionBody = v.strictObject({ note: v.optional(text(4000)), baseSha256: v.optional(sha256) });
+const BugRequestChangesBody = v.strictObject({ note: v.pipe(text(4000), v.minLength(1)), baseSha256: v.optional(sha256) });
+const bugChanges = v.strictObject({
+  title: v.optional(v.pipe(text(300), v.minLength(1))),
+  severity: v.optional(v.picklist(['BLOCKER', 'CRITICAL', 'MAJOR', 'MINOR', 'TRIVIAL'])),
+  priority: v.optional(v.picklist(['UNASSIGNED', 'P0', 'P1', 'P2', 'P3'])),
+  steps: v.optional(v.pipe(v.array(text(2000)), v.minLength(1), v.maxLength(50))),
+});
+const BugPreviewBody = v.strictObject({ changes: bugChanges });
+const BugEditBody = v.strictObject({ changes: bugChanges, baseSha256: sha256, note: v.optional(text(4000)) });
 const RequiredNoteBody = v.strictObject({ note: v.pipe(text(4000), v.minLength(1)) });
 const EmptyBody = v.strictObject({});
 
@@ -159,23 +198,40 @@ function mtime(name: Parameters<typeof qaArtifactPath>[0]): number | undefined {
   return existsSync(path) ? statSync(path).mtimeMs : undefined;
 }
 
+/** The editable part of a bug report, for a before/after diff. */
+function editableView(b: BugReport): Record<string, unknown> {
+  return Object.fromEntries(EDITABLE_BUG_FIELDS.map((f) => [f, b[f]]));
+}
+
 /**
- * Prioritization covers exactly the active cases, and is not older than them.
- * After an applied change it is STALE until re-run; nothing here re-prioritizes.
+ * Phase 1 health: every artifact and whether it still matches what it was
+ * derived from. Test cases are the source; prioritization and defect analysis
+ * derive from them; the approval hashes everything, bug reports included.
  */
-export function prioritizationState(): { state: 'CURRENT' | 'STALE' | 'MISSING'; detail?: string } {
-  const suite = read<TestCases>('test-cases');
+function phase1Health(ws: Workspace, allBugs: BugReport[], refresh: RefreshStatus) {
+  const suite = ws.readTestCases();
   const p = read<AutomationPrioritization>('automation-prioritization');
-  if (!p || !suite) return { state: 'MISSING' };
-  const cases = new Set(suite.testCases.map((tc) => tc.id));
-  const prioritized = new Set(p.cases.map((c) => c.testCaseId));
-  const missing = [...cases].filter((c) => !prioritized.has(c));
-  const extra = [...prioritized].filter((c) => !cases.has(c));
-  if (missing.length || extra.length) {
-    return { state: 'STALE', detail: [missing.length ? `not prioritized: ${missing.join(', ')}` : '', extra.length ? `no longer in the suite: ${extra.join(', ')}` : ''].filter(Boolean).join('; ') };
-  }
-  if ((mtime('automation-prioritization') ?? 0) < (mtime('test-cases') ?? 0)) return { state: 'STALE', detail: 'the test cases changed after prioritization' };
-  return { state: 'CURRENT' };
+  const analysis = read<DefectAnalysis>('defect-analysis');
+  const prioritization = dependencyState('automation-prioritization');
+  const defects = dependencyState('defect-analysis');
+  const approval = buildReviewModel().approval;
+  // The advisory review restates prioritization and defect counts; it is behind once any of them moved.
+  const reviewTime = mtime('test-cases-review');
+  const newest = Math.max(mtime('test-cases') ?? 0, mtime('automation-prioritization') ?? 0, mtime('defect-analysis') ?? 0);
+  const changed = [...new Set([...prioritization.changedCases.modified, ...prioritization.changedCases.added, ...prioritization.changedCases.removed])];
+  return {
+    testCases: { state: suite ? 'CURRENT' : 'MISSING', count: suite?.testCases.length ?? 0 },
+    prioritization: { ...prioritization, automationCandidates: p?.cases.filter((c) => c.executionMode === 'AUTOMATION').length ?? 0 },
+    defectAnalysis: { ...defects, confirmed: analysis?.summary?.confirmed ?? 0, potential: analysis?.summary?.potential ?? 0 },
+    review: { state: reviewTime === undefined ? 'MISSING' : reviewTime < newest ? 'STALE' : 'CURRENT' },
+    approval,
+    refresh,
+    refreshNeeded: prioritization.state !== 'CURRENT' || defects.state !== 'CURRENT',
+    // Bugs that name a test case the suite changed since defect analysis ran.
+    bugsReferencingChangedCases: allBugs.filter((b) => (b.sourceTestCaseIds ?? []).some((t) => changed.includes(t))).map((b) => b.id),
+    // Human decisions a regenerated defect analysis could supersede.
+    decidedBugs: allBugs.filter((b) => b.review.decision !== 'PENDING').map((b) => b.id),
+  };
 }
 
 function bugs(ws: Workspace): BugReport[] {
@@ -236,7 +292,7 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
   await recoverInterrupted(store);
   const files = staticFiles(options.uiDir);
   const jobs = new Set<string>();
-  let refresh: { status: 'IDLE' | 'RUNNING' | 'DONE' | 'FAILED'; output?: string; at?: string } = { status: 'IDLE' };
+  const bugOptions = { via: 'ui' as const, store, onEvent: options.onBugEvent };
 
   const handlers: [string, RegExp, (m: RegExpExecArray, req: IncomingMessage) => Promise<[number, unknown]>][] = [
     ['GET', /^\/api\/overview$/, async () => {
@@ -261,7 +317,7 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
         coverage: model.coverage ?? null,
         // Each requirement with the cases that cover it — the reverse traceability question.
         requirements: model.requirements.map((r) => ({ id: r.id, kind: r.kind, statement: r.statement, testable: r.testable, validationType: r.validationType ?? null, coveredBy: r.coveredBy })),
-        prioritization: { ...prioritizationState(), refresh },
+        health: phase1Health(ws, allBugs, options.refresh.status()),
       }];
     }],
 
@@ -324,8 +380,13 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
       const requirements = read<RequirementsAnalysis>('requirements-analysis');
       const behaviors = new Map((discovery?.behaviors ?? []).map((b) => [b.id, b.statement]));
       const statements = new Map([...(requirements?.acceptancePoints ?? []), ...(requirements?.businessRules ?? [])].map((r) => [r.id, r.statement]));
+      const finding = read<DefectAnalysis>('defect-analysis')?.findings.find((f) => f.id === bug.origin.findingId);
       return [200, {
         bug,
+        sha256: bugReportSha256(bugId),
+        classification: finding?.classification ?? null,
+        history: await store.listBugReviewEvents(bugId),
+        actions: { downgrade: bug.status === 'CONFIRMED' },
         relatedTestCases: (bug.sourceTestCaseIds ?? []).map((t) => ({ id: t, active: suite.has(t) })),
         behaviors: bug.sourceBehaviorIds.map((b) => ({ id: b, statement: behaviors.get(b) ?? null })),
         requirements: [...(bug.sourceAcceptancePointIds ?? []), ...(bug.sourceBusinessRuleIds ?? [])].map((r) => ({ id: r, statement: statements.get(r) ?? null })),
@@ -380,7 +441,14 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
     ['POST', /^\/api\/proposals\/([^/]+)\/apply$/, async (m, req) => {
       await body(req, EmptyBody);
       const result = await applyProposal(store, ws, id(decodeURIComponent(m[1]), PROPOSAL_ID, 'proposal'));
-      return [200, { ...result, prioritization: prioritizationState(), phase1: buildReviewModel().approval }];
+      // What the change invalidated, from the artifact dependencies alone.
+      const health = phase1Health(ws, bugs(ws), options.refresh.status());
+      const affected = [
+        ...(health.prioritization.state !== 'CURRENT' ? ['Automation prioritization'] : []),
+        ...(health.defectAnalysis.state !== 'CURRENT' ? ['Defect analysis'] : []),
+        ...(health.approval.state === 'STALE' ? ['Phase 1 approval'] : []),
+      ];
+      return [200, { ...result, affected, bugsReferencingChangedCases: health.bugsReferencingChangedCases, health }];
     }],
 
     ['POST', /^\/api\/proposals\/([^/]+)\/reject$/, async (m, req) => {
@@ -393,14 +461,47 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
       return [200, { request: await requestProposalChanges(store, id(decodeURIComponent(m[1]), PROPOSAL_ID, 'proposal'), note) }];
     }],
 
-    ['POST', /^\/api\/prioritization\/refresh$/, async (_m, req) => {
+    ['POST', /^\/api\/phase1\/refresh$/, async (_m, req) => {
       await body(req, EmptyBody);
-      if (refresh.status === 'RUNNING') throw new HttpError(409, 'Prioritization is already being refreshed.');
-      refresh = { status: 'RUNNING', at: new Date().toISOString() };
-      options.refreshPrioritization()
-        .then(({ ok, output }) => { refresh = { status: ok ? 'DONE' : 'FAILED', output: output.slice(-4000), at: new Date().toISOString() }; })
-        .catch((error) => { refresh = { status: 'FAILED', output: String((error as Error).message), at: new Date().toISOString() }; });
+      if (options.refresh.status().status === 'RUNNING') throw new HttpError(409, 'A refresh is already running.');
+      await options.refresh.start();
       return [202, { accepted: true }];
+    }],
+
+    // ---- bug decisions: the same trusted service as `npm run qa:defects` ----
+
+    ['POST', /^\/api\/bugs\/([^/]+)\/(accept|reject|downgrade)$/, async (m, req) => {
+      const { note, baseSha256 } = await body(req, BugDecisionBody);
+      const bugId = id(decodeURIComponent(m[1]), BUG_ID, 'bug');
+      const { bug, event } = await decide(bugId, m[2] as 'accept' | 'reject' | 'downgrade', { ...bugOptions, note, baseSha256 });
+      return [200, { bug, event, sha256: bugReportSha256(bugId), phase1: buildReviewModel().approval }];
+    }],
+
+    ['POST', /^\/api\/bugs\/([^/]+)\/request-changes$/, async (m, req) => {
+      const { note, baseSha256 } = await body(req, BugRequestChangesBody);
+      const bugId = id(decodeURIComponent(m[1]), BUG_ID, 'bug');
+      const { bug, event } = await decide(bugId, 'request-changes', { ...bugOptions, note, baseSha256 });
+      return [200, { bug, event, sha256: bugReportSha256(bugId), phase1: buildReviewModel().approval }];
+    }],
+
+    ['POST', /^\/api\/bugs\/([^/]+)\/edit\/preview$/, async (m, req) => {
+      const { changes } = await body(req, BugPreviewBody);
+      const preview = previewEdit(id(decodeURIComponent(m[1]), BUG_ID, 'bug'), changes);
+      return [200, {
+        current: editableView(preview.current),
+        next: editableView(preview.next),
+        changedFields: preview.changedFields,
+        problems: preview.problems,
+        applicable: preview.problems.length === 0,
+        baseSha256: preview.baseSha256,
+      }];
+    }],
+
+    ['POST', /^\/api\/bugs\/([^/]+)\/edit$/, async (m, req) => {
+      const { changes, baseSha256, note } = await body(req, BugEditBody);
+      const bugId = id(decodeURIComponent(m[1]), BUG_ID, 'bug');
+      const { bug, event } = await editBug(bugId, changes, { ...bugOptions, note, baseSha256 });
+      return [200, { bug, event, sha256: bugReportSha256(bugId), phase1: buildReviewModel().approval }];
     }],
 
     ['POST', /^\/api\/phase1\/approve$/, async (_m, req) => {
@@ -426,6 +527,18 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     try {
+      // A page from another origin may not drive this API. Browsers send Origin
+      // on cross-site requests; a local tool's own page matches the Host header.
+      const origin = req.headers.origin;
+      if (req.method !== 'GET' && origin !== undefined) {
+        let host: string | undefined;
+        try {
+          host = new URL(origin).host;
+        } catch {
+          host = undefined;
+        }
+        if (host !== req.headers.host) return send(res, 403, JSON.stringify({ error: 'Cross-origin requests are refused.' }));
+      }
       if (path.startsWith('/api/')) {
         for (const [method, pattern, handler] of handlers) {
           const m = pattern.exec(path);
@@ -446,6 +559,9 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
       if (error instanceof ReviewConflictError) return send(res, 409, JSON.stringify({ error: error.message }));
       // A review file that is malformed or was edited by hand is refused, never trusted.
       if (error instanceof ReviewStoreError) return send(res, 409, JSON.stringify({ error: error.message }));
+      if (error instanceof DefectReviewConflictError) return send(res, 409, JSON.stringify({ error: error.message }));
+      if (error instanceof DefectReviewError) return send(res, 400, JSON.stringify({ error: error.message }));
+      if (error instanceof SemanticValidationError) return send(res, 409, JSON.stringify({ error: `Not saved — not supported by the evidence: ${error.message}` }));
       console.error(`[qa:ui] ${req.method} ${path}:`, error);
       // Never a stack or a path the browser did not already know.
       return send(res, 500, JSON.stringify({ error: 'Internal error — see the terminal running npm run qa:ui.' }));

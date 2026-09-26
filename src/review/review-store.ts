@@ -11,7 +11,7 @@
 // it without changing the API routes, the UI or the review-agent flow. Every
 // method is async for that reason, although files do not need it.
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { atomicWriteFile } from '../lib/atomic-write.ts';
 import { formatSchemaIssue, validateWithSchema } from '../lib/schema-validation.ts';
@@ -82,6 +82,30 @@ export interface ChangeProposal {
   createdAt: string;
 }
 
+/** A person's action on a bug report, kept as history. The decision itself lives in the bug file. */
+export type BugAction = 'accept' | 'reject' | 'downgrade' | 'request-changes' | 'edit'
+  /** The host carried a review across a regenerated defect analysis. */
+  | 'reconcile';
+
+export interface BugReviewState {
+  status: 'CONFIRMED' | 'POTENTIAL';
+  decision: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CHANGES_REQUESTED';
+  severity: 'BLOCKER' | 'CRITICAL' | 'MAJOR' | 'MINOR' | 'TRIVIAL';
+  priority: 'UNASSIGNED' | 'P0' | 'P1' | 'P2' | 'P3';
+}
+
+export interface BugReviewEvent {
+  at: string;
+  action: BugAction;
+  by: string;
+  /** Where the person acted — the command line or the workspace. */
+  via?: 'cli' | 'ui';
+  note?: string;
+  editedFields?: string[];
+  before: BugReviewState;
+  after: BugReviewState;
+}
+
 export type NewRequest = Pick<ChangeRequest, 'operation' | 'targetTestCaseId' | 'baseTestCasesSha256' | 'humanComment' | 'manualEdits'>;
 export type NewProposal = Omit<ChangeProposal, 'id' | 'status' | 'createdAt'>;
 
@@ -103,9 +127,22 @@ export interface ReviewStore {
   listProposals(requestId?: string): Promise<ChangeProposal[]>;
   rejectProposal(id: string): Promise<ChangeProposal>;
   markProposalApplied(id: string): Promise<ChangeProposal>;
+
+  /** Append one round of a person's review of a bug report. */
+  addBugReviewEvent(bugId: string, event: BugReviewEvent): Promise<BugReviewEvent[]>;
+  listBugReviewEvents(bugId: string): Promise<BugReviewEvent[]>;
+  /** Every bug id with review history. */
+  listBugReviewIds(): Promise<string[]>;
+  /**
+   * Replace all bug review histories at once — after a regenerated defect
+   * analysis, when reports get new ids. Ids not in `histories` lose theirs;
+   * the caller archives the old set first.
+   */
+  replaceBugReviewHistories(histories: Record<string, BugReviewEvent[]>): Promise<void>;
 }
 
 export const REQUEST_ID = /^REQ-[0-9]{4,}$/;
+export const BUG_REVIEW_ID = /^BUG-[0-9]{3,}$/;
 export const PROPOSAL_ID = /^PRP-[0-9]{4,}$/;
 
 const now = () => new Date().toISOString();
@@ -115,6 +152,7 @@ const now = () => new Date().toISOString();
  *
  *   <root>/requests/REQ-0001.json
  *   <root>/proposals/PRP-0001.json
+ *   <root>/bugs/BUG-001.json          review history of one bug report
  *
  * Every read is schema-checked: a file edited by hand into something invalid
  * is refused, never trusted. Ids are validated before they become file names.
@@ -126,17 +164,16 @@ export class FileReviewStore implements ReviewStore {
     this.root = resolve(root);
   }
 
-  private dir(kind: 'requests' | 'proposals') {
+  private dir(kind: Kind) {
     return join(this.root, kind);
   }
 
-  private path(kind: 'requests' | 'proposals', id: string) {
-    const pattern = kind === 'requests' ? REQUEST_ID : PROPOSAL_ID;
-    if (!pattern.test(id)) throw new ReviewStoreError(`Not a ${kind === 'requests' ? 'request' : 'proposal'} id: ${JSON.stringify(id)}`);
+  private path(kind: Kind, id: string) {
+    if (!KINDS[kind].pattern.test(id)) throw new ReviewStoreError(`Not a ${KINDS[kind].noun} id: ${JSON.stringify(id)}`);
     return join(this.dir(kind), `${id}.json`);
   }
 
-  private read<T>(kind: 'requests' | 'proposals', id: string): T | undefined {
+  private read<T>(kind: Kind, id: string): T | undefined {
     const path = this.path(kind, id);
     if (!existsSync(path)) return undefined;
     let data: unknown;
@@ -145,25 +182,23 @@ export class FileReviewStore implements ReviewStore {
     } catch {
       throw new ReviewStoreError(`${kind}/${id}.json is not valid JSON.`);
     }
-    const schema = join(SCHEMAS, kind === 'requests' ? 'review-request.schema.json' : 'review-proposal.schema.json');
-    const issues = validateWithSchema(schema, data);
+    const issues = validateWithSchema(join(SCHEMAS, KINDS[kind].schema), data);
     if (issues.length > 0) throw new ReviewStoreError(`${kind}/${id}.json is invalid: ${issues.slice(0, 3).map(formatSchemaIssue).join('; ')}`);
-    if ((data as { id: string }).id !== id) throw new ReviewStoreError(`${kind}/${id}.json claims to be ${(data as { id: string }).id}.`);
+    const own = (data as Record<string, unknown>)[KINDS[kind].key];
+    if (own !== id) throw new ReviewStoreError(`${kind}/${id}.json claims to be ${String(own)}.`);
     return data as T;
   }
 
-  private write(kind: 'requests' | 'proposals', record: { id: string }) {
-    const schema = join(SCHEMAS, kind === 'requests' ? 'review-request.schema.json' : 'review-proposal.schema.json');
-    const issues = validateWithSchema(schema, record);
-    if (issues.length > 0) throw new ReviewStoreError(`Refusing to store an invalid ${kind.slice(0, -1)}: ${issues.slice(0, 3).map(formatSchemaIssue).join('; ')}`);
-    atomicWriteFile(this.path(kind, record.id), JSON.stringify(record, null, 2));
+  private write(kind: Kind, record: object) {
+    const issues = validateWithSchema(join(SCHEMAS, KINDS[kind].schema), record);
+    if (issues.length > 0) throw new ReviewStoreError(`Refusing to store an invalid ${KINDS[kind].noun}: ${issues.slice(0, 3).map(formatSchemaIssue).join('; ')}`);
+    atomicWriteFile(this.path(kind, String((record as Record<string, unknown>)[KINDS[kind].key])), JSON.stringify(record, null, 2));
   }
 
-  private ids(kind: 'requests' | 'proposals'): string[] {
+  private ids(kind: Kind): string[] {
     const dir = this.dir(kind);
     if (!existsSync(dir)) return [];
-    const pattern = kind === 'requests' ? REQUEST_ID : PROPOSAL_ID;
-    return readdirSync(dir).map((f) => f.replace(/\.json$/, '')).filter((id) => pattern.test(id)).sort();
+    return readdirSync(dir).map((f) => f.replace(/\.json$/, '')).filter((id) => KINDS[kind].pattern.test(id)).sort();
   }
 
   private nextId(kind: 'requests' | 'proposals'): string {
@@ -172,7 +207,7 @@ export class FileReviewStore implements ReviewStore {
   }
 
   /** Every readable record; an invalid file is skipped here and reported when fetched by id. */
-  private all<T>(kind: 'requests' | 'proposals'): T[] {
+  private all<T>(kind: Kind): T[] {
     const out: T[] = [];
     for (const id of this.ids(kind)) {
       try {
@@ -278,7 +313,41 @@ export class FileReviewStore implements ReviewStore {
   async markProposalApplied(id: string) {
     return this.setProposalStatus(id, 'APPLIED');
   }
+
+  async addBugReviewEvent(bugId: string, event: BugReviewEvent) {
+    const history = this.read<{ bugId: string; events: BugReviewEvent[] }>('bugs', bugId) ?? { bugId, events: [] };
+    const next = { bugId, events: [...history.events, event] };
+    this.write('bugs', next);
+    return next.events;
+  }
+
+  async listBugReviewEvents(bugId: string) {
+    return this.read<{ bugId: string; events: BugReviewEvent[] }>('bugs', bugId)?.events ?? [];
+  }
+
+  async listBugReviewIds() {
+    return this.ids('bugs');
+  }
+
+  async replaceBugReviewHistories(histories: Record<string, BugReviewEvent[]>) {
+    // Validate everything before touching anything.
+    const records = Object.entries(histories).filter(([, events]) => events.length > 0).map(([bugId, events]) => ({ bugId, events }));
+    for (const r of records) {
+      const issues = validateWithSchema(join(SCHEMAS, KINDS.bugs.schema), r);
+      if (issues.length > 0) throw new ReviewStoreError(`Refusing to store an invalid bug review history: ${issues.slice(0, 3).map(formatSchemaIssue).join('; ')}`);
+    }
+    const keep = new Set(records.map((r) => r.bugId));
+    for (const r of records) this.write('bugs', r);
+    for (const id of this.ids('bugs')) if (!keep.has(id)) rmSync(this.path('bugs', id), { force: true });
+  }
 }
+
+type Kind = 'requests' | 'proposals' | 'bugs';
+const KINDS: Record<Kind, { pattern: RegExp; schema: string; key: string; noun: string }> = {
+  requests: { pattern: REQUEST_ID, schema: 'review-request.schema.json', key: 'id', noun: 'request' },
+  proposals: { pattern: PROPOSAL_ID, schema: 'review-proposal.schema.json', key: 'id', noun: 'proposal' },
+  bugs: { pattern: BUG_REVIEW_ID, schema: 'review-bug-history.schema.json', key: 'bugId', noun: 'bug review history' },
+};
 
 function eventFor(status: RequestStatus): HistoryEvent {
   switch (status) {

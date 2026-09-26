@@ -223,7 +223,8 @@ case's own wording is not evidence that an API exists.
 ## Defects: expected must be supported, actual must be observed
 
 `src/lib/defects.ts`, applied to every `defect-analysis` write, re-applied to every bug report
-file at approval (so a person's edits are held to the same rules), and to every `qa:defects`
+file at approval (so a person's edits are held to the same rules), and to every decision and edit
+from the workspace or `qa:defects` — one service, `src/lib/defect-review.ts`, behind both —
 edit before it is saved.
 
     SUPPORTED EXPECTED + OBSERVED ACTUAL + CLEAR CONTRADICTION = CONFIRMED_DEFECT

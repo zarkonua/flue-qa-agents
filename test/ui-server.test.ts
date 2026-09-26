@@ -46,7 +46,7 @@ async function start() {
         unresolvedIssues: [],
       });
     },
-    refreshPrioritization: async () => ({ ok: true, output: 'fake' }),
+    refresh: { start: async () => {}, status: () => ({ status: 'IDLE' as const }) },
   });
   await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -118,7 +118,9 @@ describe('review workflow over the API', () => {
     const overview = (await get('/api/overview')).body;
     assert.equal(overview.phase1.state, 'STALE');
     assert.deepEqual(overview.phase1.changed, ['test-cases.json']);
-    assert.equal(overview.prioritization.state, 'STALE');
+    assert.equal(overview.health.prioritization.state, 'STALE');
+    assert.equal(overview.health.defectAnalysis.state, 'STALE');
+    assert.deepEqual(applied.body.affected, ['Automation prioritization', 'Defect analysis', 'Phase 1 approval']);
   });
 
   it('pending work survives a restart', async () => {

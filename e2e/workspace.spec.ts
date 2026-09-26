@@ -61,7 +61,87 @@ test('update: comment -> processing -> diff -> request changes -> apply; Phase 1
   await page.goto('/');
   await expect(page.getByTestId('phase1-state')).toContainText('STALE');
   await expect(page.getByTestId('phase1-stale')).toContainText('test-cases.json');
-  await expect(page.getByTestId('prioritization-state')).toContainText('STALE');
+  await expect(page.getByTestId('health-prioritization')).toContainText('STALE');
+  await expect(page.getByTestId('health-prioritization')).toContainText('TC-1 was modified after this was generated.');
+  await expect(page.getByTestId('health-defects')).toContainText('STALE');
+  await expect(page.getByTestId('health-approval')).toContainText('STALE');
+});
+
+test('refresh dependent analysis: warning, run, CURRENT again — approval stays STALE', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Refresh dependent analysis' }).click();
+  const confirm = page.getByTestId('refresh-confirm');
+  await expect(confirm).toContainText('Automation Prioritizer');
+  await expect(confirm).toContainText('Defect Analyzer');
+  await expect(confirm).toContainText('existing bug decisions may need re-review');
+  await expect(confirm).toContainText('New bugs start as PENDING.');
+  await expect(confirm).toContainText('Materially unchanged bugs keep their decisions');
+  await confirm.getByRole('button', { name: 'Cancel' }).click();
+  await expect(confirm).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Refresh dependent analysis' }).click();
+  await page.getByTestId('refresh-confirm').getByRole('button', { name: 'Refresh' }).click();
+  await expect(page.getByTestId('refresh-state')).toContainText('COMPLETED', { timeout: 20_000 });
+  await expect(page.getByTestId('health-prioritization')).toContainText('CURRENT');
+  await expect(page.getByTestId('health-defects')).toContainText('CURRENT');
+  await expect(page.getByTestId('health-approval')).toContainText('STALE');
+  await expect(page.getByTestId('reconciliation')).toContainText('Preserved (2)');
+  await expect(page.getByRole('button', { name: 'Approve Phase 1' })).toBeEnabled();
+});
+
+test('bug edit: preview diff, apply, approval stale — other artifacts untouched', async ({ page }) => {
+  await page.goto('/bugs/BUG-001');
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await page.getByTestId('bug-edit').getByLabel('Severity').selectOption('MAJOR');
+  await page.getByTestId('bug-edit').getByLabel('Priority').selectOption('P2');
+  await page.getByRole('button', { name: 'Preview changes' }).click();
+  const diff = page.getByTestId('bug-edit-preview');
+  await expect(diff).toContainText('severity');
+  await expect(diff).toContainText('MINOR');
+  await expect(diff).toContainText('MAJOR');
+  await expect(page.getByTestId('bug-severity')).toHaveText('MINOR', { timeout: 1000 });
+  await diff.getByRole('button', { name: 'Apply' }).click();
+  await expect(page.getByTestId('bug-done')).toContainText('Edit applied');
+  await expect(page.getByTestId('bug-severity')).toHaveText('MAJOR');
+  await expect(page.getByTestId('bug-priority')).toHaveText('P2');
+  await page.goto('/');
+  await expect(page.getByTestId('health-approval')).toContainText('STALE');
+  await expect(page.getByTestId('health-approval')).toContainText('bugs/BUG-001.json');
+  await expect(page.getByTestId('health-prioritization')).toContainText('CURRENT');
+  await expect(page.getByTestId('health-defects')).toContainText('CURRENT');
+});
+
+test('bug reject persists after reload', async ({ page }) => {
+  await page.goto('/bugs/BUG-001');
+  await page.getByTestId('bug-review').locator('textarea').fill('Works as designed.');
+  await page.getByRole('button', { name: 'Reject' }).click();
+  await expect(page.getByTestId('bug-decision')).toHaveText('REJECTED');
+  await page.reload();
+  await expect(page.getByTestId('bug-decision')).toHaveText('REJECTED');
+  await expect(page.getByTestId('bug-history')).toContainText('reject');
+});
+
+test('bug downgrade: CONFIRMED becomes POTENTIAL and stays so', async ({ page }) => {
+  await page.goto('/bugs/BUG-002');
+  await expect(page.getByTestId('bug-status')).toHaveText('CONFIRMED');
+  await page.getByRole('button', { name: 'Downgrade' }).click();
+  await expect(page.getByTestId('bug-status')).toHaveText('POTENTIAL');
+  await expect(page.getByRole('button', { name: 'Downgrade' })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByTestId('bug-status')).toHaveText('POTENTIAL');
+});
+
+test('bug request changes: history shows it; the report content is unchanged', async ({ page }) => {
+  await page.goto('/bugs/BUG-002');
+  const expected = (await page.getByTestId('bug-expected').textContent()) ?? '';
+  const steps = (await page.getByTestId('bug-steps').textContent()) ?? '';
+  await expect(page.getByRole('button', { name: 'Request Changes' })).toBeDisabled();
+  await page.getByTestId('bug-review').locator('textarea').fill('Name the exact control that becomes editable.');
+  await page.getByRole('button', { name: 'Request Changes' }).click();
+  await expect(page.getByTestId('bug-decision')).toHaveText('CHANGES_REQUESTED');
+  await expect(page.getByTestId('bug-history')).toContainText('Name the exact control that becomes editable.');
+  await expect(page.getByTestId('bug-expected')).toHaveText(expected);
+  await expect(page.getByTestId('bug-steps')).toHaveText(steps);
 });
 
 test('create: natural language -> structured candidate -> apply -> active', async ({ page }) => {

@@ -102,6 +102,7 @@ npm run qa:automation                  # Phase 2: gate, Repo Analyzer, then STOP
 ```bash
 npm run qa:manual -- --from prioritization   # discovery | analysis | design | prioritization | defects
 npm run qa:manual -- --from defects          # re-run defect analysis only
+npm run qa:refresh                           # prioritization + defect analysis after a suite change (all or nothing)
 npm run qa:manual -- --attempts 2
 npm run qa:approve -- --accept-findings      # approve despite semantic findings; recorded
 npm run qa:automation -- --gate-only         # check prerequisites, start no agent
@@ -124,7 +125,7 @@ API the same way and runs Vite with hot reload on port 5173.
 | Overview | counts, requirement coverage (which cases cover each requirement), prioritization state, Phase 1 approval |
 | Test Cases | search/filter; open a case to **Edit**, **Request Change**, **Delete**, or **+ Add Test Case** |
 | Reviews | every change request by state; a proposal's diff, validation, impact and the actions |
-| Bugs | bug reports, read-only; decisions stay on `npm run qa:defects` |
+| Bugs | bug reports: Accept, Reject, Downgrade, Request Changes, Edit — the same decisions as `npm run qa:defects` |
 
 **Changing a test case.** Nothing you do in the workspace changes `test-cases.json` until you
 apply a proposal:
@@ -144,9 +145,28 @@ apply a proposal:
 4. A proposal made from an older suite is refused with a conflict — re-process the request.
    Coverage getting worse is shown as impact, not refused; `qa:approve` lists it as a finding.
 
-After an applied change the Overview shows **PRIORITIZATION STALE** and the Phase 1 approval
-**STALE** (the hash of `test-cases.json` changed). *Re-run prioritization and defect analysis*
-there runs `qa:manual --from prioritization`; then approve again.
+**What goes stale.** Each derived artifact records the hashes of the inputs it was generated from
+(`phase1-dependencies.json`), so the Overview can say exactly what changed:
+
+| Change | Prioritization | Defect analysis | Phase 1 approval |
+|---|---|---|---|
+| a test case applied (edit, add, delete) | STALE | STALE | STALE |
+| a bug decision or bug edit | current | current | STALE |
+
+**Refresh dependent analysis** (Overview, or `npm run qa:refresh`) re-runs Automation
+Prioritizer, then Defect Analyzer — nothing upstream, and no browser. It asks first, and says what
+it does to bug reviews. It is all or nothing: the previous artifacts are snapshotted and restored
+if either stage fails, so they stay STALE rather than half-replaced; the run lock stops it from
+overlapping a QA run. It never restores the approval — approve again afterwards. It is never
+started automatically, so several edits can share one refresh.
+
+**Bug decisions across a refresh.** The regenerated reports are reconciled with the reviewed
+ones by the host, deterministically: a report with the same area, evidence and original status,
+whose expected and actual say the same thing, keeps the decision, note, downgrade and any
+edited fields (re-validated). A changed finding — a REJECTED one included — goes back to PENDING;
+a new one starts PENDING; one no longer produced leaves the active set. The Overview lists what
+was preserved, reset, new and removed; the previous reports and histories are archived under
+`archive/<stamp>-refresh/`.
 
 Requests and proposals are workflow state, stored as `reviews/requests/REQ-NNNN.json` and
 `reviews/proposals/PRP-NNNN.json` under the artifact root through the `ReviewStore` interface.
@@ -201,7 +221,9 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `~/projects/qa-workspace/.qa/`):
 | File | Written by |
 |---|---|
 | `discovered-behavior.json` · `requirements-analysis.json` · `test-cases.json` · `automation-prioritization.json` | Phase 1 stages 1–4 |
-| `defect-analysis.json` · `bugs/BUG-NNN.json` | Phase 1 stage 5 (Defect Analyzer); reports edited only by `qa:defects` |
+| `defect-analysis.json` · `bugs/BUG-NNN.json` | Phase 1 stage 5 (Defect Analyzer); reports changed only by a person's decisions (workspace or `qa:defects`) |
+| `phase1-dependencies.json` · `phase1-refresh.json` | host: what prioritization and defect analysis were generated from; the last refresh |
+| `reviews/bugs/BUG-NNN.json` | the review history of each bug report (workflow state) |
 | `test-cases-review.json` | `qa:review` (advisory) |
 | `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` | the review workspace (workflow state; never approved or hashed) |
 | `phase1-approval.json` | `qa:approve` — host code only |

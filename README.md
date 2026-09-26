@@ -32,8 +32,9 @@ npm run qa:approve        # approve Phase 1 (the workspace has the same button)
 npm run qa:automation     # Phase 2: entry gate, then Repo Analyzer, then STOP
 ```
 
-Optional: `npm run qa:review` (suite-wide AI review), `npm run qa:defects` (decide on bug
-reports from the command line). Full operator guide: **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
+Optional: `npm run qa:review` (suite-wide AI review), `npm run qa:defects` (bug decisions from the
+command line, the same as the workspace's), `npm run qa:refresh` (re-derive prioritization and
+defect analysis after the suite changed). Full operator guide: **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
 
 ## Phase 1 pipeline
 
@@ -61,7 +62,7 @@ Four different things, deliberately kept apart:
 |---|---|---|
 | `npm run qa:review` | A suite-wide, advisory AI review. Writes `test-cases-review.json`. | Never |
 | Change requests (workspace) | You edit, comment on, add or delete a case; the QA agent answers with a **proposal**. | Only when you click Apply |
-| Bug decisions (`qa:defects`) | Accept, reject, downgrade or edit a bug report. | No — it changes the report |
+| Bug decisions (workspace or `qa:defects`) | Accept, reject, downgrade, request changes or edit a bug report. | No — it changes the report, and makes the approval stale |
 | Phase 1 approval | Your approval of the exact artifacts on disk, hash-locked. | No — it gates Phase 2 |
 
 ```text
@@ -72,7 +73,9 @@ you: edit / comment / add / delete
   → you see CURRENT vs PROPOSED, impact, problems
   → you APPLY, REJECT or REQUEST CHANGES
   → host WRITES test-cases.json atomically
-  → prioritization and the Phase 1 approval become STALE until refreshed and re-approved
+  → prioritization, defect analysis and the Phase 1 approval become STALE
+  → you REFRESH dependent analysis (Automation Prioritizer, then Defect Analyzer)
+  → you APPROVE Phase 1 again — a refresh never does
 ```
 
 ## QA Review Workspace
@@ -81,7 +84,9 @@ you: edit / comment / add / delete
 `127.0.0.1:4445` (`QA_UI_PORT`). React + TypeScript + Vite; `npm run qa:ui:dev` adds hot reload.
 
 - **Overview** — counts, requirement coverage with the cases covering each requirement,
-  prioritization state, and Phase 1 approval (approve here, or see why it is stale).
+  Phase 1 health (test cases, prioritization, defect analysis, AI review, approval — each CURRENT
+  or STALE with the reason, e.g. "NC-12 was modified"), **Refresh dependent analysis**, and
+  Phase 1 approval.
 - **Test Cases** — search and filter by priority, type, strategy and pending changes. Each
   case shows what it covers, the behaviors it cites, its automation decision, related bugs and
   its review history. **Edit** (the id is fixed), **Request Change** (free text), **Delete**,
@@ -90,8 +95,10 @@ you: edit / comment / add / delete
   applied, rejected. A proposal shows a field-level diff (steps as added / removed / changed),
   the host's validation, coverage impact, possible duplicates and unresolved issues. **Apply**
   is disabled unless the host says the proposal is valid and was made from the current suite.
-- **Bugs** — the bug reports with their evidence and decisions, read-only here; links to test
-  cases only where a report names them.
+- **Bugs** — the bug reports with their evidence, test-case links (only where a report names the
+  case) and review history. **Accept**, **Reject**, **Downgrade** (CONFIRMED → POTENTIAL),
+  **Request Changes** (a note; the report's content is untouched) and **Edit** (title, severity,
+  priority, steps — previewed as a diff and re-validated against the evidence before Apply).
 
 The QA agent follows the evidence, not the request: asked for an outcome nothing observed, it
 leaves it out and records an unresolved issue instead of writing it down as expected behavior.
@@ -197,7 +204,8 @@ Failure Analyzer are not built.
 - The suite is only as deep as discovery: a thin discovery run yields a small suite.
 - The review agent answers from recorded evidence; it does not browse to verify a new claim.
   A request the evidence cannot support comes back unresolved.
-- After a change is applied, prioritization and defect analysis are marked stale; refreshing
-  them re-runs those stages with the model (a button on the Overview, or
-  `npm run qa:manual -- --from prioritization`).
+- After a test case changes, prioritization and defect analysis are STALE until refreshed; the
+  refresh is a model run and is started on purpose (Overview, or `npm run qa:refresh`), never
+  automatically after each edit. A regenerated defect analysis keeps a person's decision only on
+  bugs that are materially the same; the rest start again as PENDING.
 - Deterministic validation proves a claim is supported, not that it is right; see VALIDATION.md.

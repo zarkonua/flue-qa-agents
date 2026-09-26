@@ -368,29 +368,29 @@ describe('human review of bug reports', () => {
     qa.writeQaArtifact('defect-analysis', { findings: base() });
   });
 
-  it('accept, reject, downgrade and request changes are recorded', () => {
-    assert.equal(review.decide('BUG-001', 'accept', { by: 'qa-lead' }).review.decision, 'ACCEPTED');
-    assert.equal(review.decide('BUG-002', 'reject', { by: 'qa-lead', note: 'By design.' }).review.decision, 'REJECTED');
-    const down = review.decide('BUG-003', 'downgrade', { by: 'qa-lead' });
+  it('accept, reject, downgrade and request changes are recorded', async () => {
+    assert.equal((await review.decide('BUG-001', 'accept', { by: 'qa-lead' })).bug.review.decision, 'ACCEPTED');
+    assert.equal((await review.decide('BUG-002', 'reject', { by: 'qa-lead', note: 'By design.' })).bug.review.decision, 'REJECTED');
+    const { bug: down } = await review.decide('BUG-003', 'downgrade', { by: 'qa-lead' });
     assert.equal(down.status, 'POTENTIAL');
     assert.equal(down.review.downgradedFrom, 'CONFIRMED');
-    assert.throws(() => review.decide('BUG-003', 'downgrade'), /only a CONFIRMED report/);
-    assert.throws(() => review.decide('BUG-003', 'request-changes'), /needs --note/);
-    assert.equal(review.decide('BUG-003', 'request-changes', { note: 'Add the reload timing.' }).review.decision, 'CHANGES_REQUESTED');
+    await assert.rejects(review.decide('BUG-003', 'downgrade'), /only a CONFIRMED report/);
+    await assert.rejects(review.decide('BUG-003', 'request-changes'), /needs a note/);
+    assert.equal((await review.decide('BUG-003', 'request-changes', { note: 'Add the reload timing.' })).bug.review.decision, 'CHANGES_REQUESTED');
     assert.equal(qa.readBugReport('BUG-001')!.review.by, 'qa-lead');
   });
 
-  it('title, steps, severity and priority can be edited; an unsupported edit is refused', () => {
-    const edited = review.edit('BUG-001', { title: 'Short title accepted', severity: 'MAJOR', priority: 'P2', steps: ['Open the Notes page', 'Save a 1-character Title'] });
+  it('title, steps, severity and priority can be edited; an unsupported edit is refused', async () => {
+    const { bug: edited } = await review.edit('BUG-001', { title: 'Short title accepted', severity: 'MAJOR', priority: 'P2', steps: ['Open the Notes page', 'Save a 1-character Title'] });
     assert.deepEqual(edited.review.editedFields, ['priority', 'severity', 'steps', 'title']);
     assert.deepEqual(validateBugReport(qa.readBugReport('BUG-001')!, ctx), [], 'a human-set priority is valid');
     const before = readFileSync(qa.bugReportPath('BUG-001'), 'utf8');
-    assert.throws(() => review.edit('BUG-001', { steps: ['Open /admin/notes'] }), /UNSUPPORTED_FACT/);
-    assert.throws(() => review.edit('BUG-001', { severity: 'HUGE' }), /--severity must be one of/);
+    await assert.rejects(review.edit('BUG-001', { steps: ['Open /admin/notes'] }), /UNSUPPORTED_FACT/);
+    assert.throws(() => review.previewEdit('BUG-001', { severity: 'HUGE' }), /Severity must be one of/);
     assert.equal(readFileSync(qa.bugReportPath('BUG-001'), 'utf8'), before, 'a refused edit changes nothing');
   });
 
-  it('approval shows the defects, does not require zero of them, and goes stale on a later decision', () => {
+  it('approval shows the defects, does not require zero of them, and goes stale on a later decision', async () => {
     put('automation-prioritization', { cases: testCases.testCases.map((t) => ({ testCaseId: t.id, executionMode: 'MANUAL', automationPriority: 'NONE', reason: 'r', blockingFactors: [] })) });
     const state = gate.inspectPhase1();
     assert.deepEqual(state.missing, []);
@@ -401,7 +401,7 @@ describe('human review of bug reports', () => {
     assert.equal(approved.approval.defects.summary.confirmed, 2);
     assert.deepEqual(approved.approval.defects.reports.map((r) => r.decision), ['PENDING', 'PENDING', 'PENDING']);
     assert.deepEqual(gate.changedSinceApproval(approved.approval), []);
-    review.decide('BUG-002', 'reject', { note: 'By design.' });
+    await review.decide('BUG-002', 'reject', { note: 'By design.' });
     assert.deepEqual(gate.changedSinceApproval(approved.approval), ['bugs/BUG-002.json']);
   });
 

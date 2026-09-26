@@ -1,19 +1,47 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["status", "issues", "suggestedChanges", "summary"],
+  "required": [
+    "status",
+    "issues",
+    "suggestedChanges",
+    "summary"
+  ],
   "properties": {
-    "status": { "enum": ["APPROVED", "CHANGES_REQUESTED"] },
+    "status": {
+      "enum": [
+        "APPROVED",
+        "CHANGES_REQUESTED"
+      ]
+    },
     "issues": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["testCaseId", "severity", "category", "message"],
+        "required": [
+          "testCaseId",
+          "severity",
+          "category",
+          "message"
+        ],
         "properties": {
-          "testCaseId": { "type": "string" },
-          "severity": { "enum": ["BLOCKER", "MAJOR", "MINOR", "INFO"] },
-          "category": { "type": "string" },
-          "message": { "type": "string" }
+          "testCaseId": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "BLOCKER",
+              "MAJOR",
+              "MINOR",
+              "INFO"
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }
@@ -22,26 +50,64 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["testCaseId", "field", "change", "rationale"],
+        "required": [
+          "testCaseId",
+          "field",
+          "change",
+          "rationale"
+        ],
         "properties": {
-          "testCaseId": { "type": "string" },
-          "field": { "type": "string" },
-          "change": { "type": "string" },
-          "rationale": { "type": "string" }
+          "testCaseId": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "change": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }
     },
     "summary": {
       "type": "object",
-      "required": ["total", "manual", "automation", "automationHigh", "automationMedium", "automationLow"],
+      "required": [
+        "total",
+        "manual",
+        "automation",
+        "automationHigh",
+        "automationMedium",
+        "automationLow"
+      ],
       "properties": {
-        "total": { "type": "number" },
-        "manual": { "type": "number" },
-        "automation": { "type": "number" },
-        "automationHigh": { "type": "number" },
-        "automationMedium": { "type": "number" },
-        "automationLow": { "type": "number" }
+        "total": {
+          "type": "number"
+        },
+        "manual": {
+          "type": "number"
+        },
+        "automation": {
+          "type": "number"
+        },
+        "automationHigh": {
+          "type": "number"
+        },
+        "automationMedium": {
+          "type": "number"
+        },
+        "automationLow": {
+          "type": "number"
+        },
+        "confirmedDefects": {
+          "type": "number"
+        },
+        "potentialDefects": {
+          "type": "number"
+        }
       },
       "additionalProperties": false
     }

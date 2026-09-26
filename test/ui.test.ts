@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURES = join(PROJECT, 'test', 'fixtures', 'phase1-approved');
-const PHASE1 = ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization'];
+const PHASE1 = ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization', 'defect-analysis'];
 
 /** A workspace holding a complete, approvable Phase 1. */
 function completeWorkspace(): string {

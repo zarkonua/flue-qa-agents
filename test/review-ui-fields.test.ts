@@ -20,7 +20,7 @@ import { spawnSync } from 'node:child_process';
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURES = join(PROJECT, 'test', 'fixtures', 'phase1-approved');
-const PHASE1 = ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization'];
+const PHASE1 = ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization', 'defect-analysis'];
 
 /**
  * Build the review model in a child process, so QA_ARTIFACT_ROOT is read at

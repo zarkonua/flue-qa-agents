@@ -266,6 +266,29 @@ function reviewSection(m) {
     </div>`;
 }
 
+function defectsSection(m) {
+  if (!m.defects) return '';
+  const d = m.defects;
+  const card = (b) => `
+    <div class="card">
+      <div><code>${esc(b.id)}</code> <b>${esc(b.status)}</b> · ${esc(b.severity)} · priority ${esc(b.priority)} ·
+        decision <b>${esc(b.decision)}</b>${b.downgraded ? ' (downgraded)' : ''}${b.area ? ` · ${esc(b.area)}` : ''}</div>
+      <h3>${esc(b.title)}</h3>
+      ${b.preconditions.length ? `<p><b>Preconditions</b></p><ul>${b.preconditions.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
+      <p><b>Steps</b></p><ol>${b.steps.map((s) => `<li>${esc(s)}</li>`).join('')}</ol>
+      <p><b>Expected</b> ${esc(b.expected)}</p>
+      <p><b>Actual</b> ${esc(b.actual)}</p>
+      <p class="empty">Expected basis: ${esc(b.expectedBasis)} · behaviors ${b.sourceBehaviorIds.map(esc).join(', ')}${b.sourceTestCaseIds.length ? ` · test cases ${b.sourceTestCaseIds.map(esc).join(', ')}` : ''}</p>
+      ${b.note ? `<p class="empty">Note: ${esc(b.note)}</p>` : ''}
+    </div>`;
+  return `
+    <h2>Defects</h2>
+    <p>${d.summary.confirmed} confirmed · ${d.summary.potential} potential · ${d.summary.notDefect} not a defect ·
+      ${d.summary.insufficientEvidence} insufficient evidence</p>
+    <div class="cards">${d.reports.map(card).join('') || '<p class="empty">No bug reports: no observed behavior contradicted a supported expectation.</p>'}</div>
+    <p class="empty">Decide on each report with <code>npm run qa:defects</code> (accept, reject, downgrade, request-changes, edit). A decision makes an existing approval stale.</p>`;
+}
+
 function flashNotice() {
   const f = state.flash;
   if (!f) return '';
@@ -323,6 +346,7 @@ function render() {
     <div class="cards">${shown.map(caseCard).join('') || '<p class="empty">No test case matches these filters.</p>'}</div>
 
     ${requirementsSection(m)}
+    ${defectsSection(m)}
     ${reviewSection(m)}
     <footer>Approving here calls the same host code as <code>npm run qa:approve</code>. Read-only otherwise.</footer>`;
 

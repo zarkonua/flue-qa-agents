@@ -1,5 +1,5 @@
 // Minimal JSON Schema (draft 2020-12 subset) validator: type, required,
-// properties, additionalProperties, items, enum. Sufficient for schemas/*.json,
+// properties, additionalProperties, items, enum, pattern, minItems. Sufficient for schemas/*.json,
 // which use only this subset. Trusted host code only — never exposed to the model
 // as a tool the model drives; it runs inside write_qa_artifact's own validation.
 
@@ -10,6 +10,9 @@ export interface JsonSchemaNode {
   properties?: Record<string, JsonSchemaNode>;
   additionalProperties?: boolean;
   items?: JsonSchemaNode;
+  /** Strings only. Anchor it: a bug id becomes a file name. */
+  pattern?: string;
+  minItems?: number;
 }
 
 function typeOf(value: unknown): string {
@@ -50,6 +53,14 @@ export function validateAgainstSchema(value: unknown, schema: JsonSchemaNode, pa
     for (const [key, propSchema] of Object.entries(schema.properties ?? {})) {
       if (key in obj) errors.push(...validateAgainstSchema(obj[key], propSchema, `${path}.${key}`));
     }
+  }
+
+  if (schema.pattern !== undefined && typeof value === 'string' && !new RegExp(schema.pattern).test(value)) {
+    errors.push(`${path}: ${JSON.stringify(value)} does not match ${schema.pattern}`);
+  }
+
+  if (schema.minItems !== undefined && Array.isArray(value) && value.length < schema.minItems) {
+    errors.push(`${path}: expected at least ${schema.minItems} item(s), got ${value.length}`);
   }
 
   if (schema.type === 'array' && Array.isArray(value) && schema.items) {

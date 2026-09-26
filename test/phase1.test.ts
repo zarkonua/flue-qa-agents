@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as v from 'valibot';
+import { normaliseDefectAnalysis } from '../src/lib/defects.ts';
 import {
   summarize,
   validateAutomationPrioritization,
@@ -227,6 +228,16 @@ describe('human approval gate', () => {
     write('requirements-analysis', requirements);
     write('test-cases', testCases);
     write('automation-prioritization', prioritization);
+    // Defect analysis is part of what is approved. A clean one: every
+    // suspected issue looked at, nothing that meets the bar for a report.
+    write('defect-analysis', normaliseDefectAnalysis({
+      findings: discovery.behaviors.filter((b) => b.suspectedIssue).map((b, i) => ({
+        id: `DEF-${String(i + 1).padStart(3, '0')}`,
+        classification: 'INSUFFICIENT_EVIDENCE' as const,
+        sourceBehaviorIds: [b.id],
+        reason: 'Nothing upstream states what should happen here.',
+      })),
+    }, { discovery, requirements, testCases }));
   };
 
   before(async () => {

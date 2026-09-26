@@ -15,7 +15,7 @@ import {
   schemaErrorsFor,
   type QaArtifactName,
 } from './qa-artifacts.ts';
-import { APPROVAL_PATH, inspectPhase1, PHASE1_LOCKED, sha256Of, type Phase1Approval } from './phase1-gate.ts';
+import { APPROVAL_PATH, changedSinceApproval, inspectPhase1, type Phase1Approval } from './phase1-gate.ts';
 import {
   analysisCoverageSummary,
   coverageSummary,
@@ -112,6 +112,28 @@ export interface ReviewModel {
   analysisCoverage?: AnalysisCoverageSummary;
   /** Non-blocking note when a large suite classifies itself very narrowly. */
   scenarioDiversityNote?: string;
+  /** Defect analysis, and each bug report as a person last left it. Absent before that stage ran. */
+  defects?: {
+    summary: { confirmed: number; potential: number; notDefect: number; insufficientEvidence: number; bugReports: number };
+    reports: {
+      id: string;
+      status: string;
+      severity: string;
+      priority: string;
+      title: string;
+      area?: string;
+      expectedBasis: string;
+      preconditions: string[];
+      steps: string[];
+      expected: string;
+      actual: string;
+      sourceBehaviorIds: string[];
+      sourceTestCaseIds: string[];
+      decision: string;
+      downgraded: boolean;
+      note?: string;
+    }[];
+  };
   review?: {
     status: string;
     summary: ReviewSummary;
@@ -143,13 +165,6 @@ function readApproval(): Phase1Approval | undefined {
   }
 }
 
-const HASH_FIELD = {
-  'discovered-behavior': 'discoveredBehaviorSha256',
-  'requirements-analysis': 'requirementsAnalysisSha256',
-  'test-cases': 'testCasesSha256',
-  'automation-prioritization': 'automationPrioritizationSha256',
-} as const;
-
 /** Everything the review screen shows, assembled from whatever exists on disk. */
 export function buildReviewModel(): ReviewModel {
   const state = inspectPhase1();
@@ -165,7 +180,7 @@ export function buildReviewModel(): ReviewModel {
   // Approval state, read through the same fields the gate locks on.
   const approvalFile = readApproval();
   const changed = approvalFile
-    ? PHASE1_LOCKED.filter((name) => approvalFile[HASH_FIELD[name]] !== sha256Of(name)).map((n) => `${n}.json`)
+    ? changedSinceApproval(approvalFile)
     : [];
   const approval: ReviewModel['approval'] = {
     state: !approvalFile || approvalFile.status !== 'APPROVED' ? 'NONE' : changed.length > 0 ? 'STALE' : 'APPROVED',
@@ -188,6 +203,30 @@ export function buildReviewModel(): ReviewModel {
     testCases: [],
     requirements: [],
   };
+
+  if (state.defects) {
+    model.defects = {
+      summary: state.defects.summary,
+      reports: state.defects.bugs.map((b) => ({
+        id: b.id,
+        status: b.status,
+        severity: b.severity,
+        priority: b.priority,
+        title: b.title,
+        area: b.area,
+        expectedBasis: b.expectedBasis,
+        preconditions: b.preconditions,
+        steps: b.steps,
+        expected: b.expected,
+        actual: b.actual,
+        sourceBehaviorIds: b.sourceBehaviorIds,
+        sourceTestCaseIds: b.sourceTestCaseIds ?? [],
+        decision: b.review.decision,
+        downgraded: b.review.downgradedFrom !== undefined,
+        note: b.review.note,
+      })),
+    };
+  }
 
   if (!testCases.data) return model;
 

@@ -22,6 +22,7 @@ const ARTIFACT_NAMES = [
   'test-cases',
   'automation-prioritization',
   'test-cases-review',
+  'defect-analysis',
   'repo-analysis',
   'ui-exploration',
   'automation-plan',

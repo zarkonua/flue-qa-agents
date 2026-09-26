@@ -215,6 +215,56 @@ observe. The host derives what was observed from upstream facts only — a requi
 `API`/`CONTRACT`/`VISUAL`, or browser evidence that recorded real HTTP requests. A test
 case's own wording is not evidence that an API exists.
 
+## Defects: expected must be supported, actual must be observed
+
+`src/lib/defects.ts`, applied to every `defect-analysis` write, re-applied to every bug report
+file at approval (so a person's edits are held to the same rules), and to every `qa:defects`
+edit before it is saved.
+
+    SUPPORTED EXPECTED + OBSERVED ACTUAL + CLEAR CONTRADICTION = CONFIRMED_DEFECT
+    INFERRED EXPECTED  + OBSERVED ACTUAL                        = POTENTIAL_DEFECT
+
+A finding's `sourceBehaviorIds` are the **actual** side. Its expectation comes through
+`sourceAcceptancePointIds` / `sourceBusinessRuleIds`, and the host derives its **expected
+basis** from what those requirements rest on — the model's claim is never used:
+
+| Basis | When |
+|---|---|
+| `CONFIRMED_REQUIREMENT` | a cited requirement rests on a CONFIRMED behavior (one the run was given) |
+| `EVIDENCED_REQUIREMENT` | a cited requirement rests on an OBSERVED, non-suspected behavior that is **not** one of the actual behaviors |
+| `INFERRED` | requirements are cited, but rest only on inference or on the actual behavior itself — that restates the actual, it does not contradict it |
+| `NONE` | no requirement is cited |
+
+`CONFIRMED_DEFECT` needs `CONFIRMED_REQUIREMENT` or `EVIDENCED_REQUIREMENT`. Every
+CONFIRMED/POTENTIAL defect needs at least one OBSERVED behavior of the product (not only of a
+trusted auxiliary origin), and `title`, `severity`, `steps`, `expected`, `actual`; the other
+classifications carry none of those. `actual` must share content with the cited behaviors and
+a supported `expected` with the cited requirements, and the two may not say the same thing.
+All text is fact-checked like a test case: no route, quoted message, feature or credential
+without an upstream mention.
+
+**Duplicates.** Two defect findings are one when they cite the same OBSERVED behavior as their
+actual, or when they concern the same area and their title + expected + actual overlap by at
+least half their content words, compared canonically (so *log in*, *sign in* and
+*authenticate* are the same word). The fix is one finding citing every behavior and test case.
+
+**Completeness.** Every behavior discovery marked `suspectedIssue` must appear in some finding.
+
+**Host-owned fields.** Summary, bug report ids (`BUG-001…` in finding order), expected basis,
+the evidence list, the environment (target, `Chromium`) and priority (`UNASSIGNED`) are set by
+the host. The analyzer's schema has no `priority` field; a bug report whose priority is not
+`UNASSIGNED` must record that a person set it (`qa:defects -- edit --priority`).
+
+**Files.** `bugs/<id>.json`, where the id must match `^BUG-[0-9]{3,}$` before it becomes a file
+name. A write validates every report before touching any file, and removes reports the new
+analysis no longer produces. Everything persisted passes the redaction layer, which now also
+replaces opaque path segments inside URLs quoted in prose, and the configured test account's
+values.
+
+What this cannot do: judge whether a contradiction is *real*. Word overlap proves the expected
+and actual sides are about the right evidence, not that they conflict. That is why every
+report goes in front of a person before approval.
+
 ## Phase 1 codes
 
 | Code | Rejects |
@@ -230,7 +280,7 @@ case's own wording is not evidence that an API exists.
 | `MISSING_PRIORITIZATION` | A test case with no entry — MANUAL ones included |
 | `DUPLICATE_PRIORITIZATION` | Two entries for one test case |
 | `INCONSISTENT_PRIORITY` | `MANUAL` + `HIGH`, or `AUTOMATION` + `NONE` |
-| `SUMMARY_MISMATCH` | Review counts that disagree with the prioritization |
+| `SUMMARY_MISMATCH` | Review counts that disagree with the prioritization or the defect analysis; a host-owned defect field that disagrees with what the host computes |
 | `INCONSISTENT_STATUS` | `APPROVED` with a blocker, or `CHANGES_REQUESTED` with nothing requested |
 | `DUPLICATE_ID` / `UNKNOWN_AREA` | Repeated IDs; a behavior in an undeclared area |
 | `MISSING_COVERAGE` | A test case whose `covers` is empty — it demonstrates no requirement. |
@@ -248,6 +298,12 @@ case's own wording is not evidence that an API exists.
 | `CONTRADICTORY_STRATEGY` | An automation strategy that contradicts the execution mode. |
 | `UNSUPPORTED_STRATEGY` | A strategy naming a capability (`API`, `UI_API`, `VISUAL`) this run did not observe. |
 | `MISSING_UPSTREAM` / `UPSTREAM_INVALID` | An input artifact is absent, or no longer consistent with the current discovery. The agent is told it cannot fix this and must stop |
+| `UNOBSERVED_ACTUAL` | A defect whose cited behaviors include nothing OBSERVED |
+| `UNSUPPORTED_EXPECTED` | `CONFIRMED_DEFECT` whose expected basis is `INFERRED` or `NONE` |
+| `INCOMPLETE_DEFECT` | A defect missing bug fields, a non-defect carrying them, expected equal to actual, or a bug report file missing or not in the analysis |
+| `DUPLICATE_DEFECT` | Two findings describing the same mismatch |
+| `UNANALYZED_SUSPECTED_ISSUE` | A `suspectedIssue` behavior no finding cites |
+| `AUXILIARY_AS_PRODUCT` (defects) | A defect resting only on test-infrastructure behavior, or placing the bug on an auxiliary origin |
 
 `qa:approve` treats the structural ones (`MISSING_UPSTREAM`, `UNKNOWN_TEST_CASE`,
 `MISSING_PRIORITIZATION`, `DUPLICATE_PRIORITIZATION`, `INCONSISTENT_PRIORITY`,

@@ -12,7 +12,7 @@
 
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /** The commit this run's code came from, when the tree is a git repo. */
 export function gitCommit(root) {
@@ -49,6 +49,8 @@ export function preserveRun({ artifactRoot, projectRoot, runId, model, target, s
   for (const name of files) {
     const from = join(artifactRoot, name);
     if (!existsSync(from)) continue;
+    // A name may carry a subdirectory — `bugs/BUG-001.json`.
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
     copyFileSync(from, join(dir, name));
     copied.push(name);
   }

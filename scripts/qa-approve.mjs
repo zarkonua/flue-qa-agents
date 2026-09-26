@@ -21,7 +21,8 @@ const line = (f) => `  - ${f.artifact}: [${f.code}] ${f.path}${f.value !== undef
 if (!result.ok) {
   const { state } = result;
   if (result.reason === 'INCOMPLETE') {
-    console.error(`\nCannot approve — Phase 1 is incomplete. Missing: ${state.missing.map((n) => `${n}.json`).join(', ')}\nRun: npm run qa:manual\n`);
+    const from = state.missing.length === 1 && state.missing[0] === 'defect-analysis' ? ' -- --from defects' : '';
+    console.error(`\nCannot approve — Phase 1 is incomplete. Missing: ${state.missing.map((n) => `${n}.json`).join(', ')}\nRun: npm run qa:manual${from}\n`);
   } else if (result.reason === 'INVALID') {
     console.error('\nCannot approve — Phase 1 artifacts are structurally invalid (this cannot be overridden):');
     for (const s of state.schemaErrors) for (const e of s.errors.slice(0, 5)) console.error(`  - ${s.artifact}: schema: ${e}`);
@@ -46,8 +47,17 @@ console.log('==============================================================');
 console.log(`Approved by     : ${approval.approvedBy} at ${approval.approvedAt}`);
 console.log(`Test cases      : ${c.total}  (${c.manual} MANUAL, ${c.automation} AUTOMATION: ${c.automationHigh} high / ${c.automationMedium} medium / ${c.automationLow} low)`);
 console.log(`AI review       : ${approval.review ? `${approval.review.status}${approval.review.olderThanTestCases ? ' (older than the current test cases)' : ''}` : 'none run'}`);
+const d = approval.defects;
+console.log(`Defects         : ${d.summary.confirmed} confirmed, ${d.summary.potential} potential, ` +
+  `${d.summary.notDefect} not a defect, ${d.summary.insufficientEvidence} insufficient evidence`);
+for (const r of d.reports) {
+  console.log(`  ${r.id}  ${r.status.padEnd(9)}  ${r.severity.padEnd(8)}  priority ${r.priority.padEnd(10)}  decision ${r.decision}`);
+}
+const pending = d.reports.filter((r) => r.decision === 'PENDING').length;
+if (pending > 0) console.log(`  ${pending} report(s) have no decision yet; recorded as PENDING (npm run qa:defects).`);
 if (approval.acceptedFindings.length > 0) console.log(`Accepted        : ${approval.acceptedFindings.length} semantic finding(s), recorded in the approval`);
 console.log(`test-cases      : sha256 ${approval.testCasesSha256}`);
+console.log(`defect-analysis : sha256 ${approval.defectAnalysisSha256} (+ ${Object.keys(approval.bugReportsSha256).length} bug report file(s))`);
 console.log(`prioritization  : sha256 ${approval.automationPrioritizationSha256}`);
 console.log(`Written         : ${APPROVAL_PATH}`);
 console.log('\nAny change to the approved artifacts makes this approval stale. Next:\n  npm run qa:automation\n');

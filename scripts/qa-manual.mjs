@@ -8,7 +8,8 @@
 //   Behavior Analyst       -> requirements-analysis.json
 //   Test Designer          -> test-cases.json
 //   Automation Prioritizer -> automation-prioritization.json
-//   STOP  (then: review, edit, `npm run qa:approve`)
+//   Defect Analyzer        -> defect-analysis.json + bugs/<id>.json
+//   STOP  (then: `npm run qa:review`, `npm run qa:defects`, `npm run qa:approve`)
 //
 // The sequence is fixed here, in trusted code; no model decides whether the
 // next stage runs. Each agent runs as its own root process with only its own
@@ -17,7 +18,7 @@
 // disk (schema + semantic). A failed stage is retried, then the run stops.
 //
 // Options:
-//   --from <stage>   start at discovery | analysis | design | prioritization
+//   --from <stage>   start at discovery | analysis | design | prioritization | defects
 //                    (earlier artifacts are kept — e.g. after hand-editing test
 //                    cases, `--from prioritization` re-prioritizes only)
 //   --attempts <n>   attempts per stage (default 4, or QA_STAGE_ATTEMPTS)
@@ -37,6 +38,7 @@ const auxLib = await import(resolve(ROOT, 'src/config/auxiliary-origins.ts'));
 const authLib = await import(resolve(ROOT, 'src/config/auth-bootstrap.ts'));
 const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
 const { completionMetrics, runFunnel, stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
+const { defectMetrics } = await import(resolve(ROOT, 'src/lib/defects.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
@@ -84,6 +86,14 @@ const STAGES = [
     artifact: 'automation-prioritization',
     message: 'Read the test-cases artifact and write the automation-prioritization artifact.',
   },
+  {
+    key: 'defects',
+    label: 'Defect Analyzer',
+    agent: 'src/agents/defect-analyzer.ts',
+    artifact: 'defect-analysis',
+    message:
+      'Read the discovered-behavior, requirements-analysis and test-cases artifacts and write the defect-analysis artifact.',
+  },
 ];
 
 /**
@@ -95,6 +105,7 @@ const PHASE1_AGENTS = new Set([
   'src/agents/behavior-analyst.ts',
   'src/agents/test-designer.ts',
   'src/agents/automation-prioritizer.ts',
+  'src/agents/defect-analyzer.ts',
 ]);
 for (const stage of STAGES) {
   if (!PHASE1_AGENTS.has(stage.agent)) {
@@ -190,6 +201,8 @@ function archive(path) {
 
 // Regenerating any stage invalidates the review and the approval of the old result.
 for (const stage of plan) archive(qa.qaArtifactPath(stage.artifact));
+// Bug reports belong to the defect analysis that produced them.
+if (plan.some((s) => s.key === 'defects')) archive(qa.BUGS_DIR);
 archive(qa.qaArtifactPath('test-cases-review'));
 archive(APPROVAL_PATH);
 
@@ -224,6 +237,8 @@ function evidenceLocations() {
 // unattributable, and a local-vs-hosted comparison is guesswork — the archive
 // this project already holds cannot say which model wrote any of it.
 const env = envForLock;
+// Bug reports carry the run they came from.
+process.env.QA_RUN_ID = stamp;
 const record = {
   phase: 1,
   target: target ?? null,
@@ -454,6 +469,10 @@ if (coverage) record.coverage = coverage;
 // requirements. Host-derived from the two artifacts, like every other total.
 const analysis = requirements ? analysisCoverageSummary(discovery, requirements) : undefined;
 if (analysis) record.analysisCoverage = analysis;
+// Defect analysis counts, host-derived from the artifact. Defects are a QA
+// result, never a pipeline failure.
+const defects = defectMetrics(qa.readQaArtifact('defect-analysis'));
+if (Object.keys(defects).length > 0) record.defects = defects;
 record.result = 'COMPLETE';
 record.finishedAt = new Date().toISOString();
 saveRecord();
@@ -498,6 +517,12 @@ if (coverage) {
   if (diversity) console.log(`NOTE            : ${diversity}`);
 }
 console.log(`Automation      : ${counts.automationHigh} HIGH, ${counts.automationMedium} MEDIUM, ${counts.automationLow} LOW`);
+if (record.defects) {
+  const d = record.defects;
+  console.log(`Defects         : ${d.defects_confirmed} confirmed, ${d.defects_potential} potential, ` +
+    `${d.defects_not_a_defect} not a defect, ${d.defects_insufficient_evidence} insufficient evidence ` +
+    `-> ${d.bug_reports_created} bug report(s)`);
+}
 const strategies = Object.entries(prioritization ? strategySummary(prioritization) : {}).sort((a, b) => b[1] - a[1]);
 if (strategies.length > 0) {
   console.log(`Strategy        : ${strategies.map(([k, n]) => `${n} ${k}`).join(', ')}`);
@@ -515,17 +540,19 @@ const preserved = preserveRun({
   files: [
     'discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json',
     'automation-prioritization.json', 'discovery-surface.json', 'discovery-observations.json',
-    'discovery-evidence.json', 'phase1-run.json',
+    'discovery-evidence.json', 'phase1-run.json', 'defect-analysis.json',
+    ...qa.listBugReportIds().map((id) => `bugs/${id}.json`),
   ],
   outcome: 'completed',
-  extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins(), authBootstrapMode: auth.mode },
+  extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins(), authBootstrapMode: auth.mode, ...defects },
 });
 console.log(`Run preserved   : ${preserved.dir}`);
 
 console.log('\nNext:');
 console.log(`  jq . ${qa.qaArtifactPath('test-cases')}`);
 console.log(`  jq . ${qa.qaArtifactPath('automation-prioritization')}`);
-console.log('  npm run qa:review      # optional AI review — proposes changes, edits nothing');
+console.log('  npm run qa:review      # AI review — proposes changes, edits nothing');
+console.log('  npm run qa:defects     # your decision on each bug report: accept, reject, downgrade, edit');
 console.log('  npm run qa:approve     # your approval; required before Phase 2');
 console.log('  (edited test cases?  npm run qa:manual -- --from prioritization)\n');
 await observability.endRun({ outcome: 'COMPLETE', output: () => runFunnel(qa.readQaArtifact) });

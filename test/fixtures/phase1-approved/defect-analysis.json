@@ -1,0 +1,27 @@
+{
+  "summary": {
+    "confirmed": 0,
+    "potential": 0,
+    "notDefect": 1,
+    "insufficientEvidence": 0,
+    "bugReports": 0
+  },
+  "findings": [
+    {
+      "id": "DEF-001",
+      "classification": "NOT_A_DEFECT",
+      "sourceBehaviorIds": [
+        "BEH-2"
+      ],
+      "sourceAcceptancePointIds": [
+        "AC-2"
+      ],
+      "sourceTestCaseIds": [
+        "TC-1"
+      ],
+      "reason": "Invalid credentials produce an error message, as the acceptance point describes.",
+      "expectedBasis": "INFERRED"
+    }
+  ],
+  "bugReports": []
+}

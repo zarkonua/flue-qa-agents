@@ -14,7 +14,19 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
-import { QA_ARTIFACT_ROOT, qaArtifactPath, readQaArtifact, schemaErrorsFor, type QaArtifactName } from './qa-artifacts.ts';
+import {
+  bugReportErrors,
+  bugReportPath,
+  listBugReportIds,
+  QA_ARTIFACT_ROOT,
+  qaArtifactPath,
+  readBugReport,
+  readQaArtifact,
+  schemaErrorsFor,
+  semanticErrorsFor,
+  type QaArtifactName,
+} from './qa-artifacts.ts';
+import type { BugReport, DefectAnalysis, DefectSummary } from './defects.ts';
 import {
   summarize,
   validateAutomationPrioritization,
@@ -30,12 +42,17 @@ import {
   type TestCasesReview,
 } from './semantic-validate.ts';
 
-/** Every Phase 1 artifact an approval covers. The review is advisory and deliberately excluded. */
+/**
+ * Every Phase 1 artifact an approval covers. The review is advisory and
+ * deliberately excluded. The bug reports under `bugs/` are covered too, one
+ * hash per file (see `bugReportHashes`).
+ */
 export const PHASE1_LOCKED = [
   'discovered-behavior',
   'requirements-analysis',
   'test-cases',
   'automation-prioritization',
+  'defect-analysis',
 ] as const satisfies readonly QaArtifactName[];
 
 export const APPROVAL_PATH = join(QA_ARTIFACT_ROOT, 'phase1-approval.json');
@@ -63,6 +80,8 @@ export interface Phase1State {
   findings: Finding[];
   counts?: ReviewSummary;
   prioritization?: AutomationPrioritization;
+  /** What defect analysis found, and each report as a person last left it. */
+  defects?: { summary: DefectSummary; bugs: BugReport[] };
 }
 
 export interface Phase1Approval {
@@ -73,7 +92,15 @@ export interface Phase1Approval {
   automationPrioritizationSha256: string;
   discoveredBehaviorSha256: string;
   requirementsAnalysisSha256: string;
+  defectAnalysisSha256: string;
+  /** One hash per bug report file: a person's later decision or edit makes the approval stale. */
+  bugReportsSha256: Record<string, string>;
   counts: ReviewSummary;
+  /** The defects that were in front of the approver, with their state at that moment. */
+  defects: {
+    summary: DefectSummary;
+    reports: { id: string; status: BugReport['status']; severity: BugReport['severity']; priority: BugReport['priority']; decision: BugReport['review']['decision'] }[];
+  };
   review: { status: TestCasesReview['status']; olderThanTestCases: boolean } | null;
   acceptedFindings: { artifact: string; code: string; path: string; value?: string }[];
 }
@@ -83,7 +110,26 @@ const HASH_FIELD: Record<(typeof PHASE1_LOCKED)[number], keyof Phase1Approval> =
   'requirements-analysis': 'requirementsAnalysisSha256',
   'test-cases': 'testCasesSha256',
   'automation-prioritization': 'automationPrioritizationSha256',
+  'defect-analysis': 'defectAnalysisSha256',
 };
+
+/** SHA-256 of every bug report file present. */
+export function bugReportHashes(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const id of listBugReportIds()) out[id] = createHash('sha256').update(readFileSync(bugReportPath(id))).digest('hex');
+  return out;
+}
+
+/** Files changed since `approval` was recorded: locked artifacts and bug reports alike. */
+export function changedSinceApproval(approval: Phase1Approval): string[] {
+  const changed = PHASE1_LOCKED.filter((name) => approval[HASH_FIELD[name]] !== sha256Of(name)).map((n) => `${n}.json`);
+  const before = approval.bugReportsSha256 ?? {};
+  const now = bugReportHashes();
+  for (const id of new Set([...Object.keys(before), ...Object.keys(now)])) {
+    if (before[id] !== now[id]) changed.push(`bugs/${id}.json`);
+  }
+  return changed;
+}
 
 /** SHA-256 of the exact bytes on disk — whitespace edits count, deliberately. */
 export function sha256Of(name: QaArtifactName): string | undefined {
@@ -133,6 +179,33 @@ export function inspectPhase1(): Phase1State {
     state.prioritization = prioritization;
   }
 
+  // Defect analysis, and every bug report — including a person's edits to one.
+  const defectAnalysis = data['defect-analysis'] as DefectAnalysis | undefined;
+  if (defectAnalysis && discovery && requirements) {
+    all.push(...tag('defect-analysis', semanticErrorsFor('defect-analysis', defectAnalysis)));
+    const named = new Set(defectAnalysis.bugReports ?? []);
+    const bugs: BugReport[] = [];
+    for (const id of listBugReportIds()) {
+      let bug: unknown;
+      try {
+        bug = readBugReport(id);
+      } catch (error) {
+        state.schemaErrors.push({ artifact: 'defect-analysis', errors: [`bugs/${id}.json is not valid JSON: ${(error as Error).message}`] });
+        continue;
+      }
+      const { schema } = bugReportErrors(bug);
+      if (schema.length > 0) {
+        state.schemaErrors.push({ artifact: 'defect-analysis', errors: schema.map((e) => `bugs/${id}.json ${e}`) });
+        continue;
+      }
+      bugs.push(bug as BugReport);
+      if (!named.has(id)) {
+        all.push({ artifact: 'defect-analysis', code: 'INCOMPLETE_DEFECT', path: 'bugReports', value: id, details: `bugs/${id}.json is not one of this analysis's reports.` });
+      }
+    }
+    state.defects = { summary: defectAnalysis.summary ?? { confirmed: 0, potential: 0, notDefect: 0, insufficientEvidence: 0, bugReports: 0 }, bugs };
+  }
+
   state.hard = all.filter((f) => HARD_CODES.has(f.code));
   state.findings = all.filter((f) => !HARD_CODES.has(f.code));
   return state;
@@ -165,7 +238,13 @@ export function approvePhase1({ acceptFindings = false } = {}): ApproveResult {
     automationPrioritizationSha256: sha256Of('automation-prioritization')!,
     discoveredBehaviorSha256: sha256Of('discovered-behavior')!,
     requirementsAnalysisSha256: sha256Of('requirements-analysis')!,
+    defectAnalysisSha256: sha256Of('defect-analysis')!,
+    bugReportsSha256: bugReportHashes(),
     counts: state.counts!,
+    defects: {
+      summary: state.defects!.summary,
+      reports: state.defects!.bugs.map((b) => ({ id: b.id, status: b.status, severity: b.severity, priority: b.priority, decision: b.review.decision })),
+    },
     review: readReview(),
     acceptedFindings: state.findings.map(({ artifact, code, path, value }) => ({ artifact, code, path, value })),
   };
@@ -210,7 +289,7 @@ export function checkPhase2Gate(): GateResult {
   }
 
   // 5. What was approved is exactly what is on disk now.
-  const changed = PHASE1_LOCKED.filter((name) => approval[HASH_FIELD[name]] !== sha256Of(name)).map((n) => `${n}.json`);
+  const changed = changedSinceApproval(approval);
   if (changed.length > 0) {
     return {
       ok: false,

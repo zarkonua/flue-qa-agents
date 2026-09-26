@@ -61,7 +61,13 @@ export type SemanticErrorCode =
   | 'CONTRADICTORY_VALIDATION_TYPE'
   | 'COVERAGE_NOT_EVIDENCED'
   | 'CONTRADICTORY_STRATEGY'
-  | 'UNSUPPORTED_STRATEGY';
+  | 'UNSUPPORTED_STRATEGY'
+  // Defect analysis (src/lib/defects.ts)
+  | 'UNSUPPORTED_EXPECTED'
+  | 'UNOBSERVED_ACTUAL'
+  | 'DUPLICATE_DEFECT'
+  | 'INCOMPLETE_DEFECT'
+  | 'UNANALYZED_SUSPECTED_ISSUE';
 
 export interface SemanticError {
   code: SemanticErrorCode;
@@ -73,7 +79,7 @@ export interface SemanticError {
   details?: string;
 }
 
-interface Behavior {
+export interface Behavior {
   id: string;
   area: string;
   statement: string;
@@ -156,7 +162,7 @@ export interface RequirementsAnalysis {
   excludedBehaviors?: { id: string; reason: string }[];
 }
 
-interface TestCase {
+export interface TestCase {
   id: string;
   title: string;
   evidenceIds: string[];
@@ -237,7 +243,8 @@ export interface TestCasesReview {
   status: 'APPROVED' | 'CHANGES_REQUESTED';
   issues: { testCaseId: string; severity: 'BLOCKER' | 'MAJOR' | 'MINOR' | 'INFO'; category: string; message: string }[];
   suggestedChanges: { testCaseId: string; field: string; change: string; rationale: string }[];
-  summary: ReviewSummary;
+  /** The prioritization counts, plus the defect counts once defect analysis has run. */
+  summary: ReviewSummary & { confirmedDefects?: number; potentialDefects?: number };
 }
 
 /** Reviewer's ID for a finding about the suite as a whole rather than one test case. */
@@ -301,7 +308,7 @@ function normalize(text: string): string {
     .trim();
 }
 
-function canonical(text: string): string {
+export function canonical(text: string): string {
   let out = normalize(text);
   for (const [pattern, replacement] of SYNONYMS) out = out.replace(pattern, replacement);
   return out;
@@ -327,7 +334,7 @@ function stem(word: string): string {
   return word;
 }
 
-function contentWords(text: string): Set<string> {
+export function contentWords(text: string): Set<string> {
   const words = canonical(text)
     .split(/[^a-z0-9]+/)
     .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
@@ -383,7 +390,7 @@ function quotedLiterals(text: string): { literal: string; before: string }[] {
   return found;
 }
 
-function urlsIn(text: string): string[] {
+export function urlsIn(text: string): string[] {
   return [...text.matchAll(URL_PATTERN)].map((m) => m[0].replace(/[.,;:!?]+$/, ''));
 }
 
@@ -452,7 +459,7 @@ function phraseRegex(phrase: string): RegExp {
 // Upstream evidence corpus
 // ---------------------------------------------------------------------------
 
-interface Corpus {
+export interface Corpus {
   /** Every evidence sentence, raw — used for literal and route matching. */
   texts: string[];
   /** Same, canonicalised — used for feature-phrase matching. */
@@ -471,7 +478,7 @@ interface Corpus {
  * questions are uncertainty and are deliberately excluded: a question in
  * discovery is not support for a test case.
  */
-function buildCorpus(
+export function buildCorpus(
   discovery: DiscoveredBehavior | undefined,
   requirements?: RequirementsAnalysis,
   extra: string[] = [],
@@ -541,7 +548,7 @@ const EXACT_TEXT_CONTEXT = /\b(message|error|text|reads|says|saying|label(?:led)
 /** Words that turn a quoted string into a claimed credential value. */
 const CREDENTIAL_CONTEXT = /\b(pass(?:word|code|phrase)?|pwd|pin|secret|token|otp)\b[^'"‘“]{0,25}$/i;
 
-function checkFacts(
+export function checkFacts(
   text: string,
   path: string,
   corpus: Corpus,
@@ -644,7 +651,7 @@ function checkLiteralsAndFeatures(
 }
 
 /** Emails identify accounts, so an invented one is a fabricated credential wherever it appears. */
-function checkEmails(text: string, path: string, corpus: Corpus, errors: SemanticError[]): void {
+export function checkEmails(text: string, path: string, corpus: Corpus, errors: SemanticError[]): void {
   for (const match of text.matchAll(EMAIL_PATTERN)) {
     if (!literalSupported(match[0], corpus)) {
       errors.push({
@@ -805,7 +812,7 @@ function checkContradictions(
 // Rule: evidence references resolve, and actually support the claim
 // ---------------------------------------------------------------------------
 
-function checkDuplicateIds(items: { id: string }[], path: string, errors: SemanticError[]): void {
+export function checkDuplicateIds(items: { id: string }[], path: string, errors: SemanticError[]): void {
   const seen = new Set<string>();
   items.forEach((item, i) => {
     if (seen.has(item.id)) {
@@ -815,7 +822,7 @@ function checkDuplicateIds(items: { id: string }[], path: string, errors: Semant
   });
 }
 
-function checkOverlap(claim: string, evidence: string[], path: string, ids: string[], errors: SemanticError[]): void {
+export function checkOverlap(claim: string, evidence: string[], path: string, ids: string[], errors: SemanticError[]): void {
   if (evidence.length === 0) return;
   const claimWords = contentWords(claim);
   if (claimWords.size === 0) return;
@@ -1832,6 +1839,8 @@ export function validateTestCasesReview(
   testCases: TestCases,
   prioritization: AutomationPrioritization | undefined,
   review: TestCasesReview,
+  /** The defect analysis summary, when that stage has run. Defects are a QA result, never a reason to refuse approval. */
+  defects?: { confirmed: number; potential: number },
 ): SemanticError[] {
   const errors: SemanticError[] = [];
   const known = new Set(testCases.testCases.map((tc) => tc.id));
@@ -1863,6 +1872,20 @@ export function validateTestCasesReview(
           path: `summary.${key}`,
           value: String(review.summary[key]),
           details: `The prioritization gives ${key} = ${actual[key]}. Use exactly: ${JSON.stringify(actual)}.`,
+        });
+      }
+    }
+  }
+
+  if (defects !== undefined) {
+    const expected = { confirmedDefects: defects.confirmed, potentialDefects: defects.potential };
+    for (const [key, value] of Object.entries(expected) as [keyof typeof expected, number][]) {
+      if (review.summary[key] !== value) {
+        errors.push({
+          code: 'SUMMARY_MISMATCH',
+          path: `summary.${key}`,
+          value: String(review.summary[key]),
+          details: `defect-analysis gives ${key} = ${value}. Use exactly: ${JSON.stringify(expected)}.`,
         });
       }
     }
@@ -1935,6 +1958,11 @@ const ORDER: SemanticErrorCode[] = [
   'MISSING_COVERAGE',
   'UNKNOWN_LOCATION',
   'UNKNOWN_COVERAGE_ID',
+  'UNOBSERVED_ACTUAL',
+  'UNSUPPORTED_EXPECTED',
+  'INCOMPLETE_DEFECT',
+  'DUPLICATE_DEFECT',
+  'UNANALYZED_SUSPECTED_ISSUE',
 ];
 
 /** One fix instruction per rule, so it is said once rather than on every line. */
@@ -1984,6 +2012,13 @@ const HOW_TO_FIX: Record<SemanticErrorCode, string> = {
   CONTRADICTORY_STRATEGY: 'An automation strategy may not contradict the execution mode.',
   UNSUPPORTED_STRATEGY: 'A strategy may only name a capability this run actually observed.',
   UNKNOWN_OBSERVATION: 'cite only observation ids the ledger actually holds',
+  UNOBSERVED_ACTUAL:
+    'A defect needs an OBSERVED product behavior as its actual result. Without one, classify it INSUFFICIENT_EVIDENCE.',
+  UNSUPPORTED_EXPECTED:
+    'CONFIRMED_DEFECT needs an expectation from a CONFIRMED requirement, or a requirement evidenced by an observation other than the actual one. Otherwise classify it POTENTIAL_DEFECT.',
+  INCOMPLETE_DEFECT: 'A CONFIRMED or POTENTIAL defect needs title, severity, steps, expected and actual; the other classifications carry none of them.',
+  DUPLICATE_DEFECT: 'Merge findings that describe the same mismatch into one, citing every behavior and test case involved.',
+  UNANALYZED_SUSPECTED_ISSUE: 'Every behavior discovery marked suspectedIssue must appear in some finding, with whatever classification the evidence supports.',
 };
 
 // ---------------------------------------------------------------------------

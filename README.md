@@ -4,8 +4,8 @@ A local-first, multi-agent QA system built on [Flue](https://flueframework.com/)
 `qwen3:14b` through [Ollama](https://ollama.com/) by default — no cloud, no API key, no Docker
 — and one setting switches it to a hosted model through OpenRouter.
 
-It turns a running web application into a reviewed manual test suite, and refuses to generate
-automation from anything a person has not approved.
+It turns a running web application into a reviewed manual test suite and evidence-backed bug
+reports, and refuses to generate automation from anything a person has not approved.
 
 ```text
 PHASE 1 — Manual QA design         npm run qa:manual
@@ -16,8 +16,9 @@ PHASE 2 — Automation engineering   npm run qa:automation
 ```
 
 Phase 1 browses the target app, records only what it observed, and produces a manual test
-suite plus a recommendation of which cases are worth automating — then **stops**. You review,
-edit and approve it. Phase 2 starts only from that approved, unchanged content; its first
+suite, a recommendation of which cases are worth automating, and a bug report wherever observed
+behavior contradicts supported expected behavior — then **stops**. You review, decide on each
+defect, edit and approve it. Phase 2 starts only from that approved, unchanged content; its first
 stage reads your automation repository and records how tests are written there.
 
 ## Quick start
@@ -25,8 +26,9 @@ stage reads your automation repository and records how tests are written there.
 ```bash
 cp .env.example .env     # then edit: TARGET_URL, and QA_TARGET_REPO_ROOT for Phase 2
 
-npm run qa:manual        # Phase 1: 4 agents in fixed order, then STOP   (~5–15 min)
-npm run qa:review        # optional AI review — proposes changes, edits nothing
+npm run qa:manual        # Phase 1: 5 agents in fixed order, then STOP   (~5–15 min)
+npm run qa:review        # AI review — proposes changes, edits nothing
+npm run qa:defects       # your decision on each bug report: accept, reject, downgrade, edit
 npm run qa:approve       # your approval, hash-locked to the exact artifacts
 npm run qa:automation    # Phase 2: entry gate, then Repo Analyzer, then STOP
 ```
@@ -54,11 +56,23 @@ process and hands off through a JSON artifact on disk.
 | 2 | Behavior Analyst | `requirements-analysis.json` | live |
 | 3 | Test Designer | `test-cases.json` | live |
 | 4 | Automation Prioritizer | `automation-prioritization.json` | live |
-| — | *Test Case Reviewer* (`qa:review`) | `test-cases-review.json` | live · optional, advisory |
+| 5 | Defect Analyzer | `defect-analysis.json` + `bugs/<id>.json` | live · no browser, existing evidence only |
+| — | *Test Case Reviewer* (`qa:review`) | `test-cases-review.json` | live · advisory, summarises defects |
+| — | *Defect decisions* (`qa:defects`) | edits `bugs/<id>.json` | host code, a person's decision |
 | 🔒 | **Human approval gate** (`qa:approve`) | `phase1-approval.json` | host code, no agent |
-| 5 | Repo Analyzer | `repo-analysis.json` | live · Phase 2 stage 1 |
+| 6 | Repo Analyzer | `repo-analysis.json` | live · Phase 2 stage 1 |
 
-Phase 2 stops after stage 5. **UI Explorer** and **Automation Generator** exist in
+```text
+Discovery → Analysis → Test Design → Automation Prioritization → Defect Analysis → Review → Human Approval
+```
+
+A defect is **CONFIRMED** only when an OBSERVED behavior contradicts an expectation stated by a
+requirement that rests on a *different* observed or explicitly given behavior; an expectation
+that is only inferred makes it **POTENTIAL** at most. Finding no defect is a valid result, and
+defects never block approval — they are a QA result a person decides on. Priority is always
+`UNASSIGNED` until a person sets it.
+
+Phase 2 stops after stage 6. **UI Explorer** and **Automation Generator** exist in
 `src/agents/` but are wired to no command and have never run live. Automation-code Reviewer,
 Test Runner and Failure Analyzer are not built. A **QA Manager** (`qa:agentic`) keeps the old
 model-driven orchestration for experiments; the approval gate does not apply to it.
@@ -78,9 +92,10 @@ These are enforced in code, not asked for in prompts:
 | Evidence IDs resolve; no invented routes, credentials or features | `src/lib/semantic-validate.ts`, on every write |
 | Every location the browser offered is accounted for | `src/lib/discovery-surface.ts` + `UNEXPLORED_LOCATION` |
 | Every testable requirement has a test case | `covers` on each case + `UNCOVERED_ACCEPTANCE_POINT` |
+| A CONFIRMED defect has a supported expectation and an observed actual; duplicates are merged | `src/lib/defects.ts`, on every write and every human edit |
 | Repo analysis names only real files, and accounts for every automation directory | `src/lib/repo-evidence.ts` + the same validator |
 | A stage passes only if its artifact was written **during that attempt** | `scripts/lib/stage.mjs`, re-validated from disk |
-| Phase 2 starts only from approved, unchanged content | `src/lib/phase1-gate.ts` — SHA-256 of all four artifacts |
+| Phase 2 starts only from approved, unchanged content | `src/lib/phase1-gate.ts` — SHA-256 of all five artifacts and every bug report |
 | Approval is a person's act | `qa:approve` is host code; no agent can name the approval file |
 
 Runtime agents have **no shell, no filesystem API and no path argument anywhere**. Each
@@ -112,14 +127,14 @@ Known limits worth reading first:
 ```text
 scripts/    host orchestration: qa-manual · qa-automation · qa-approve · qa-review · lib/
 src/
-  agents/       9 agents (4 Phase 1 · reviewer · QA Manager · Repo Analyzer · 2 unwired)
+  agents/       10 agents (5 Phase 1 · reviewer · QA Manager · Repo Analyzer · 2 unwired)
   tools/        9 narrow tools: artifacts · repo (read-only) · test-code
-  lib/          trusted roots · schema + semantic validation · repo evidence · phase-1 gate
+  lib/          trusted roots · schema + semantic validation · defects · repo evidence · phase-1 gate
   connections/  Playwright MCP, with a per-role tool allowlist
   providers/    model selection: Ollama (local tuning) · OpenRouter (Pi's provider)
   config/       .env loading and the one QA_MODEL lookup
   skills/       custom/ (6) · upstream/qa-skills/ (15, vendored, MIT)
-schemas/    8 hand-off JSON Schemas
+schemas/    12 hand-off JSON Schemas (incl. bug-report, shared with a future Phase 2 Failure Analyzer)
 test/       227 tests
 ```
 

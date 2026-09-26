@@ -104,11 +104,44 @@ export function locationIdentity(raw: string, base?: string): LocationIdentity |
  * such marker and is not caught; see `docs/VALIDATION.md` for that limit.
  */
 export function redactText(text: string): string {
-  return text.replace(
-    /([?&;])([A-Za-z0-9_.\-[\]]+)=([^&\s"'<>)\]}]*)/g,
-    (match, sep: string, name: string, value: string) =>
-      value !== '' && isSensitiveParamName(name) ? `${sep}${name}=${REDACTED}` : match,
-  );
+  return text
+    .replace(
+      /([?&;])([A-Za-z0-9_.\-[\]]+)=([^&\s"'<>)\]}]*)/g,
+      (match, sep: string, name: string, value: string) =>
+        value !== '' && isSensitiveParamName(name) ? `${sep}${name}=${REDACTED}` : match,
+    )
+    // An opaque id in a URL's path — a mailbox message id, a signed download
+    // — is as sensitive as one in its query, and prose quotes whole URLs.
+    .replace(/\bhttps?:\/\/[^\s"'<>)\]}]+/g, (url) => {
+      const q = url.search(/[?#]/);
+      const [head, tail] = q === -1 ? [url, ''] : [url.slice(0, q), url.slice(q)];
+      const scheme = head.indexOf('://') + 3;
+      const slash = head.indexOf('/', scheme);
+      if (slash === -1) return url;
+      const path = head.slice(slash).split('/').map(redactOpaqueSegment).join('/');
+      return head.slice(0, slash) + path + tail;
+    });
+}
+
+/**
+ * Replace exact configured values — a test account's email and password —
+ * wherever they occur in a value. The browser never shows them to a model;
+ * this keeps them off disk even if they arrive some other way.
+ */
+export function maskValues<T>(value: T, secrets: readonly string[]): T {
+  if (secrets.length === 0) return value;
+  if (typeof value === 'string') {
+    let out: string = value;
+    for (const secret of secrets) out = out.split(secret).join(REDACTED);
+    return out as unknown as T;
+  }
+  if (Array.isArray(value)) return value.map((item) => maskValues(item, secrets)) as unknown as T;
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) out[key] = maskValues(item, secrets);
+    return out as unknown as T;
+  }
+  return value;
 }
 
 /**

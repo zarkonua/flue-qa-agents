@@ -10,6 +10,7 @@
 // summaries the run log prints, so a trace can never disagree with the run
 // record about a count.
 
+import { defectMetrics } from '../lib/defects.ts';
 import { analysisCoverageSummary, coverageSummary, strategySummary } from '../lib/semantic-validate.ts';
 
 type Read = (name: string) => any;
@@ -204,6 +205,8 @@ export function stageMetrics(
         return designMetrics(read);
       case 'prioritization':
         return prioritizationMetrics(read);
+      case 'defects':
+        return defectMetrics(read('defect-analysis'));
       case 'repo-analyzer':
         return repoMetrics(read);
       default:
@@ -233,6 +236,8 @@ export function runFunnel(read: Read): Record<string, number> {
     }
     if (t) out['testGeneration.testCaseCount'] = len(t.testCases);
     if (p) out['prioritization.caseCount'] = len(p.cases);
+    const defects = defectMetrics(read('defect-analysis'));
+    for (const [k, v] of Object.entries(defects)) out[`defects.${k}`] = v;
   } catch {
     /* see stageMetrics */
   }

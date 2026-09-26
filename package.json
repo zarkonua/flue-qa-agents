@@ -14,6 +14,7 @@
     "qa:agentic": "node scripts/qa-agentic.mjs",
     "qa:approve": "node scripts/qa-approve.mjs",
     "qa:automation": "node scripts/qa-automation.mjs",
+    "qa:defects": "node scripts/qa-defects.mjs",
     "qa:manual": "node scripts/qa-manual.mjs",
     "qa:prioritize": "node scripts/qa-manual.mjs --from prioritization",
     "qa:review": "node scripts/qa-review.mjs",

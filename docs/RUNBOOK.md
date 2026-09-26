@@ -82,12 +82,14 @@ npm run check:tools        # uses QA_MODEL, whichever provider that selects
 
 ```bash
 export TARGET_URL="http://localhost:4444/"
-npm run qa:manual                      # Phase 1: 4 stages, then STOP  (~5–15 min)
+npm run qa:manual                      # Phase 1: 5 stages, then STOP  (~5–15 min)
+#   Discovery → Analysis → Test Design → Automation Prioritization → Defect Analysis
 
 npm run qa:ui                          # review in a browser at http://127.0.0.1:4445
-npm run qa:review                      # optional AI review; proposes only, edits nothing
+npm run qa:review                      # AI review; proposes only, edits nothing; summarises defects
+npm run qa:defects                     # list bug reports; decide on each (see below)
 # hand-edit test-cases.json if you want
-npm run qa:prioritize                  # re-run stage 4 only, after edits
+npm run qa:prioritize                  # re-run from stage 4 after edits (defect analysis re-runs too)
 npm run qa:approve                     # required before Phase 2
 
 export QA_TARGET_REPO_ROOT="/path/to/your/e2e-repo"
@@ -99,7 +101,8 @@ npm run qa:automation                  # Phase 2: gate, Repo Analyzer, then STOP
 ### Options
 
 ```bash
-npm run qa:manual -- --from prioritization   # discovery | analysis | design | prioritization
+npm run qa:manual -- --from prioritization   # discovery | analysis | design | prioritization | defects
+npm run qa:manual -- --from defects          # re-run defect analysis only
 npm run qa:manual -- --attempts 2
 npm run qa:approve -- --accept-findings      # approve despite semantic findings; recorded
 npm run qa:automation -- --gate-only         # check prerequisites, start no agent
@@ -126,7 +129,37 @@ semantic finding stays a terminal action.
 
 ### Approval
 
-`qa:approve` records the SHA-256 of all four Phase 1 artifacts. Change any of them — by hand
+### Defects
+
+The Defect Analyzer reads the evidence earlier stages recorded — it has no browser — and
+classifies each candidate:
+
+| Classification | Needs | Bug report |
+|---|---|---|
+| `CONFIRMED_DEFECT` | an OBSERVED actual, and an expectation from a requirement resting on a CONFIRMED behavior or on an OBSERVED behavior other than the actual | `status: CONFIRMED` |
+| `POTENTIAL_DEFECT` | an OBSERVED actual; the expectation may be inferred | `status: POTENTIAL` |
+| `NOT_A_DEFECT` | observed behavior consistent with what is supported | none |
+| `INSUFFICIENT_EVIDENCE` | expected versus actual cannot be established | none |
+
+The host writes `defect-analysis.json` and one `bugs/BUG-NNN.json` per defect. It assigns the
+ids, the summary, the expected basis, the evidence list and the environment; priority is
+`UNASSIGNED` until you set it. Decide on each report before approving:
+
+```bash
+npm run qa:defects                                    # list: status, severity, priority, decision
+npm run qa:defects -- show BUG-001
+npm run qa:defects -- accept BUG-001 --note "Reproduced."
+npm run qa:defects -- reject BUG-002 --note "By design."
+npm run qa:defects -- downgrade BUG-003               # CONFIRMED -> POTENTIAL
+npm run qa:defects -- request-changes BUG-003 --note "Add the reload timing."
+npm run qa:defects -- edit BUG-001 --title "…" --severity MAJOR --priority P1 --step "…" --step "…"
+```
+
+Every change is re-validated against the evidence (an edit that invents a route, message or
+credential is refused and nothing is written), and makes an existing approval stale.
+Undecided reports do not block approval; the approval records each one's status and decision.
+
+`qa:approve` records the SHA-256 of all five Phase 1 artifacts and of every bug report. Change any of them — by hand
 or by re-running a stage — and the approval goes stale and Phase 2 refuses, naming the file.
 Regenerating a stage archives the old review and approval automatically. Structural problems
 can never be approved; see [VALIDATION.md](VALIDATION.md).
@@ -138,6 +171,7 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `~/projects/qa-workspace/.qa/`):
 | File | Written by |
 |---|---|
 | `discovered-behavior.json` · `requirements-analysis.json` · `test-cases.json` · `automation-prioritization.json` | Phase 1 stages 1–4 |
+| `defect-analysis.json` · `bugs/BUG-NNN.json` | Phase 1 stage 5 (Defect Analyzer); reports edited only by `qa:defects` |
 | `test-cases-review.json` | `qa:review` (advisory) |
 | `phase1-approval.json` | `qa:approve` — host code only |
 | `repo-analysis.json` | Phase 2 stage 1 |

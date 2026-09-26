@@ -7,7 +7,7 @@
 // directory (so a runtime agent has no path back to `.claude/`). Every write is
 // validated against the artifact's JSON Schema before touching disk.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateAgainstSchema, type JsonSchemaNode } from './schema-validate.ts';
@@ -19,7 +19,19 @@ import {
   evaluateDiscoveryCompletion,
   type DiscoveryCompletionResult,
 } from './discovery-completion.ts';
-import { redactDeep } from './redaction.ts';
+import { maskValues, redactDeep } from './redaction.ts';
+import { AUTH_SECRET_ENV_NAMES } from '../config/auth-bootstrap.ts';
+import { auxiliaryOrigins } from '../config/auxiliary-origins.ts';
+import {
+  BUG_ID_PATTERN,
+  buildBugReports,
+  normaliseDefectAnalysis,
+  validateBugReport,
+  validateDefectAnalysis,
+  type BugReport,
+  type DefectAnalysis,
+  type DefectContext,
+} from './defects.ts';
 import { readLedger } from './observation-ledger.ts';
 import {
   formatSemanticErrors,
@@ -100,6 +112,9 @@ export type QaArtifactName =
   | 'test-cases'
   | 'automation-prioritization'
   | 'test-cases-review'
+  // Written by the Defect Analyzer. Its bug reports are fanned out by the host
+  // to `bugs/<id>.json`; see writeBugReports().
+  | 'defect-analysis'
   | 'repo-analysis'
   | 'ui-exploration'
   | 'automation-plan'
@@ -122,6 +137,7 @@ const ARTIFACTS: Record<QaArtifactName, ArtifactDef> = {
   'test-cases': { fileName: 'test-cases.json', schemaFile: 'test-cases.schema.json' },
   'automation-prioritization': { fileName: 'automation-prioritization.json', schemaFile: 'automation-prioritization.schema.json' },
   'test-cases-review': { fileName: 'test-cases-review.json', schemaFile: 'test-cases-review.schema.json' },
+  'defect-analysis': { fileName: 'defect-analysis.json', schemaFile: 'defect-analysis.schema.json' },
   'repo-analysis': { fileName: 'repo-analysis.json', schemaFile: 'repo-analysis.schema.json' },
   'ui-exploration': { fileName: 'ui-exploration.json', schemaFile: 'ui-exploration.schema.json' },
   'automation-plan': { fileName: 'automation-plan.json', schemaFile: 'automation-plan.schema.json' },
@@ -301,11 +317,32 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
       if (testCases === undefined) {
         return [{ code: 'MISSING_UPSTREAM', path: '$', details: 'test-cases does not exist yet. Stop and report this.' }];
       }
+      const defects = readQaArtifact('defect-analysis') as DefectAnalysis | undefined;
       return validateTestCasesReview(
         testCases,
         readQaArtifact('automation-prioritization') as AutomationPrioritization | undefined,
         data as TestCasesReview,
+        defects?.summary,
       );
+    }
+
+    case 'defect-analysis': {
+      const ctx = defectContext();
+      if (typeof ctx === 'string') return [{ code: 'MISSING_UPSTREAM', path: '$', details: ctx }];
+      const analysis = data as DefectAnalysis;
+      const errors = validateDefectAnalysis(analysis, ctx);
+      // Re-read from disk after a write: the reports it names must exist and hold.
+      if (analysis.bugReports !== undefined) {
+        for (const id of analysis.bugReports) {
+          const bug = readBugReport(id);
+          if (bug === undefined) {
+            errors.push({ code: 'INCOMPLETE_DEFECT', path: 'bugReports', value: id, details: `bugs/${id}.json does not exist.` });
+            continue;
+          }
+          errors.push(...validateBugReport(bug, ctx));
+        }
+      }
+      return errors;
     }
 
     // Phase 2. Checked against the repository on disk, not against a Phase 1
@@ -316,6 +353,115 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
     default:
       return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Defect analysis and bug reports
+// ---------------------------------------------------------------------------
+
+/** Where bug reports live: one file per report, named by its validated id. */
+export const BUGS_DIR = join(QA_ARTIFACT_ROOT, 'bugs');
+
+/** The file of one bug report. The id is checked, never trusted: it becomes a file name. */
+export function bugReportPath(id: string): string {
+  if (!BUG_ID_PATTERN.test(id)) throw new Error(`Not a bug report id: ${JSON.stringify(id)}`);
+  const path = resolve(join(BUGS_DIR, `${id}.json`));
+  if (!isInside(path, BUGS_DIR)) throw new Error(`Refusing to access a path outside the bug report directory: ${path}`);
+  return path;
+}
+
+export function readBugReport(id: string): BugReport | undefined {
+  const path = bugReportPath(id);
+  if (!existsSync(path)) return undefined;
+  return JSON.parse(readFileSync(path, 'utf8')) as BugReport;
+}
+
+/** Ids of the bug report files present, in order. Anything else in the directory is ignored. */
+export function listBugReportIds(): string[] {
+  if (!existsSync(BUGS_DIR)) return [];
+  return readdirSync(BUGS_DIR)
+    .map((f) => f.replace(/\.json$/, ''))
+    .filter((id) => BUG_ID_PATTERN.test(id))
+    .sort();
+}
+
+/** Schema + evidence errors for a bug report, against the upstream artifacts on disk. */
+export function bugReportErrors(bug: unknown): { schema: string[]; semantic: SemanticError[] } {
+  const schema = validateAgainstSchema(bug, loadSchema('bug-report.schema.json'));
+  if (schema.length > 0) return { schema, semantic: [] };
+  const ctx = defectContext();
+  if (typeof ctx === 'string') return { schema, semantic: [{ code: 'MISSING_UPSTREAM', path: '$', details: ctx }] };
+  return { schema, semantic: validateBugReport(bug as BugReport, ctx) };
+}
+
+/**
+ * Write one bug report: redacted, schema-checked and evidence-checked, exactly
+ * like an artifact. Used by the host for the analyzer's reports and for a
+ * person's decisions and edits (`npm run qa:defects`).
+ */
+export function writeBugReport(rawBug: BugReport): void {
+  const bug = scrub(rawBug);
+  const { schema, semantic } = bugReportErrors(bug);
+  if (schema.length > 0) throw new Error(`bug report ${bug.id} does not match bug-report.schema.json:\n${schema.map((e) => `  - ${e}`).join('\n')}`);
+  if (semantic.length > 0) throw new SemanticValidationError('defect-analysis', semantic);
+  const path = bugReportPath(bug.id);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(bug, null, 2), 'utf8');
+}
+
+/** What defect analysis is judged against, read from disk — or why it cannot be. */
+function defectContext(): DefectContext | string {
+  const discovery = readQaArtifact('discovered-behavior') as DiscoveredBehavior | undefined;
+  const requirements = readQaArtifact('requirements-analysis') as RequirementsAnalysis | undefined;
+  if (discovery === undefined || requirements === undefined) {
+    return 'discovered-behavior and requirements-analysis must exist before defect analysis. Stop and report this.';
+  }
+  return {
+    discovery,
+    requirements,
+    testCases: readQaArtifact('test-cases') as TestCases | undefined,
+    // The origins this run was allowed to treat as test infrastructure.
+    auxiliaryOrigins: readSurface()?.auxiliaryOrigins ?? auxiliaryOrigins(),
+  };
+}
+
+/**
+ * Validate and persist a defect analysis and its bug reports, all or nothing:
+ * every report is built and checked before any file is touched. Reports from
+ * an earlier write that this one no longer produces are removed, so the
+ * directory always matches the analysis.
+ */
+function writeDefectAnalysis(data: DefectAnalysis): DefectAnalysis {
+  const ctx = defectContext();
+  if (typeof ctx === 'string') throw new SemanticValidationError('defect-analysis', [{ code: 'MISSING_UPSTREAM', path: '$', details: ctx }]);
+  // Host-owned fields (summary, ids, expected basis) are recomputed first, so
+  // whatever the model put there is replaced rather than argued with.
+  const normalised = normaliseDefectAnalysis(data, ctx);
+  const semantic = validateDefectAnalysis(normalised, ctx);
+  if (semantic.length > 0) throw new SemanticValidationError('defect-analysis', semantic);
+
+  const bugs = buildBugReports(normalised, ctx, { target: process.env.TARGET_URL ?? '', runId: process.env.QA_RUN_ID || undefined }).map(scrub);
+  const problems: SemanticError[] = [];
+  for (const bug of bugs) {
+    const { schema, semantic: errors } = bugReportErrors(bug);
+    problems.push(...schema.map((e) => ({ code: 'INCOMPLETE_DEFECT' as const, path: bug.id, details: e })), ...errors);
+  }
+  if (problems.length > 0) throw new SemanticValidationError('defect-analysis', problems);
+
+  mkdirSync(BUGS_DIR, { recursive: true });
+  for (const bug of bugs) writeFileSync(bugReportPath(bug.id), JSON.stringify(bug, null, 2), 'utf8');
+  const keep = new Set(bugs.map((b) => b.id));
+  for (const id of listBugReportIds()) if (!keep.has(id)) rmSync(bugReportPath(id));
+  return normalised;
+}
+
+/**
+ * Redaction applied to everything persisted: one-time URL values and opaque
+ * ids, and the values of a configured test account.
+ */
+function scrub<T>(value: T): T {
+  const secrets = AUTH_SECRET_ENV_NAMES.map((n) => process.env[n]).filter((v): v is string => typeof v === 'string' && v.trim().length >= 4);
+  return maskValues(redactDeep(value), secrets);
 }
 
 /**
@@ -368,7 +514,7 @@ export function writeQaArtifact(name: QaArtifactName, rawData: unknown): WriteRe
   // a one-time code through the browser; it has no business reaching a route,
   // a behavior statement, a quoted observation or a test case. Deterministic
   // and host-side: the model is never asked to redact its own output.
-  const data = redactDeep(rawData);
+  let data = scrub(rawData);
 
   const schema = loadSchema(def.schemaFile);
   const errors = validateAgainstSchema(data, schema);
@@ -376,8 +522,14 @@ export function writeQaArtifact(name: QaArtifactName, rawData: unknown): WriteRe
     throw new Error(`"${name}" does not match ${def.schemaFile}:\n${errors.map((e) => `  - ${e}`).join('\n')}`);
   }
 
-  const semantic = semanticErrorsFor(name, data);
-  if (semantic.length > 0) throw new SemanticValidationError(name, semantic);
+  if (name === 'defect-analysis') {
+    // Checked against upstream, then persisted with its host-owned fields
+    // recomputed and its bug reports fanned out to bugs/<id>.json.
+    data = writeDefectAnalysis(data as DefectAnalysis);
+  } else {
+    const semantic = semanticErrorsFor(name, data);
+    if (semantic.length > 0) throw new SemanticValidationError(name, semantic);
+  }
 
   // Well-formed and supported by evidence — but is exploration finished?
   const completion = name === 'discovered-behavior' ? gateDiscoveryFinalization(data) : undefined;

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["confirmed", "potential", "notDefect", "insufficientEvidence", "bugReports"],
+      "properties": {
+        "confirmed": { "type": "number" },
+        "potential": { "type": "number" },
+        "notDefect": { "type": "number" },
+        "insufficientEvidence": { "type": "number" },
+        "bugReports": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "classification", "sourceBehaviorIds", "reason"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^DEF-[0-9]{3,}$" },
+          "classification": { "enum": ["CONFIRMED_DEFECT", "POTENTIAL_DEFECT", "NOT_A_DEFECT", "INSUFFICIENT_EVIDENCE"] },
+          "bugReportId": { "type": "string", "pattern": "^BUG-[0-9]{3,}$" },
+          "expectedBasis": { "enum": ["CONFIRMED_REQUIREMENT", "EVIDENCED_REQUIREMENT", "INFERRED", "NONE"] },
+          "sourceBehaviorIds": { "type": "array", "items": { "type": "string" } },
+          "sourceAcceptancePointIds": { "type": "array", "items": { "type": "string" } },
+          "sourceBusinessRuleIds": { "type": "array", "items": { "type": "string" } },
+          "sourceTestCaseIds": { "type": "array", "items": { "type": "string" } },
+          "reason": { "type": "string" },
+          "title": { "type": "string" },
+          "severity": { "enum": ["BLOCKER", "CRITICAL", "MAJOR", "MINOR", "TRIVIAL"] },
+          "preconditions": { "type": "array", "items": { "type": "string" } },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "expected": { "type": "string" },
+          "actual": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "bugReports": { "type": "array", "items": { "type": "string", "pattern": "^BUG-[0-9]{3,}$" } }
+  },
+  "additionalProperties": false
+}

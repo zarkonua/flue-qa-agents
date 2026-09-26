@@ -506,7 +506,7 @@ describe('Phase 2 entry gate blocks the stage', () => {
   it('refuses when Phase 1 artifacts exist but nobody approved them', () => {
     const root = mkdtempSync(join(tmpdir(), 'qa-unapproved-'));
     const fixtures = join(PROJECT, 'test', 'fixtures', 'phase1-approved');
-    for (const name of ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization']) {
+    for (const name of ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization', 'defect-analysis']) {
       writeFileSync(join(root, `${name}.json`), readFileSync(join(fixtures, `${name}.json`), 'utf8'));
     }
     const result = runAutomation(root);
@@ -518,7 +518,7 @@ describe('Phase 2 entry gate blocks the stage', () => {
   it('opens the gate once a person approves, and --gate-only still starts no agent', async () => {
     const root = mkdtempSync(join(tmpdir(), 'qa-approved-'));
     const fixtures = join(PROJECT, 'test', 'fixtures', 'phase1-approved');
-    for (const name of ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization']) {
+    for (const name of ['discovered-behavior', 'requirements-analysis', 'test-cases', 'automation-prioritization', 'defect-analysis']) {
       writeFileSync(join(root, `${name}.json`), readFileSync(join(fixtures, `${name}.json`), 'utf8'));
     }
     // Approve in a child process, so the approval is bound to THIS root.

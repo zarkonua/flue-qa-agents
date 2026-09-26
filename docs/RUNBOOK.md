@@ -29,11 +29,10 @@ time, and the process throws rather than relocating anything.
 Tracing to Langfuse is optional and off unless `LANGFUSE_ENABLED=true` — see
 [observability.md](observability.md).
 
-The browser starts signed out unless `QA_AUTH_MODE` says otherwise: `credentials` makes an
-existing test account available without showing its values to the model, and `storage_state`
-starts every browser context from a Playwright storage-state file. Use `storage_state` when
-authentication is not what is being tested, and for model comparisons — see
-[auth-bootstrap.md](auth-bootstrap.md).
+The browser starts signed out and discovery signs up and signs in itself. If the application
+confirms accounts by mail, allow the mailbox with `QA_DISCOVERY_AUX_ORIGINS` (for example
+`http://localhost:8025` for MailHog); otherwise discovery stops at sign-up and the suite covers
+only the signed-out pages.
 
 ### Choosing the model
 

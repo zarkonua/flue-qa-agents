@@ -124,27 +124,6 @@ export function redactText(text: string): string {
 }
 
 /**
- * Replace exact configured values — a test account's email and password —
- * wherever they occur in a value. The browser never shows them to a model;
- * this keeps them off disk even if they arrive some other way.
- */
-export function maskValues<T>(value: T, secrets: readonly string[]): T {
-  if (secrets.length === 0) return value;
-  if (typeof value === 'string') {
-    let out: string = value;
-    for (const secret of secrets) out = out.split(secret).join(REDACTED);
-    return out as unknown as T;
-  }
-  if (Array.isArray(value)) return value.map((item) => maskValues(item, secrets)) as unknown as T;
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) out[key] = maskValues(item, secrets);
-    return out as unknown as T;
-  }
-  return value;
-}
-
-/**
  * Redact every string in a value, in place of the original structure.
  *
  * Applied to a whole artifact before it is validated and written, so no field —

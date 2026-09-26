@@ -17,8 +17,6 @@ const ROOT = mkdtempSync(join(tmpdir(), 'qa-defects-'));
 process.env.QA_ARTIFACT_ROOT = ROOT;
 process.env.TARGET_URL = 'http://localhost:4444/';
 process.env.QA_DISCOVERY_AUX_ORIGINS = 'http://localhost:8025';
-delete process.env.QA_AUTH_USER_EMAIL;
-delete process.env.QA_AUTH_USER_PASSWORD;
 
 const {
   buildBugReports,
@@ -301,23 +299,17 @@ describe('defect-analysis and bug report files', () => {
     assert.ok(qa.bugReportErrors({ ...bug, steps: [] }).schema.some((e) => e.includes('fewer than 1 items')));
   });
 
-  it('secrets and one-time values never reach a bug report or the analysis', () => {
-    process.env.QA_AUTH_USER_PASSWORD = 'SUPER_SECRET_SENTINEL_123';
-    try {
-      const leaky = replace('DEF-001', {
-        preconditions: ['Signed in with SUPER_SECRET_SENTINEL_123'],
-        steps: [`Open ${APP}/notes?confirm_code=987654&token=abcdef123456`, 'Enter a 1-character Title', 'Save the note'],
-        reason: `Seen after ${MAIL}/api/v1/messages/AbC123dEf456GhI789jKl0=@mailhog.example/download`,
-      });
-      qa.writeQaArtifact('defect-analysis', { findings: leaky });
-      const disk = readFileSync(qa.bugReportPath('BUG-001'), 'utf8') + readFileSync(qa.qaArtifactPath('defect-analysis'), 'utf8');
-      for (const secret of ['SUPER_SECRET_SENTINEL_123', '987654', 'abcdef123456', 'AbC123dEf456GhI789jKl0']) {
-        assert.ok(!disk.includes(secret), `persisted ${secret}`);
-      }
-      assert.match(disk, /confirm_code=<redacted>/);
-    } finally {
-      delete process.env.QA_AUTH_USER_PASSWORD;
+  it('one-time values never reach a bug report or the analysis', () => {
+    const leaky = replace('DEF-001', {
+      steps: [`Open ${APP}/notes?confirm_code=987654&token=abcdef123456`, 'Enter a 1-character Title', 'Save the note'],
+      reason: `Seen after ${MAIL}/api/v1/messages/AbC123dEf456GhI789jKl0=@mailhog.example/download`,
+    });
+    qa.writeQaArtifact('defect-analysis', { findings: leaky });
+    const disk = readFileSync(qa.bugReportPath('BUG-001'), 'utf8') + readFileSync(qa.qaArtifactPath('defect-analysis'), 'utf8');
+    for (const secret of ['987654', 'abcdef123456', 'AbC123dEf456GhI789jKl0']) {
+      assert.ok(!disk.includes(secret), `persisted ${secret}`);
     }
+    assert.match(disk, /confirm_code=<redacted>/);
   });
 
   it('a rejected write touches nothing, and a rewrite removes reports it no longer makes', () => {

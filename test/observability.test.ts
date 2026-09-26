@@ -27,7 +27,6 @@ import { redactSecrets, SECRET_MASK } from '../src/observability/content-policy.
 import { runFunnel, stageMetrics } from '../src/observability/qa-metrics.ts';
 import { parseRunningModel } from '../src/observability/ollama-probe.ts';
 import { gptOssMaxOutputTokens } from '../src/providers/ollama-settings.ts';
-import { authBootstrapNote, authTelemetry, CREDENTIAL_REFS } from '../src/config/auth-bootstrap.ts';
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURES = join(PROJECT, 'test/fixtures/phase1-approved');
@@ -115,7 +114,7 @@ let clock = Date.parse('2026-09-24T10:00:00Z');
 const at = () => (clock += 10);
 
 /** One agent operation: a model turn that calls a browser tool, then ends. */
-function agentEvents(o: { provider?: string; model?: string; usage?: any; finishReason?: string; error?: any; userText?: string; systemPrompt?: string; toolName?: string; toolArgs?: any; toolResult?: string } = {}) {
+function agentEvents(o: { provider?: string; model?: string; usage?: any; finishReason?: string; error?: any; userText?: string } = {}) {
   const base = { instanceId: 'inst-1', submissionId: 'sub-1', operationId: 'op-1', agentName: 'product-discovery', conversationId: 'conv-1' };
   const model = o.model ?? 'gpt-oss-20b-q5-49k';
   const providerName = o.provider ?? 'ollama';
@@ -139,7 +138,7 @@ function agentEvents(o: { provider?: string; model?: string; usage?: any; finish
       request: {
         ...request,
         input: {
-          systemPrompt: o.systemPrompt ?? 'SYSTEM PROMPT BODY',
+          systemPrompt: 'SYSTEM PROMPT BODY',
           messages: [{ role: 'user', content: o.userText ?? 'PAGE SNAPSHOT BODY', timestamp: 0 }],
           tools: [],
         },
@@ -162,15 +161,15 @@ function agentEvents(o: { provider?: string; model?: string; usage?: any; finish
             output: { role: 'assistant', content: [{ type: 'text', text: 'MODEL ANSWER BODY' }], timestamp: 0 },
           },
     },
-    { ...base, type: 'tool_start', timestamp: at(), toolName: o.toolName ?? 'browser_snapshot', toolCallId: 'call-1', args: o.toolArgs ?? { ref: 'e1' }, origin: 'model' },
+    { ...base, type: 'tool_start', timestamp: at(), toolName: 'browser_snapshot', toolCallId: 'call-1', args: { ref: 'e1' }, origin: 'model' },
     {
       ...base,
       type: 'tool',
       timestamp: at(),
-      toolName: o.toolName ?? 'browser_snapshot',
+      toolName: 'browser_snapshot',
       toolCallId: 'call-1',
       isError: false,
-      result: o.toolResult ?? `- heading "Home"\n${'- link "x"\n'.repeat(2000)}`,
+      result: `- heading "Home"\n${'- link "x"\n'.repeat(2000)}`,
       durationMs: 120,
       origin: 'model',
     },
@@ -765,78 +764,5 @@ describe('Ollama running-model probe', () => {
     assert.equal(parseRunningModel(ps(16e9, 12e9), 'gpt-oss-20b-q5-49k')?.fullyGpuResident, false);
     assert.equal(parseRunningModel(ps(16e9, 16e9), 'qwen3:14b'), undefined);
     assert.equal(parseRunningModel({}, 'x'), undefined);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Auth bootstrap (CHANGE 12): safe metadata, and the account never exported
-// ---------------------------------------------------------------------------
-
-describe('auth bootstrap telemetry', () => {
-  const PASSWORD = 'SUPER_SECRET_SENTINEL_123';
-  const EMAIL = 'sentinel.user.4711@example.test';
-  const TOKEN = 'STORAGE_TOKEN_SENTINEL_456';
-
-  /** Run `fn` with the account in this process's environment, as `.env` would put it. */
-  async function withAccount<T>(fn: () => Promise<T>): Promise<T> {
-    const saved = { e: process.env.QA_AUTH_USER_EMAIL, p: process.env.QA_AUTH_USER_PASSWORD };
-    process.env.QA_AUTH_USER_EMAIL = EMAIL;
-    process.env.QA_AUTH_USER_PASSWORD = PASSWORD;
-    try {
-      return await fn();
-    } finally {
-      for (const [k, v] of [['QA_AUTH_USER_EMAIL', saved.e], ['QA_AUTH_USER_PASSWORD', saved.p]] as const) {
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-      }
-    }
-  }
-
-  const everything = (spans: ReadableSpan[]) => spans.map((s) => JSON.stringify({ name: s.name, a: s.attributes, e: s.events, st: s.status })).join('\n');
-  const assertClean = (text: string) => {
-    for (const secret of [PASSWORD, EMAIL, TOKEN]) assert.ok(!text.includes(secret), `trace contains ${secret}`);
-  };
-
-  for (const config of [
-    { mode: 'credentials' as const, credentials: { email: EMAIL, password: PASSWORD } },
-    { mode: 'storage_state' as const, storageStatePath: `/home/x/.qa/auth/${TOKEN}.json` },
-  ]) {
-    it(`run metadata records authBootstrapMode=${config.mode}, and nothing secret`, async () => {
-      const host = new CollectingExporter();
-      const obs = await createRunObservability({ config: CONFIG(true), exporter: host, fetchImpl: noFetch, shutdownTimeoutMs: 1_000 });
-      obs.startRun({ command: 'qa-manual', runId: `auth-${config.mode}`, model: 'ollama/x', input: { target: 'http://localhost:4444/' }, metadata: authTelemetry(config) });
-      await obs.endRun({ outcome: 'COMPLETE' });
-      const root = byName(host.spans, 'qa-manual');
-      assert.equal(meta(root, 'authBootstrapMode'), config.mode);
-      assert.equal(meta(root, 'authBootstrapConfigured'), 'true');
-      assertClean(everything(host.spans));
-    });
-  }
-
-  it('a credential-assisted discovery turn, with I/O capture on, exports no account value', async () => {
-    await withAccount(async () => {
-      // The worst case: something upstream let the values into every channel.
-      const spans = await runAgentProcess({}, {
-        captureIo: true,
-        systemPrompt: `You are discovery.${authBootstrapNote('credentials')}`,
-        userText: `the page says: signed in as ${EMAIL} using ${PASSWORD}`,
-        toolName: 'browser_type',
-        toolArgs: { target: 'e15', element: 'Password', text: CREDENTIAL_REFS.password, leaked: PASSWORD },
-        toolResult: `### Page\n- status: Signed in as <secret>QA_AUTH_USER_EMAIL</secret> (${EMAIL})`,
-        error: undefined,
-      });
-      const text = everything(spans);
-      assertClean(text);
-      // The reference the model types is not a secret, and is kept.
-      assert.ok(text.includes(CREDENTIAL_REFS.password));
-      assert.ok(text.includes(SECRET_MASK));
-    });
-  });
-
-  it('an error message quoting the password is masked', async () => {
-    await withAccount(async () => {
-      const spans = await runAgentProcess({}, { captureIo: false, error: { message: `login rejected for ${EMAIL}:${PASSWORD}` } });
-      assertClean(everything(spans));
-    });
   });
 });

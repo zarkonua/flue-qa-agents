@@ -5,10 +5,9 @@
 // Everything here is trusted host code. No runtime agent can call any of it.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readlinkSync } from 'node:fs';
 import { createConnection } from 'node:net';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -17,7 +16,6 @@ const { requireTargetUrl, TargetUrlError } = await import(resolve(ROOT, 'src/lib
 const { DEFAULT_PLAYWRIGHT_MCP_URL, playwrightMcpUrl } = await import(resolve(ROOT, 'src/connections/playwright-mcp.ts'));
 const { CONTROL_PLANE_ROOT, MCP_OUTPUT_ROOT } = await import(resolve(ROOT, 'src/lib/trusted-roots.ts'));
 const { spawnMcpServer, stopProcessGroup } = await import(resolve(ROOT, 'scripts/mcp-server.mjs'));
-const authLib = await import(resolve(ROOT, 'src/config/auth-bootstrap.ts'));
 
 export { MCP_OUTPUT_ROOT };
 
@@ -39,53 +37,6 @@ export function requireTarget() {
     }
     throw error;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Authentication bootstrap
-// ---------------------------------------------------------------------------
-
-/**
- * The validated auth bootstrap (src/config/auth-bootstrap.ts), or print the
- * reason and exit(2). The message names a variable or a path, never a value.
- */
-export function requireAuthBootstrap() {
-  try {
-    const auth = authLib.readAuthBootstrap(process.env, { mcpOutputRoot: MCP_OUTPUT_ROOT });
-    // A value the browser's secrets file cannot hold fails now, not at launch.
-    if (auth.mode === 'credentials') authLib.formatSecretsFile(auth);
-    return auth;
-  } catch (error) {
-    if (error instanceof authLib.AuthConfigError) {
-      console.error(`\n${error.message}\n`);
-      process.exit(EXIT.BAD_CONFIG);
-    }
-    throw error;
-  }
-}
-
-let secretsDir;
-
-/** Remove the server's secrets file. Idempotent. */
-function removeSecrets() {
-  if (!secretsDir) return;
-  rmSync(secretsDir, { recursive: true, force: true });
-  secretsDir = undefined;
-}
-
-/**
- * Server arguments for this bootstrap. For credentials, the account goes into
- * a private dotenv file (0700 dir, 0600 file, outside every agent-reachable
- * root) that the server reads once at startup; `ensureMcp` deletes it as soon
- * as the server answers.
- */
-function prepareAuthArgs(auth) {
-  if (auth.mode !== 'credentials') return authLib.mcpAuthArgs(auth);
-  const contents = authLib.formatSecretsFile(auth);
-  secretsDir = mkdtempSync(join(tmpdir(), 'flue-qa-auth-'));
-  const file = join(secretsDir, 'secrets.env');
-  writeFileSync(file, contents, { mode: 0o600 });
-  return authLib.mcpAuthArgs(auth, file);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,17 +183,9 @@ let startedMcp;
  * an ordinary run that reuse is a convenience; for an A/B trial it is the
  * difference between a measurement and an artefact.
  */
-export async function ensureMcp({ fresh = false, auth = { mode: 'none' } } = {}) {
+export async function ensureMcp({ fresh = false } = {}) {
   const url = mcpUrl();
   const port = new URL(url).port || '8931';
-  // Agents learn from this what their browser was prepared with. Set to the
-  // mode only once it is really applied; `none` until then, so a stale value
-  // from .env or the shell can never claim a bootstrap that did not happen.
-  process.env[authLib.AUTH_APPLIED_ENV] = 'none';
-
-  // A bootstrap is a launch argument, so a server already running was not
-  // started with it: this run needs its own.
-  if (auth.mode !== 'none') fresh = true;
 
   if (fresh && (await mcpReachable(url))) {
     const check = verifyConfined(port);
@@ -268,19 +211,7 @@ export async function ensureMcp({ fresh = false, auth = { mode: 'none' } } = {})
   }
 
   console.log(`Playwright MCP  : not running — starting one at ${url}`);
-  let authArgs;
-  try {
-    authArgs = prepareAuthArgs(auth);
-  } catch (error) {
-    removeSecrets();
-    if (error instanceof authLib.AuthConfigError) {
-      console.error(`\n${error.message}\n`);
-      process.exit(EXIT.BAD_CONFIG);
-    }
-    throw error;
-  }
-  // Server output is discarded, never echoed: it runs with the account loaded.
-  const child = spawnMcpServer({ port, authArgs }, ['ignore', 'pipe', 'pipe']);
+  const child = spawnMcpServer({ port }, ['ignore', 'pipe', 'pipe']);
   child.stdout.on('data', () => {});
   child.stderr.on('data', () => {});
   child.on('error', (error) => {
@@ -296,11 +227,7 @@ export async function ensureMcp({ fresh = false, auth = { mode: 'none' } } = {})
       process.exit(EXIT.FAILED);
     }
     if (await mcpReachable(url)) {
-      // Parsed at startup; the file has no reason to outlive this moment.
-      removeSecrets();
-      process.env[authLib.AUTH_APPLIED_ENV] = auth.mode;
       console.log(`Playwright MCP  : ready, confined to ${MCP_OUTPUT_ROOT}`);
-      if (auth.mode !== 'none') console.log(`Auth bootstrap  : ${authLib.describeAuthBootstrap(auth)}`);
       return true;
     }
     await new Promise((r) => setTimeout(r, 1000));
@@ -315,7 +242,6 @@ export async function ensureMcp({ fresh = false, auth = { mode: 'none' } } = {})
  * group, since the real server is a grandchild of the npx we spawned.
  */
 export function stopMcp() {
-  removeSecrets();
   if (!startedMcp) return;
   stopProcessGroup(startedMcp, 'SIGTERM');
   startedMcp = undefined;

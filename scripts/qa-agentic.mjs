@@ -14,10 +14,9 @@
 // automation-generator as delegates. Phase 1's approval gate does not apply here.
 
 import { spawn } from 'node:child_process';
-import { EXIT, ROOT, ensureMcp, preflightTarget, requireAuthBootstrap, requireTarget, stopMcp } from './lib/runtime.mjs';
+import { EXIT, ROOT, ensureMcp, preflightTarget, requireTarget, stopMcp } from './lib/runtime.mjs';
 
 const target = requireTarget();
-const auth = requireAuthBootstrap();
 
 const DEFAULT_BRIEF =
   `Run QA discovery and test design for the application at ${target}. ` +
@@ -35,7 +34,7 @@ if (!hasId) args.push('--new', '--id', `qa-agentic-${Date.now().toString(36)}`);
 console.log('Mode            : EXPERIMENTAL model-driven orchestration (QA Manager)');
 console.log(`Target          : ${target}`);
 
-await ensureMcp({ auth });
+await ensureMcp();
 await preflightTarget(target);
 
 const run = spawn('npx', args, { cwd: ROOT, stdio: 'inherit', env: process.env });

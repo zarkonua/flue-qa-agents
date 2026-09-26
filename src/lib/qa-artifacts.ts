@@ -20,8 +20,7 @@ import {
   evaluateDiscoveryCompletion,
   type DiscoveryCompletionResult,
 } from './discovery-completion.ts';
-import { maskValues, redactDeep } from './redaction.ts';
-import { AUTH_SECRET_ENV_NAMES } from '../config/auth-bootstrap.ts';
+import { redactDeep } from './redaction.ts';
 import { auxiliaryOrigins } from '../config/auxiliary-origins.ts';
 import {
   BUG_ID_PATTERN,
@@ -466,13 +465,9 @@ function writeDefectAnalysis(data: DefectAnalysis): DefectAnalysis {
   return normalised;
 }
 
-/**
- * Redaction applied to everything persisted: one-time URL values and opaque
- * ids, and the values of a configured test account.
- */
+/** Redaction applied to everything persisted: one-time URL values and opaque ids. */
 function scrub<T>(value: T): T {
-  const secrets = AUTH_SECRET_ENV_NAMES.map((n) => process.env[n]).filter((v): v is string => typeof v === 'string' && v.trim().length >= 4);
-  return maskValues(redactDeep(value), secrets);
+  return redactDeep(value);
 }
 
 /**

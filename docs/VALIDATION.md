@@ -263,8 +263,7 @@ the host. The analyzer's schema has no `priority` field; a bug report whose prio
 **Files.** `bugs/<id>.json`, where the id must match `^BUG-[0-9]{3,}$` before it becomes a file
 name. A write validates every report before touching any file, and removes reports the new
 analysis no longer produces. Everything persisted passes the redaction layer, which now also
-replaces opaque path segments inside URLs quoted in prose, and the configured test account's
-values.
+replaces opaque path segments inside URLs quoted in prose.
 
 What this cannot do: judge whether a contradiction is *real*. Word overlap proves the expected
 and actual sides are about the right evidence, not that they conflict. That is why every

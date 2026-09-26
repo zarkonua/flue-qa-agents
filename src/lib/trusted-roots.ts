@@ -122,24 +122,12 @@ const FORBIDDEN_SEGMENTS = new Set([
   '.git',
   '.env',
   '.ssh',
-  // Conventional home of Playwright auth state (`playwright/.auth`).
-  '.auth',
   '.npmrc',
   'node_modules',
 ]);
 
-/**
- * `.env`, `.env.local`, `id_rsa`, `*.pem`, Playwright storage state … —
- * secret-shaped files, blocked by name. Storage state holds live cookies and
- * tokens; the names match the ones `.gitignore` keeps out of the history.
- */
-const FORBIDDEN_FILE_PATTERNS = [
-  /^\.env(\..*)?$/i,
-  /^id_(rsa|ed25519|ecdsa)$/i,
-  /\.(pem|key|p12|pfx)$/i,
-  /^storage-?state.*\.json$/i,
-  /\.storagestate\.json$/i,
-];
+/** `.env`, `.env.local`, `id_rsa`, `*.pem` … — secret-shaped files, blocked by name. */
+const FORBIDDEN_FILE_PATTERNS = [/^\.env(\..*)?$/i, /^id_(rsa|ed25519|ecdsa)$/i, /\.(pem|key|p12|pfx)$/i];
 
 export class PathNotAllowedError extends Error {}
 

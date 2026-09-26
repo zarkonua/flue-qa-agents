@@ -16,7 +16,6 @@
 import { truncateContent } from '@flue/runtime/telemetry';
 import type { ContentOption, GenAIContentScope, GenAIContentType } from '@flue/runtime/telemetry';
 import { redactDeep } from '../lib/redaction.ts';
-import { AUTH_SECRET_ENV_NAMES } from '../config/auth-bootstrap.ts';
 
 const IO_TYPES = new Set<GenAIContentType>([
   'input_messages',
@@ -34,14 +33,6 @@ const EXCEPTION_MESSAGE_MAX_BYTES = 1_024;
 
 /** Environment variables whose values must never appear in a trace, even by accident. */
 const SECRET_ENV_NAMES = ['LANGFUSE_SECRET_KEY', 'LANGFUSE_PUBLIC_KEY', 'OPENROUTER_API_KEY'];
-
-/**
- * The test account's values. Masked even when short — a password need not be
- * eight characters long — but not below four, where masking would mangle
- * ordinary text. The browser already returns these as `<secret>NAME</secret>`;
- * this is the second line, for anything that reaches a trace another way.
- */
-const AUTH_SECRET_MIN_LENGTH = 4;
 
 /** Well-known credential shapes, masked wherever they occur in a string. */
 const SECRET_PATTERNS: RegExp[] = [
@@ -64,10 +55,6 @@ export function redactSecrets(text: string, env: NodeJS.ProcessEnv = process.env
   for (const name of SECRET_ENV_NAMES) {
     const value = env[name]?.trim();
     if (value && value.length >= 8) out = out.split(value).join(SECRET_MASK);
-  }
-  for (const name of AUTH_SECRET_ENV_NAMES) {
-    const value = env[name];
-    if (value && value.trim().length >= AUTH_SECRET_MIN_LENGTH) out = out.split(value).join(SECRET_MASK);
   }
   for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, SECRET_MASK);
   return redactDeep(out);

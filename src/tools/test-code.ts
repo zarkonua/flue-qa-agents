@@ -21,7 +21,6 @@ import {
   TEST_RESULTS_ROOTS,
   TEST_WRITE_ROOTS,
 } from '../lib/trusted-roots.ts';
-import { AUTH_SECRET_ENV_NAMES } from '../config/auth-bootstrap.ts';
 
 /** Extensions automation code may be written as. Anything else is refused. */
 const WRITABLE_EXTENSIONS = new Set(['.ts', '.tsx']);
@@ -42,16 +41,6 @@ function clip(text: string): { text: string; truncated: boolean } {
 }
 
 /**
- * The environment without the configured test account. A test the model wrote
- * could print `process.env`, and its output comes back to the model.
- */
-function withoutAuthSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out = { ...env };
-  for (const name of AUTH_SECRET_ENV_NAMES) delete out[name];
-  return out;
-}
-
-/**
  * Run a fixed argv in the target repo. No shell (`shell: false` is the default
  * for `spawn` with an argv array), so there is no metacharacter surface even if
  * a validated path contained something odd.
@@ -60,7 +49,7 @@ function runInRepo(command: string, args: string[]): Promise<{ exitCode: number 
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       cwd: TARGET_REPO_ROOT,
-      env: { ...withoutAuthSecrets(process.env), CI: '1', FORCE_COLOR: '0' },
+      env: { ...process.env, CI: '1', FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

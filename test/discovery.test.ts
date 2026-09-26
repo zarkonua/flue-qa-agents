@@ -32,6 +32,9 @@ import {
 } from '../src/lib/semantic-validate.ts';
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// These tests assume no trusted auxiliary origin. A developer's own .env may
+// configure one (a MailHog inbox, say), which would make an external link trusted.
+delete process.env.QA_DISCOVERY_AUX_ORIGINS;
 const TARGET = 'http://localhost:4444/';
 
 /** A snapshot shaped like the ones Playwright MCP actually returns. */

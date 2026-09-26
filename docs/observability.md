@@ -55,8 +55,7 @@ files: they are large, they cost storage, and they are the product under test. W
 off, traces still carry structure, models, token counts, timings, context pressure, tool names,
 QA counts and errors. With it on, prompts, responses and tool I/O are sent too, and still:
 
-- known credentials are masked (the values of `LANGFUSE_*_KEY`, `OPENROUTER_API_KEY` and the
-  auth bootstrap's `QA_AUTH_USER_EMAIL` / `QA_AUTH_USER_PASSWORD`, key
+- known credentials are masked (the values of `LANGFUSE_*_KEY` and `OPENROUTER_API_KEY`, key
   shapes like `sk-lf-…` and `Bearer …`, and secret-looking URL parameters);
 - browser tool results (accessibility snapshots) are cut to a 2 KB head;
 - stack traces are never sent. A failure's short, redacted message is sent in both modes.

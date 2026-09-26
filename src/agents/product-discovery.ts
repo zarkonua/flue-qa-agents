@@ -6,7 +6,6 @@ import { writeQaArtifactToolFor } from '../tools/qa-artifacts.ts';
 import { recordObservationTool } from '../tools/observations.ts';
 import { browserTools, DISCOVERY_BROWSER_TOOLS, playwrightMcpUrl } from '../connections/playwright-mcp.ts';
 import { auxiliaryOriginsNote } from '../config/auxiliary-origins.ts';
-import { appliedAuthMode, authBootstrapNote } from '../config/auth-bootstrap.ts';
 // Side effect: folds every browser result into the surface this agent must
 // account for, so signing in enlarges the job rather than completing it.
 import '../lib/surface-instrumentation.ts';
@@ -331,9 +330,7 @@ export function productDiscoveryCore() {
   const target = targetUrl();
   if (!browserAvailable) return INSTRUCTIONS + NO_BROWSER_NOTE;
   if (target === undefined) return INSTRUCTIONS + NO_TARGET_NOTE;
-  // How the host prepared this browser, if it did. Mode only — the note never
-  // carries an account value, and is empty (the prompt unchanged) for `none`.
-  return `${INSTRUCTIONS}\n\n## Target application\nExplore: ${target}${auxiliaryOriginsNote(target)}${authBootstrapNote(appliedAuthMode())}`;
+  return `${INSTRUCTIONS}\n\n## Target application\nExplore: ${target}${auxiliaryOriginsNote(target)}`;
 }
 
 export function ProductDiscovery() {

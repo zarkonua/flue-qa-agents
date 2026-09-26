@@ -108,13 +108,13 @@ QA_MODEL=openrouter/deepseek/deepseek-v4-flash-0731    # needs OPENROUTER_API_KE
 Ollama context and output limits are configurable (`OLLAMA_CONTEXT_WINDOW`,
 `OLLAMA_MAX_OUTPUT_TOKENS`); see the runbook.
 
-## Authentication bootstrap
+## Sign-in and test infrastructure
 
-`QA_AUTH_MODE` sets the state the browser starts in: `none` (default — discovery handles sign-up
-and sign-in itself), `credentials` (an existing test account, typed by the browser; the model
-only ever sees the variable names) or `storage_state` (every browser context starts from a
-Playwright storage-state file). `storage_state` is the right choice when authentication is not
-what is being tested, and for comparing models. See **[docs/auth-bootstrap.md](docs/auth-bootstrap.md)**.
+Discovery starts signed out and handles sign-up and sign-in itself. When a flow needs test
+infrastructure on another origin — a MailHog inbox holding the confirmation mail, typically —
+allow it with `QA_DISCOVERY_AUX_ORIGINS=http://localhost:8025`. Without it, discovery records the
+sign-in flow BLOCKED and never reaches the product behind it, and the suite is correspondingly
+small.
 
 ## Observability
 
@@ -168,7 +168,7 @@ src/
   review/       ReviewStore, change requests, proposals, host-side apply
   ui-server/    the workspace's host API
   lib/          schema + semantic validation · discovery surface and completion gate · defects · phase-1 gate · redaction
-  config/       .env loading · auth bootstrap · auxiliary origins
+  config/       .env loading · auxiliary origins
   connections/  Playwright MCP, with a per-role tool allowlist
   providers/    Ollama · OpenRouter
   observability/ optional Langfuse
@@ -176,7 +176,7 @@ src/
 ui/             the workspace UI (React, TypeScript, Vite)
 schemas/        JSON Schemas for every artifact and review record
 test/           node:test suites        e2e/   Playwright tests of the workspace
-docs/           RUNBOOK · VALIDATION · observability · auth-bootstrap · architecture/
+docs/           RUNBOOK · VALIDATION · observability · architecture/
 ```
 
 ```bash

@@ -1,13 +1,15 @@
 # Operator runbook
 
-How to run the system and what to do when it stops. Architecture lives in
-[architecture/architecture-view.html](architecture/architecture-view.html); what validation
-guarantees is in [VALIDATION.md](VALIDATION.md).
+How to run the system and what to do when it stops. The overview is the
+[README](../README.md), diagrams are in [architecture/](architecture/README.md) (one-page view:
+[architecture-view.html](architecture/architecture-view.html)), and what
+validation guarantees is in [VALIDATION.md](VALIDATION.md).
 
 ## Prerequisites
 
 - Node ≥ 22.19, `npm install` done.
-- **Ollama** reachable with `qwen3:14b` pulled — `npm run check:ollama`.
+- A model: a local **Ollama** with the model named in `QA_MODEL` pulled
+  (`npm run check:ollama`), or an OpenRouter key.
 - **Chromium for Playwright** for Phase 1 — `npm run check:playwright`.
 - The application under test running, for Phase 1.
 - A target automation repository, for Phase 2.
@@ -29,24 +31,22 @@ time, and the process throws rather than relocating anything.
 Tracing to Langfuse is optional and off unless `LANGFUSE_ENABLED=true` — see
 [observability.md](observability.md).
 
-The browser starts signed out and discovery signs up and signs in itself. If the application
-confirms accounts by mail, allow the mailbox with `QA_DISCOVERY_AUX_ORIGINS` (for example
-`http://localhost:8025` for MailHog); otherwise discovery stops at sign-up and the suite covers
-only the signed-out pages.
-
 ### Choosing the model
 
 One setting, in Flue's `provider/model` form. Every agent uses it; there is no per-agent
 override.
 
 ```dotenv
-QA_MODEL=ollama/qwen3:14b                              # default when unset
+QA_MODEL=ollama/<model>                # any model your Ollama server has pulled
 ```
 
 ```dotenv
-QA_MODEL=openrouter/deepseek/deepseek-v4-flash-0731
+QA_MODEL=openrouter/<vendor>/<model>   # any OpenRouter model id
 OPENROUTER_API_KEY=sk-or-...
 ```
+
+Any provider other than `ollama` or `openrouter` is refused at startup. Choose a model that
+reliably makes structured tool calls; `.env.example` has working examples.
 
 Both run the same `npm run qa:manual` / `npm run qa:automation`. Selecting `openrouter/...`
 without a key fails immediately, before any agent starts. The key is read host-side only: it
@@ -67,6 +67,11 @@ npm run check:tools        # uses QA_MODEL, whichever provider that selects
 | `QA_ARTIFACT_ROOT` | `../qa-workspace/.qa` | Artifacts, the approval, run logs. |
 | `QA_MCP_OUTPUT_ROOT` | `../qa-workspace/.mcp-output` | Playwright MCP working directory. A security boundary: browser tools write a model-chosen filename relative to it. |
 | `QA_STAGE_ATTEMPTS` | `4` | Attempts per stage; `--attempts n` overrides per run. |
+| `QA_DISCOVERY_AUX_ORIGINS` | unset | Comma-separated helper origins discovery may use (a test mailbox). See [Sign-in](#sign-in-and-helper-origins). |
+| `QA_FRESH_BROWSER` | unset | `true` = `--fresh-browser`: restart the MCP server so the run owns a signed-out browser. |
+| `QA_UI_PORT` · `QA_UI_HOST` | `4445` · `127.0.0.1` | Where `qa:ui` listens. The workspace has no login; keep it on loopback. |
+| `QA_ENV_FILE` | `./.env` | Load settings from another file. |
+| `LANGFUSE_*` | off | See [observability.md](observability.md). |
 | `PLAYWRIGHT_MCP_URL` | unset → `http://localhost:8931/mcp` | `default` expands to the same. |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | *(Ollama only)*  `npm run check:ollama` prints the right value if the default does not reach it. |
 | `OLLAMA_CONTEXT_WINDOW` | `8192` | Declared to Flue. Must not exceed the server's `num_ctx`. |
@@ -77,25 +82,43 @@ npm run check:tools        # uses QA_MODEL, whichever provider that selects
 | `QA_TYPECHECK_SCRIPT` | `npx tsc --noEmit` | Host-built argv; no model input. |
 | `QA_TEST_RUN_TIMEOUT_MS` | `600000` | Hard kill for a test or typecheck run. |
 
+## Sign-in and helper origins
+
+There is no authentication bootstrap: nothing injects a session, a stored browser state or
+credentials. Discovery signs up and signs in through the product's own UI, and the completion
+gate will not let it finish while a sign-in flow it saw is unresolved (see
+[VALIDATION.md](VALIDATION.md#discovery-finalizing-is-gated)).
+
+- A browser the run starts is signed out. A Playwright MCP server that is already running is
+  reused and keeps its cookies and sign-in; pass `--fresh-browser` (or `QA_FRESH_BROWSER=true`)
+  when a clean start matters, e.g. when comparing two models.
+- If the application confirms accounts by mail, allow the mailbox:
+  `QA_DISCOVERY_AUX_ORIGINS=http://localhost:8025` (MailHog). Only host configuration can grant
+  an origin; the model is told what is listed and cannot add to it, and an artifact that
+  describes a helper origin as part of the product is rejected. Without it, discovery records
+  the flow BLOCKED and the suite covers only the signed-out pages. When discovery is blocked by
+  an unlisted origin, the run prints a hint naming it.
+- Use test accounts only. Artifacts may not carry an email address or a real credential value
+  (`FABRICATED_CREDENTIAL`), and one-time values in URLs are redacted before anything is written
+  or traced.
+
 ## The flow
 
 ```bash
-export TARGET_URL="http://localhost:4444/"
-npm run qa:manual                      # Phase 1: 5 stages, then STOP  (~5–15 min)
-#   Discovery → Analysis → Test Design → Automation Prioritization → Defect Analysis
+npm run qa:manual                      # Phase 1: 5 stages, then STOP
+#   discovery → analysis → design → prioritization → defects
 
-npm run qa:ui                          # review workspace at http://127.0.0.1:4445: change cases, see bugs
-npm run qa:review                      # AI review; proposes only, edits nothing; summarises defects
-npm run qa:defects                     # list bug reports; decide on each (see below)
-# hand-edit test-cases.json if you want
-npm run qa:prioritize                  # re-run from stage 4 after edits (defect analysis re-runs too)
-npm run qa:approve                     # required before Phase 2
+npm run qa:ui                          # workspace: change test cases, decide on bugs, refresh, approve
+npm run qa:review                      # optional: advisory AI review of the suite; edits nothing
+npm run qa:refresh                     # after test cases changed: prioritization + defect analysis
+npm run qa:approve                     # required before Phase 2 (same as the workspace button)
 
-export QA_TARGET_REPO_ROOT="/path/to/your/e2e-repo"
-npm run qa:automation                  # Phase 2: gate, Repo Analyzer, then STOP
+npm run qa:automation                  # Phase 2: gate, Repo Analyzer, then STOP (needs QA_TARGET_REPO_ROOT)
 ```
 
-`npm run qa` is an alias of `qa:manual`.
+`npm run qa` is an alias of `qa:manual`. `npm run qa:prioritize` is shorthand for
+`qa:manual -- --from prioritization`, which re-runs stages 4 and 5 — the right step after editing
+`test-cases.json` by hand instead of through the workspace.
 
 ### Options
 
@@ -104,6 +127,7 @@ npm run qa:manual -- --from prioritization   # discovery | analysis | design | p
 npm run qa:manual -- --from defects          # re-run defect analysis only
 npm run qa:refresh                           # prioritization + defect analysis after a suite change (all or nothing)
 npm run qa:manual -- --attempts 2
+npm run qa:manual -- --fresh-browser         # restart the MCP server: a signed-out browser this run owns
 npm run qa:approve -- --accept-findings      # approve despite semantic findings; recorded
 npm run qa:automation -- --gate-only         # check prerequisites, start no agent
 npm run qa:automation -- --from repo-analyzer
@@ -122,7 +146,7 @@ API the same way and runs Vite with hot reload on port 5173.
 
 | Page | For |
 |---|---|
-| Overview | counts, requirement coverage (which cases cover each requirement), prioritization state, Phase 1 approval |
+| Overview | counts, requirement coverage (which cases cover each requirement), each derived artifact CURRENT or STALE with the reason, **Refresh dependent analysis**, Phase 1 approval |
 | Test Cases | search/filter; open a case to **Edit**, **Request Change**, **Delete**, or **+ Add Test Case** |
 | Reviews | every change request by state; a proposal's diff, validation, impact and the actions |
 | Bugs | bug reports: Accept, Reject, Downgrade, Request Changes, Edit — the same decisions as `npm run qa:defects` |
@@ -177,8 +201,6 @@ Approving in the workspace calls the same `approvePhase1()` as `npm run qa:appro
 `--accept-findings` override is deliberately **not** available in the browser — overriding a
 semantic finding stays a terminal action.
 
-### Approval
-
 ### Defects
 
 The Defect Analyzer reads the evidence earlier stages recorded — it has no browser — and
@@ -209,6 +231,8 @@ Every change is re-validated against the evidence (an edit that invents a route,
 credential is refused and nothing is written), and makes an existing approval stale.
 Undecided reports do not block approval; the approval records each one's status and decision.
 
+### Approval
+
 `qa:approve` records the SHA-256 of all five Phase 1 artifacts and of every bug report. Change any of them — by hand
 or by re-running a stage — and the approval goes stale and Phase 2 refuses, naming the file.
 Regenerating a stage archives the old review and approval automatically. Structural problems
@@ -216,7 +240,7 @@ can never be approved; see [VALIDATION.md](VALIDATION.md).
 
 ## Outputs
 
-Everything lands in `QA_ARTIFACT_ROOT` (default `~/projects/qa-workspace/.qa/`):
+Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, outside this project):
 
 | File | Written by |
 |---|---|
@@ -227,7 +251,10 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `~/projects/qa-workspace/.qa/`):
 | `test-cases-review.json` | `qa:review` (advisory) |
 | `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` | the review workspace (workflow state; never approved or hashed) |
 | `phase1-approval.json` | `qa:approve` — host code only |
+| `discovery-surface.json` · `discovery-observations.json` | host, during discovery: the surface to account for, the completion-gate verdicts, the observation ledger |
+| `discovery-evidence.json` | host, after discovery: console and network facts per explored page |
 | `repo-analysis.json` | Phase 2 stage 1 |
+| `automation-project-contract.json` | host, derived from `repo-analysis.json` |
 | `phase1-run.json` · `phase2-run.json` | run logs: stages, attempts, timings |
 | `archive/<timestamp>/` | whatever a re-run replaced — nothing is deleted |
 
@@ -266,7 +293,9 @@ npm run check:playwright   # Chromium, deps, MCP server, tool allowlist
 npm run check:tools        # regression: the model really calls a local tool
 npm run check:mcp-tools    # regression: the model really calls a browser tool
 npm run probe:browser      # model-free: Flue → MCP → Chromium → page → validated artifact
-npm test                   # 118 tests
+npm test                   # all unit, integration and documentation checks
+npm run test:ui-e2e        # the workspace in a real browser over fixture artifacts
+npm run docs:architecture  # regenerate docs/architecture/README.md from its .mmd sources
 npm run validate <name> <file>    # validate a JSON file as an artifact, without writing
 npm run mcp:playwright[:headed]   # run the confined MCP server yourself
 npm run qa:agentic                # experimental model-driven path; no approval gate

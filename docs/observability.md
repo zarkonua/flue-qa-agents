@@ -1,7 +1,7 @@
 # Observability (Langfuse)
 
 Optional tracing of QA runs in [Langfuse](https://langfuse.com), so that runs on different
-models (local Ollama, OpenRouter, others later) can be compared by what actually happened:
+models (local Ollama or OpenRouter) can be compared by what actually happened:
 which stage narrowed the output, which call filled the context window, which one failed and why.
 
 Langfuse is the tracing backend and the dashboard. The `.qa/` artifacts remain the source of
@@ -91,20 +91,21 @@ The host passes each process the W3C `traceparent` of its stage, so the pieces j
 qa-manual                         chain       one run; input = target/plan, output = funnel
 ├── discovery                     chain       one per stage (the orchestrator's stage key)
 │   ├── invoke_agent product-discovery   agent   one per attempt (the agent process)
-│   │   ├── chat gpt-oss-20b-q5-49k      generation  one per model call
+│   │   ├── chat <model>                 generation  one per model call
 │   │   ├── execute_tool browser_click   tool
 │   │   └── …
 │   └── validate-artifact         event       the host's verdict on that attempt
 ├── analysis …
 ├── design …
-└── prioritization …
+├── prioritization …
+└── defects …
 ```
 
 `qa-automation` produces the same shape with its `repo-analyzer` stage. An agent started on its
 own (`qa:agentic`, `qa:review`, a diagnostic) is traced as its own trace, named after the agent.
 
 Trace tags are `qa`, the command, the provider and the model, e.g.
-`qa · qa-manual · ollama · gpt-oss-20b-q5-49k`. Trace metadata carries `runId`, `model`,
+`qa · qa-manual · ollama · <model>`. Trace metadata carries `runId`, `model`,
 `provider`, `flueVersion`, `gitCommit` and the run options.
 
 ## What each observation records
@@ -162,6 +163,7 @@ where a run narrowed. They are facts, not quality scores.
 | `analysis` | `inputBehaviourCount`, `behavioursAnalyzed`, `acceptancePointCount`, `ruleCount` (business rules), `requirementCount`, `openQuestionCount`, `validationTypes` |
 | `design` | `inputBehaviourCount`, `inputAcceptancePointCount`, `testCaseCount`, `scenarioTypes` (the schema's current vocabulary), `casesPerBehaviour`, `casesPerAcceptancePoint`, coverage |
 | `prioritization` | `caseCount`, `executionMode`, `automationPriority`, `automationStrategy` |
+| `defects` | `defects_confirmed`, `defects_potential`, `defects_not_a_defect`, `defects_insufficient_evidence`, `bug_reports_created` |
 | `repo-analyzer` | `layoutCount`, `conventionCount`, `keyFileCount`, `riskCount`, `unknownCount` |
 
 The run's output repeats the funnel — `discovery.behaviourCount`,
@@ -192,6 +194,9 @@ glance.
 | `src/observability/content-policy.ts` | What content may leave, and redaction |
 | `src/observability/qa-metrics.ts` | QA counts from artifacts |
 | `src/observability/signals.ts` | Context pressure, error classification |
+| `src/observability/propagation.ts` | W3C `traceparent` hand-off from the host to each agent process |
+| `src/observability/workflow-events.ts` | One short trace per bug decision or edit |
+| `src/observability/ollama-probe.ts` | The running Ollama model's facts from `/api/ps` |
 
 Built on Langfuse's OpenTelemetry SDK (`@langfuse/otel`, `@langfuse/tracing`) and Flue's own
 GenAI adapter (`@flue/opentelemetry`). Nothing Langfuse-specific reaches QA domain code; the

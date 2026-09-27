@@ -18,7 +18,7 @@ playwright/.cache/
 .playwright-mcp/
 
 # Authenticated browser state holds real cookies and tokens. Never commit it,
-# and use test accounts only. See the Credentials section of the README.
+# and use test accounts only. See "Sign-in and helper origins" in docs/RUNBOOK.md.
 storage-state*.json
 *.storagestate.json
 .auth/

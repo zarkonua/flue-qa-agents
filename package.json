@@ -1,12 +1,13 @@
 {
   "name": "flue-qa-agents",
   "version": "1.0.0",
-  "description": "Local, Ollama-backed multi-agent QA workflow built on Flue.",
+  "description": "Local-first, artifact-driven multi-agent QA workflow built on Flue.",
   "scripts": {
     "check:mcp-tools": "flue run src/diagnostics/mcp-tool-check.ts --new --id check-mcp-tools -m \"Navigate to https://demo.playwright.dev/todomvc and report the page title you actually received.\"",
     "check:ollama": "node scripts/check-ollama.mjs",
     "check:playwright": "node scripts/check-playwright.mjs",
     "check:tools": "flue run src/diagnostics/local-tool-check.ts --new --id check-tools -m \"What is the magic number? You must call get_magic_number before answering.\"",
+    "docs:architecture": "node scripts/build-architecture-docs.mjs",
     "mcp:playwright": "node scripts/mcp-server.mjs",
     "mcp:playwright:headed": "node scripts/mcp-server.mjs --headed",
     "probe:browser": "node scripts/probe-browser.mjs",

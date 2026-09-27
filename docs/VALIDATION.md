@@ -34,6 +34,7 @@ the agent receives the grouped errors as the tool result and retries. No human i
 | `requirements-analysis` | `discovered-behavior` |
 | `test-cases` | `requirements-analysis` + `discovered-behavior`, and re-checks that the requirements are still consistent with the current discovery |
 | `automation-prioritization` | `test-cases`; hard facts against discovery and requirements |
+| `defect-analysis` (and every `bugs/BUG-NNN.json`) | `discovered-behavior`, `requirements-analysis`, `test-cases` — see [Defects](#defects-expected-must-be-supported-actual-must-be-observed) |
 | `test-cases-review` | `test-cases` and `automation-prioritization` |
 | `repo-analysis` | the target repository **on disk** |
 
@@ -43,11 +44,11 @@ make a failed attempt look successful.
 
 ## Discovery: the surface must be accounted for
 
-Product Discovery used to decide for itself when it had seen enough — its prompt said two or
-three observed states was a complete artifact. Nothing downstream can recover from that: the
-Behavior Analyst and Test Designer can only work with what was observed.
+Product Discovery does not decide for itself when it has seen enough: nothing downstream can
+recover from a thin discovery, because the Behavior Analyst and Test Designer can only work with
+what was observed.
 
-Host code now establishes the surface before the agent runs. The preflight snapshot of the
+Host code establishes the surface before the agent runs. The preflight snapshot of the
 entry page is parsed for the `/url:` entries Playwright emits for links; same-origin links are
 normalised, deduplicated and capped, and obviously session-ending or destructive ones are
 pre-marked `SKIPPED_WITH_REASON`. The result is written to `discovery-surface.json` for the current run.
@@ -263,7 +264,7 @@ the host. The analyzer's schema has no `priority` field; a bug report whose prio
 
 **Files.** `bugs/<id>.json`, where the id must match `^BUG-[0-9]{3,}$` before it becomes a file
 name. A write validates every report before touching any file, and removes reports the new
-analysis no longer produces. Everything persisted passes the redaction layer, which now also
+analysis no longer produces. Everything persisted passes the redaction layer, which also
 replaces opaque path segments inside URLs quoted in prose.
 
 What this cannot do: judge whether a contradiction is *real*. Word overlap proves the expected
@@ -289,6 +290,57 @@ shown and again when a person applies it, `src/review/test-case-changes.ts` reco
 The proposal file itself is schema-checked when read; a hand-edited file is refused or
 re-validated like any other. The write is `replaceTestCases`: redaction, schema, semantic
 validation, then an atomic replace.
+
+## Write boundaries: who may write what
+
+Enforced by input schemas and fixed roots, before any code that could write runs:
+
+- **One artifact per agent.** `write_qa_artifact` is built per agent from a picklist
+  (`writeQaArtifactToolFor`); any other name is rejected at the tool's input schema. Host-only
+  files — `discovery-evidence`, `phase1-approval.json`, `automation-project-contract`, review
+  workflow state — are in no agent's picklist.
+- **No paths from a model.** Every root (`QA_ARTIFACT_ROOT`, `QA_TARGET_REPO_ROOT`,
+  `QA_MCP_OUTPUT_ROOT`, test write/result roots) comes from host configuration, must be absolute
+  and outside this project, and is checked at load time (`src/lib/trusted-roots.ts`). Repo tools
+  accept repo-relative paths only and refuse `..` escapes and symlinks out.
+- **The focused review agent** has two tools: read its one host-assigned request, submit a
+  proposal for it. It holds no artifact write tool.
+- **Freshness.** A stage passes only on an artifact written during that attempt; an artifact
+  left by an earlier run cannot make a failed attempt look successful.
+
+## Approval: bound to content, human-only
+
+`approvePhase1()` (`src/lib/phase1-gate.ts`), behind both `npm run qa:approve` and the
+workspace's button:
+
+- records the SHA-256 of the exact bytes of the five Phase 1 artifacts and of every bug report
+  — any later change, even whitespace, makes the approval stale and Phase 2 refuses, naming the
+  file;
+- re-runs schema and semantic validation first: structural codes (listed under
+  [Phase 1 codes](#phase-1-codes)) can never be approved; other findings need
+  `--accept-findings`, which only the terminal offers, and are recorded in the approval;
+- excludes the advisory `test-cases-review.json`;
+- is unreachable from agents: no tool can name the approval file.
+
+Derived artifacts carry their own freshness: `phase1-dependencies.json` records the input hashes
+prioritization and defect analysis were generated from, so a changed test case marks them STALE
+with the specific reason.
+
+## Workspace API: fixed operations only
+
+`src/ui-server/server.ts` exposes fixed resources and operations. Every mutation takes a small
+JSON body checked against a strict schema; ids are pattern-checked before use; no request can
+name a path, file, artifact, command, script or agent (tested in `test/ui-server.test.ts`). A
+non-GET request whose `Origin` does not match the host is refused — enforced in code, not yet
+covered by a test. Errors never return a stack or a path.
+
+## Redaction
+
+`src/lib/redaction.ts` normalises locations and removes secrets before anything is persisted:
+query values and opaque path segments that look like one-time codes or tokens are replaced, in
+URLs and in prose. Traces pass through `src/observability/content-policy.ts`, which also masks
+the configured API keys and key-shaped strings. Location identity ignores query values, so one
+flow reached twice is one location.
 
 ## Phase 1 codes
 
@@ -368,7 +420,7 @@ useful**. Known gaps, all of which pass today:
 - **A closed feature vocabulary.** An invented feature outside the fixed list passes.
 - **Prose is never fact-checked** — `purpose`, `rule`, `risks`, `unknowns`, and prioritization
   reasons are judgements, and checking them would reject reasonable wording.
-- **Discovery depth behind a control the agent never uses.** The surface now grows from every
+- **Discovery depth behind a control the agent never uses.** The surface grows from every
   page the browser actually reaches, so signing in enlarges the job rather than completing it.
   What it cannot do is force the first step: a state reachable only by pressing a button the
   agent never presses is never rendered, never seen by the host, and so never joins the list.
@@ -395,5 +447,5 @@ The natural next step for the first four is a constrained model-based check — 
 for coverage and has deliberately not been added.
 
 ```bash
-npm test     # 118 tests; the validators and both gates are covered directly
+npm test     # the validators, both gates, the workspace and the review workflow are covered directly
 ```

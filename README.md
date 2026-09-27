@@ -1,211 +1,325 @@
 # Flue QA Agents
 
-A local-first, multi-agent QA workflow built on [Flue](https://flueframework.com/). It explores
-a running web application in a real browser, records only what it observed, and turns that
-evidence into requirements, a manual test suite, automation priorities and bug reports. A
-person reviews and changes the result in a local workspace and approves it before any
-automation work starts.
+A local-first, artifact-driven, multi-agent QA workflow built on
+[Flue](https://flueframework.com/).
 
-Everything is artifact-driven: each stage hands off through a JSON file that is checked
-against its schema and against the evidence it claims before it is written. Models run
-locally through [Ollama](https://ollama.com/) by default, or through OpenRouter.
+## What it is
+
+Flue QA Agents points a set of narrowly-scoped AI agents at a running web application. They
+explore it in a real browser, record only what they observed, and turn that evidence into
+requirements, a manual test suite, automation priorities and bug reports. A person reviews and
+changes the result in a local workspace, and must explicitly approve it before any automation
+work (Phase 2) may start.
+
+Every hand-off is a JSON artifact on disk. Host code — not a model — decides which stage runs
+next, and checks each artifact against its JSON Schema and against the upstream evidence
+before it is written.
+
+## Core capabilities
+
+- **Product Discovery** — explores the target through Playwright MCP; the host tracks the
+  reachable surface and refuses to let discovery finish while it has evidence that
+  exploration is incomplete.
+- **Behavior analysis** — acceptance points and business rules, each citing observed behaviors.
+- **Test case generation** — a risk-based manual suite that covers every testable requirement.
+- **Automation prioritization** — AUTOMATION / MANUAL, priority and strategy for every case.
+- **Defect analysis** — evidence-grounded findings and one bug report per defect.
+- **Deterministic validation** — schema (Ajv, Draft 2020-12) and semantic checks: evidence
+  ids resolve, no invented routes, messages, features or credentials.
+- **QA Review Workspace** — a local React UI for test cases, change requests and proposals,
+  bugs, dependency freshness and Phase 1 approval.
+- **Hash-based human approval** — Phase 2 refuses to start unless a person approved the exact
+  Phase 1 content on disk.
+- **Phase 2 Repo Analyzer** — reads the target automation repository and records how tests are
+  written there.
+- **Models** — local Ollama or OpenRouter, selected by one setting.
+- **Observability** — optional Langfuse tracing, off by default.
+
+## Architecture overview
 
 ```text
-PHASE 1 — Manual QA design              npm run qa:manual
-    ↓
-QA REVIEW WORKSPACE (you)               npm run qa:ui
-    ↓
-HUMAN APPROVAL GATE                     npm run qa:approve   (or in the workspace)
-    ↓
-PHASE 2 — Automation engineering        npm run qa:automation
+Target application ──► PHASE 1 agents (host-sequenced) ──► canonical QA artifacts (.qa/)
+                                                              │
+                         QA Review Workspace  ◄───────────────┘
+                         (you: change requests, proposals, bug decisions)
+                                                              │
+                         Phase 1 approval (hash-locked, human-only)
+                                                              │
+                         PHASE 2 ──► entry gate ──► Repo Analyzer ──► STOP
 ```
+
+Diagrams (Mermaid) for the system, Phase 1, discovery, the review workspace, trust boundaries
+and Phase 2 live in **[docs/architecture/](docs/architecture/README.md)**.
 
 ## Quick start
 
+Requires Node ≥ 22.19, the application under test running, and either a local Ollama or an
+OpenRouter key.
+
 ```bash
 npm install
-cp .env.example .env      # set TARGET_URL; QA_TARGET_REPO_ROOT for Phase 2; a model
+cp .env.example .env      # set TARGET_URL, and QA_MODEL (+ OPENROUTER_API_KEY for OpenRouter)
 
-npm run qa:manual         # Phase 1: five agents in fixed order, then STOP
-npm run qa:ui             # review workspace at http://127.0.0.1:4445
+npm run check:playwright  # Chromium and the MCP server are usable
+npm run qa:manual         # Phase 1: five stages in fixed order, then STOP
+npm run qa:ui             # QA Review Workspace at http://127.0.0.1:4445
 npm run qa:approve        # approve Phase 1 (the workspace has the same button)
-npm run qa:automation     # Phase 2: entry gate, then Repo Analyzer, then STOP
+npm run qa:automation     # Phase 2: entry gate, Repo Analyzer, then STOP (needs QA_TARGET_REPO_ROOT)
 ```
 
-Optional: `npm run qa:review` (suite-wide AI review), `npm run qa:defects` (bug decisions from the
-command line, the same as the workspace's), `npm run qa:refresh` (re-derive prioritization and
-defect analysis after the suite changed). Full operator guide: **[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
+`npm run qa` is an alias of `qa:manual`. Resuming, retries, exit codes and every setting are in
+the **[runbook](docs/RUNBOOK.md)**.
 
 ## Phase 1 pipeline
 
-Host code fixes the order; no model decides what runs next. Each agent runs as its own
-process with only its own tools.
+The stage list is a closed allowlist in `scripts/lib/phase1-stages.mjs`. Each agent runs in its
+own process with only its own tools; a stage passes only if its artifact was written during
+that attempt and re-validates from disk.
 
-| # | Stage | Writes |
-|---|---|---|
-| 1 | Product Discovery — browses the target through Playwright MCP | `discovered-behavior.json` |
-| 2 | Behavior Analyst — acceptance points and business rules, each citing behaviors | `requirements-analysis.json` |
-| 3 | Test Designer — risk-based manual test cases covering every testable requirement | `test-cases.json` |
-| 4 | Automation Prioritizer — AUTOMATION/MANUAL, priority and strategy per case | `automation-prioritization.json` |
-| 5 | Defect Analyzer — observed behavior that contradicts supported expectations | `defect-analysis.json`, `bugs/BUG-NNN.json` |
+| # | Stage | Agent | Writes |
+|---|---|---|---|
+| 1 | `discovery` | Product Discovery | `discovered-behavior.json` (plus host-written `discovery-evidence.json`) |
+| 2 | `analysis` | Behavior Analyst | `requirements-analysis.json` |
+| 3 | `design` | Test Designer | `test-cases.json` |
+| 4 | `prioritization` | Automation Prioritizer | `automation-prioritization.json` |
+| 5 | `defects` | Defect Analyzer | `defect-analysis.json`, `bugs/BUG-NNN.json` |
 
-A defect is **CONFIRMED** only when an observed behavior contradicts an expectation stated by a
-requirement that rests on a *different* observed, or explicitly given, behavior. An expectation
-that is only inferred makes it **POTENTIAL** at most. Finding no defect is a valid result;
-defects never block approval.
-
-## Human in the loop
-
-Four different things, deliberately kept apart:
-
-| | What it is | Changes the suite? |
-|---|---|---|
-| `npm run qa:review` | A suite-wide, advisory AI review. Writes `test-cases-review.json`. | Never |
-| Change requests (workspace) | You edit, comment on, add or delete a case; the QA agent answers with a **proposal**. | Only when you click Apply |
-| Bug decisions (workspace or `qa:defects`) | Accept, reject, downgrade, request changes or edit a bug report. | No — it changes the report, and makes the approval stale |
-| Phase 1 approval | Your approval of the exact artifacts on disk, hash-locked. | No — it gates Phase 2 |
-
-```text
-you: edit / comment / add / delete
-  → request (stored)
-  → QA agent PROPOSES complete resulting case(s)      (no write access to the suite)
-  → host VALIDATES: schema, evidence, stale check
-  → you see CURRENT vs PROPOSED, impact, problems
-  → you APPLY, REJECT or REQUEST CHANGES
-  → host WRITES test-cases.json atomically
-  → prioritization, defect analysis and the Phase 1 approval become STALE
-  → you REFRESH dependent analysis (Automation Prioritizer, then Defect Analyzer)
-  → you APPROVE Phase 1 again — a refresh never does
-```
+Then the run stops. Review, refresh and approval are separate, human-started steps.
 
 ## QA Review Workspace
 
-`npm run qa:ui` builds the UI when its sources changed and serves it with the host API on
-`127.0.0.1:4445` (`QA_UI_PORT`). React + TypeScript + Vite; `npm run qa:ui:dev` adds hot reload.
+`npm run qa:ui` builds the UI when its sources changed and serves it together with the host API
+on `127.0.0.1:4445` (loopback by default, no login). It is React + TypeScript + Vite;
+`npm run qa:ui:dev` adds hot reload.
 
-- **Overview** — counts, requirement coverage with the cases covering each requirement,
-  Phase 1 health (test cases, prioritization, defect analysis, AI review, approval — each CURRENT
-  or STALE with the reason, e.g. "NC-12 was modified"), **Refresh dependent analysis**, and
-  Phase 1 approval.
-- **Test Cases** — search and filter by priority, type, strategy and pending changes. Each
-  case shows what it covers, the behaviors it cites, its automation decision, related bugs and
-  its review history. **Edit** (the id is fixed), **Request Change** (free text), **Delete**,
-  and **+ Add Test Case** (describe it in a sentence).
-- **Reviews** — every change request by state: proposal ready, processing, pending, failed,
-  applied, rejected. A proposal shows a field-level diff (steps as added / removed / changed),
-  the host's validation, coverage impact, possible duplicates and unresolved issues. **Apply**
-  is disabled unless the host says the proposal is valid and was made from the current suite.
-- **Bugs** — the bug reports with their evidence, test-case links (only where a report names the
-  case) and review history. **Accept**, **Reject**, **Downgrade** (CONFIRMED → POTENTIAL),
-  **Request Changes** (a note; the report's content is untouched) and **Edit** (title, severity,
-  priority, steps — previewed as a diff and re-validated against the evidence before Apply).
+- **Overview** — counts, requirement coverage, and Phase 1 health: each derived artifact is
+  CURRENT or STALE with the reason (e.g. "TC-012 was modified"). **Refresh dependent
+  analysis** and **Approve Phase 1** live here.
+- **Test Cases** — search and filter; each case shows what it covers, the behaviors it cites,
+  its automation decision, related bugs and review history. **Edit**, **Request Change**
+  (free text), **Delete**, and **+ Add Test Case** (one sentence).
+- **Reviews** — every change request by state (pending, processing, proposal ready, changes
+  requested, failed, applied, rejected). A proposal shows CURRENT vs PROPOSED field by field,
+  the host's validation, coverage impact, possible duplicates and unresolved issues, with
+  **Apply**, **Reject** and **Request Changes**.
+- **Bugs** — the bug reports with their evidence, related test cases and review history, with
+  the decisions described under [Bugs](#bugs).
 
-The QA agent follows the evidence, not the request: asked for an outcome nothing observed, it
-leaves it out and records an unresolved issue instead of writing it down as expected behavior.
+## Human-in-the-loop approval model
 
-## Models
+Five different things, deliberately kept apart:
 
-One setting, in Flue's `provider/model` form:
+| | Who | Changes canonical artifacts? |
+|---|---|---|
+| **AI generation** (`qa:manual`, `qa:refresh`) | agents, host-sequenced | Yes — each stage writes its own artifact |
+| **AI suite review** (`qa:review`) | Test Case Reviewer | No — advisory `test-cases-review.json` only |
+| **Test-case proposal** (workspace) | focused review agent, or the host for a deletion | No — a proposal is workflow state |
+| **Applying a proposal** (workspace) | you | Yes — the host rewrites `test-cases.json` |
+| **Phase 1 approval** (`qa:approve` or workspace) | you | No — it records hashes and gates Phase 2 |
 
-```dotenv
-QA_MODEL=ollama/qwen3:14b                              # default — local, no key
-QA_MODEL=openrouter/deepseek/deepseek-v4-flash-0731    # needs OPENROUTER_API_KEY
+```text
+AI produces the Phase 1 artifacts
+  → you review them in the workspace
+  → you edit / comment on / add / delete a test case          (a change request)
+  → the review agent PROPOSES the complete resulting case(s)  (it cannot write the suite)
+  → the host VALIDATES: schema, evidence, base-suite hash
+  → you APPLY, REJECT or REQUEST CHANGES
+  → the host writes test-cases.json atomically
+  → prioritization, defect analysis and the Phase 1 approval become STALE
+  → you REFRESH dependent analysis (Automation Prioritizer, then Defect Analyzer)
+  → you APPROVE Phase 1 again — nothing restores an approval for you
 ```
 
-Ollama context and output limits are configurable (`OLLAMA_CONTEXT_WINDOW`,
-`OLLAMA_MAX_OUTPUT_TOKENS`); see the runbook.
+- `npm run qa:review` is **advisory**: it never changes the suite and is never approval.
+- **Applying a proposal is not Phase 1 approval.** It changes the suite and makes any existing
+  approval stale.
+- **Phase 1 approval is the final, explicit human gate.** It records the SHA-256 of the five
+  Phase 1 artifacts and of every bug report; changing any of them afterwards makes it stale,
+  and Phase 2 refuses to start.
 
-## Sign-in and test infrastructure
+## Bugs
 
-Discovery starts signed out and handles sign-up and sign-in itself. When a flow needs test
-infrastructure on another origin — a MailHog inbox holding the confirmation mail, typically —
-allow it with `QA_DISCOVERY_AUX_ORIGINS=http://localhost:8025`. Without it, discovery records the
-sign-in flow BLOCKED and never reaches the product behind it, and the suite is correspondingly
-small.
+Bug reports are produced by the **Defect Analyzer** (Phase 1 stage 5), which reads the recorded
+evidence — it has no browser. A finding is `CONFIRMED_DEFECT` only when an observed behavior
+contradicts a requirement resting on *different* observed or confirmed evidence; an inferred
+expectation makes it `POTENTIAL_DEFECT` at most. Finding nothing is a valid result.
+
+Each defect becomes `bugs/BUG-NNN.json` with `status` (CONFIRMED / POTENTIAL), `title`,
+`severity`, `priority` (`UNASSIGNED` until a person sets it), `steps`, `expected`, `actual`,
+the host-derived `expectedBasis`, `evidence`, `environment`, and explicit trace links:
+`sourceBehaviorIds`, `sourceAcceptancePointIds`, `sourceBusinessRuleIds` and
+`sourceTestCaseIds`. The workspace links a bug to a test case only through
+`sourceTestCaseIds`.
+
+Bugs are **reviewable, not only readable**: in the workspace or with `npm run qa:defects` you can
+**Accept**, **Reject**, **Downgrade** (CONFIRMED → POTENTIAL), **Request Changes** (a note) or
+**Edit** title, severity, priority and steps. An edit is re-validated against the evidence
+before it is saved. Each action is made against the report's current hash, so a concurrent
+change conflicts instead of being overwritten. Every decision is recorded in `reviews/bugs/BUG-NNN.json` and makes an
+existing Phase 1 approval stale. Undecided bugs do not block approval.
+
+When defect analysis is refreshed, the host carries a decision over only to a regenerated report
+that is materially the same defect; the rest start again as PENDING.
+
+## Phase 2
+
+`npm run qa:automation` runs an **entry gate** (Phase 1 complete, valid, approved and unchanged
+since approval, with at least one AUTOMATION case), then **Repo Analyzer**, which reads
+`QA_TARGET_REPO_ROOT` read-only and writes `repo-analysis.json`. The host then derives
+`automation-project-contract.json` from it, and stops.
+
+That is all Phase 2 does today. `src/agents/ui-explorer.ts` and
+`src/agents/automation-generator.ts` exist but are wired to no command, and the Phase 2
+allowlist refuses to start them.
+
+## Models and providers
+
+One setting, in Flue's `<provider>/<model>` form; every agent uses it.
+
+```dotenv
+QA_MODEL=ollama/<model>          # local Ollama; OLLAMA_BASE_URL, OLLAMA_CONTEXT_WINDOW, OLLAMA_MAX_OUTPUT_TOKENS
+QA_MODEL=openrouter/<vendor>/<model>
+OPENROUTER_API_KEY=...           # required for openrouter/*; read host-side only
+```
+
+Any other provider prefix is refused at startup. When `QA_MODEL` is unset the code falls back
+to a local Ollama default; see `.env.example`. `npm run check:tools` confirms the selected model
+really makes tool calls, and `npm run check:ollama` checks a local Ollama.
+
+## Sign-in and helper origins
+
+There is **no authentication bootstrap**: no session injection, stored browser state or
+pre-supplied credentials. Discovery signs up or signs in through the product's own UI, and the
+Discovery Completion Gate holds it to resolving that flow. A browser the run starts is signed
+out; an already-running MCP server keeps its sign-in, so use `npm run qa:manual -- --fresh-browser`
+when a clean start matters.
+
+When a flow needs test infrastructure on another origin — typically a mailbox such as MailHog
+holding a confirmation mail — allow it explicitly:
+
+```dotenv
+QA_DISCOVERY_AUX_ORIGINS=http://localhost:8025
+```
+
+Only the host can grant an origin; the model is told what is listed and cannot add to it.
+Helper origins are never described as product areas. Without the setting, discovery records the
+flow BLOCKED and the suite covers only what it could reach. Details:
+[RUNBOOK — Sign-in](docs/RUNBOOK.md#sign-in-and-helper-origins).
 
 ## Observability
 
-Optional Langfuse tracing: one trace per QA run and per workspace review, with stages, agent
-turns, tool calls, token usage and QA metrics. Off unless `LANGFUSE_ENABLED=true`; prompts and
-tool I/O are sent only with `LANGFUSE_CAPTURE_IO=true`, and are redacted even then. See
+Optional [Langfuse](https://langfuse.com) tracing, **off unless `LANGFUSE_ENABLED=true`**. One
+trace per QA run, refresh, workspace review and bug decision, with stages, agent turns, tool
+calls, token usage, context pressure and QA metrics. Works with Langfuse Cloud or a self-hosted
+instance (`LANGFUSE_BASE_URL`). Prompts and tool I/O are sent only with
+`LANGFUSE_CAPTURE_IO=true`, and are redacted even then. See
 **[docs/observability.md](docs/observability.md)**.
-
-## Trust boundaries
-
-Enforced in code, not asked for in prompts:
-
-| Invariant | Enforced by |
-|---|---|
-| Agents have no shell, filesystem API or path argument; each gets narrow tools over roots outside this project | `src/tools/`, `src/lib/trusted-roots.ts` |
-| Each agent can write only its own artifact | the write tool's input schema (`writeQaArtifactToolFor`) |
-| Every artifact matches its JSON Schema (Ajv, Draft 2020-12) and is supported by upstream evidence — ids resolve, no invented routes, messages, features or credentials | `src/lib/schema-validation.ts`, `src/lib/semantic-validate.ts`, `src/lib/defects.ts` |
-| Discovery cannot finalize with unverified actions, unexplored reachable areas or unsupported BLOCKED claims | `src/lib/discovery-completion.ts` |
-| The review agent can read its own request and submit a proposal — nothing else | `src/tools/review-proposals.ts` |
-| A proposal applies only to the exact suite it was made from, re-validated at apply, written atomically | `src/review/test-case-changes.ts` |
-| The workspace API accepts only small, strictly-typed JSON; ids are pattern-checked; no path, file name, command or agent name is ever accepted | `src/ui-server/server.ts` |
-| Phase 2 starts only from approved, unchanged content; approval is a person's act | `src/lib/phase1-gate.ts`, SHA-256 of every Phase 1 artifact and bug report |
-| Secrets and one-time values never reach an artifact or a trace | `src/lib/redaction.ts`, `src/observability/content-policy.ts` |
-
-What validation does and does not guarantee: **[docs/VALIDATION.md](docs/VALIDATION.md)**.
 
 ## Artifacts
 
-Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, outside this project):
+Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, which must be outside
+this project).
 
-| | |
+| Kind | Files |
 |---|---|
-| **Canonical QA results** | `discovered-behavior.json` · `requirements-analysis.json` · `test-cases.json` · `automation-prioritization.json` · `defect-analysis.json` · `bugs/BUG-NNN.json` |
+| **Canonical QA artifacts** — what approval locks | `discovered-behavior.json` · `requirements-analysis.json` · `test-cases.json` · `automation-prioritization.json` · `defect-analysis.json` · `bugs/BUG-NNN.json` |
+| Approval | `phase1-approval.json` — written by host code only |
 | Advisory | `test-cases-review.json` |
-| Approval | `phase1-approval.json` — host code only |
-| **Review workflow state** | `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` |
-| Run records | `phase1-run.json`, `runs/<id>/`, `archive/<timestamp>/` |
-| Phase 2 | `repo-analysis.json`, `automation-project-contract.json` |
+| Host-written discovery evidence | `discovery-surface.json` · `discovery-observations.json` · `discovery-evidence.json` |
+| **Review workflow state** — never hashed or approved | `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` · `reviews/bugs/BUG-NNN.json` |
+| Freshness | `phase1-dependencies.json` · `phase1-refresh.json` |
+| Phase 2 | `repo-analysis.json` · `automation-project-contract.json` |
+| Run records | `phase1-run.json` · `phase2-run.json` · `runs/<id>/` · `archive/<timestamp>/` |
 
-Canonical artifacts hold QA results and are what approval locks. Review workflow state lives
-behind a `ReviewStore` interface (`src/review/review-store.ts`); the file-backed store is the
-only implementation today.
+Canonical artifacts are plain files. Review workflow state goes through the `ReviewStore`
+interface (`src/review/review-store.ts`), whose only implementation is file-backed.
+
+## Trust boundaries
+
+Enforced in code, not requested in prompts ([VALIDATION.md](docs/VALIDATION.md) has the details and
+the tests behind them):
+
+- **Narrow tools.** Agents get no shell, filesystem API or path argument; each has only the
+  tools it needs, over roots outside this project (`src/tools/`, `src/lib/trusted-roots.ts`).
+- **Own artifact only.** An agent that writes an artifact can name exactly one — its own.
+- **Schema, then semantics.** Every write is validated against its JSON Schema and against
+  host-loaded upstream evidence; evidence ids must resolve. A rejected write changes nothing.
+- **Discovery must be finished.** Discovery cannot finalize while host-recorded browser
+  evidence shows unverified actions, unexplored reachable areas or unsupported BLOCKED claims.
+- **Review agents propose, the host applies.** The focused review agent can read its one
+  request and submit a proposal — nothing else. Only a person's Apply changes the suite.
+- **No stale overwrite.** A proposal carries the hash of the suite it was made from; apply
+  re-validates it and refuses if the suite changed since.
+- **Approval is hash-locked and human-only.** No agent can read or write the approval.
+- **The UI names no paths or commands.** The workspace API accepts small, strictly-typed JSON
+  with pattern-checked ids and refuses cross-origin writes.
+- **Secrets stay out.** One-time values in URLs and known keys are redacted before anything is
+  written or traced, and an artifact carrying a real credential value is rejected.
+
+What validation does and does not guarantee: **[docs/VALIDATION.md](docs/VALIDATION.md)**.
 
 ## Project structure
 
 ```text
-scripts/        host orchestration: qa-manual · qa-ui · qa-review · qa-approve · qa-defects · qa-automation · lib/
+scripts/          host orchestration: qa-manual · qa-ui · qa-review · qa-refresh · qa-defects · qa-approve · qa-automation
+  lib/            stage lists, retries, run lock, refresh, MCP lifecycle
 src/
-  agents/       Phase 1 stages · focused test-case reviewer · suite reviewer · Repo Analyzer · QA Manager (experimental) · 2 unwired
-  tools/        narrow agent tools: QA artifacts · review proposals · observations · repo (read-only) · test code
-  review/       ReviewStore, change requests, proposals, host-side apply
-  ui-server/    the workspace's host API
-  lib/          schema + semantic validation · discovery surface and completion gate · defects · phase-1 gate · redaction
-  config/       .env loading · auxiliary origins
-  connections/  Playwright MCP, with a per-role tool allowlist
-  providers/    Ollama · OpenRouter
-  observability/ optional Langfuse
-  skills/       custom and vendored QA skills
-ui/             the workspace UI (React, TypeScript, Vite)
-schemas/        JSON Schemas for every artifact and review record
-test/           node:test suites        e2e/   Playwright tests of the workspace
-docs/           RUNBOOK · VALIDATION · observability · architecture/
+  agents/         Phase 1 stages · review agents · Repo Analyzer · QA Manager (experimental) · unwired Phase 2 agents
+  tools/          narrow agent tools
+  lib/            schema + semantic validation · discovery surface and completion gate · defects · Phase 1 gate · redaction
+  review/         ReviewStore, change requests, proposals, host-side apply
+  ui-server/      the workspace's host API
+  config/         .env loading · helper origins
+  connections/    Playwright MCP, with a per-role tool allowlist
+  providers/      Ollama · OpenRouter
+  observability/  optional Langfuse
+  skills/         project and vendored QA skills
+  diagnostics/    tool-calling probes used by check:* scripts
+ui/               the workspace UI (React, TypeScript, Vite)
+schemas/          JSON Schemas for every artifact and review record
+test/             node:test suites
+e2e/              Playwright tests of the workspace over fixture artifacts
+docs/             runbook · validation · observability · architecture
 ```
+
+## Testing / validation
 
 ```bash
-npm test               # unit and integration tests
+npm test               # unit, integration and documentation checks
 npm run test:ui-e2e    # the workspace in a real browser, over fixture artifacts
 npm run typecheck:ui
+npm run validate <name> <file>   # validate a JSON file as an artifact, without writing it
 ```
 
-## Status and known limits
+`test/docs.test.ts` keeps these docs honest: every `npm run` script named in the docs must exist,
+local links must resolve, Mermaid sources must be well-formed, and the architecture diagrams
+must name the stages the code actually runs.
 
-Phase 1, the review workspace and the approval gate are in daily use against a local
-application. Phase 2 runs its entry gate and stage 1 (Repo Analyzer); UI Explorer and
-Automation Generator exist in `src/agents/` but are wired to no command. Test Runner and
-Failure Analyzer are not built.
+## Known limitations
 
-- An agent turn sometimes ends without its tool call; each stage retries (four attempts by
-  default), the review agent twice.
-- The suite is only as deep as discovery: a thin discovery run yields a small suite.
-- The review agent answers from recorded evidence; it does not browse to verify a new claim.
-  A request the evidence cannot support comes back unresolved.
-- After a test case changes, prioritization and defect analysis are STALE until refreshed; the
-  refresh is a model run and is started on purpose (Overview, or `npm run qa:refresh`), never
-  automatically after each edit. A regenerated defect analysis keeps a person's decision only on
-  bugs that are materially the same; the rest start again as PENDING.
-- Deterministic validation proves a claim is supported, not that it is right; see VALIDATION.md.
+- **Discovery depth bounds everything.** A thin discovery run yields a small suite, honestly
+  labelled as fully covered.
+- **No authenticated start.** Discovery signs in through the UI; a product whose accounts
+  cannot be created or confirmed that way (with helper origins) is explored signed out.
+- **The review agent does not browse.** It answers from recorded evidence; a request the
+  evidence cannot support comes back with unresolved issues and cannot be applied.
+- **Refresh is manual.** After a test case changes, prioritization and defect analysis stay
+  STALE until you refresh — deliberately, so several edits can share one model run.
+- **Agent turns sometimes end without a tool call.** Stages retry (four attempts by default).
+- **Validation proves support, not correctness** — see VALIDATION.md.
+- **Phase 2 stops after Repo Analyzer.**
+- **The workspace is single-user and local**: no login, bound to loopback by default; review
+  state is file-backed.
+
+Next directions (not built): wiring the remaining Phase 2 agents (UI Explorer, Automation
+Generator) and adding test execution and failure analysis.
+
+## Detailed documentation
+
+| | |
+|---|---|
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operating it: settings, commands, options, refresh, bugs, exit codes, troubleshooting |
+| [docs/VALIDATION.md](docs/VALIDATION.md) | What the deterministic checks guarantee, and what they do not |
+| [docs/observability.md](docs/observability.md) | Langfuse tracing: configuration, trace shape, metrics, content policy |
+| [docs/architecture/README.md](docs/architecture/README.md) | Architecture diagrams (Mermaid sources, rendered on GitHub) |
+| [docs/architecture/architecture-view.html](docs/architecture/architecture-view.html) | The same diagrams on one styled page, plus the agent capability matrix — open locally in a browser |

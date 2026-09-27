@@ -31,6 +31,10 @@ storage-state*.json
 # QA runtime artifacts. The configured root is the sibling ~/projects/qa-workspace/.qa,
 # outside this repo; this line guards against a misconfigured QA_ARTIFACT_ROOT.
 .qa/
+# The run-history database lives in QA_ARTIFACT_ROOT too; never commit a copy.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
 # Claude Code control plane — machine-local or externally installed, not source:
 #   settings.local.json          per-machine permissions (Claude Code convention)

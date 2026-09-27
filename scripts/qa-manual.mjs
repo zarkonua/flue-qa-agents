@@ -30,6 +30,7 @@ import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 import { STAGES } from './lib/phase1-stages.mjs';
 import { acquireRunLock } from './lib/run-lock.mjs';
 import { gitCommit, preserveRun } from './lib/run-record.mjs';
+import { startRunHistory } from './lib/history.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { summarize, coverageSummary, analysisCoverageSummary, strategySummary, scenarioDiversityDiagnostic } = await import(resolve(ROOT, 'src/lib/semantic-validate.ts'));
@@ -139,6 +140,12 @@ if (!lock.ok) {
   process.exit(EXIT.BAD_CONFIG);
 }
 
+// Registered now, while it is still RUNNING — a run that fails or is stopped
+// part-way stays in the history. Never fatal: see scripts/lib/history.mjs.
+const history = await startRunHistory({
+  kind: 'PHASE1_MANUAL', runId: stamp, model: envForLock.QA_MODEL, target, startedAt: runStarted, holdsRunLock: true,
+});
+
 function archive(path) {
   if (!existsSync(path)) return;
   mkdirSync(archiveDir, { recursive: true });
@@ -162,6 +169,16 @@ console.log(`Artifacts       : ${qa.QA_ARTIFACT_ROOT}`);
 console.log(`Stages          : ${plan.map((s) => s.label).join(' -> ')} -> STOP`);
 console.log(`Attempts/stage  : ${attempts}`);
 if (existsSync(archiveDir)) console.log(`Archived        : previous artifacts moved to ${archiveDir}`);
+
+/** The files a run's archive keeps — whichever of them exist when it ends. */
+function runFiles() {
+  return [
+    'discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json',
+    'automation-prioritization.json', 'discovery-surface.json', 'discovery-observations.json',
+    'discovery-evidence.json', 'phase1-run.json', 'defect-analysis.json',
+    ...qa.listBugReportIds().map((id) => `bugs/${id}.json`),
+  ];
+}
 
 /**
  * Which locations the evidence collector replays: the ones discovery reported
@@ -244,11 +261,13 @@ observability.startRun({
   input: { target: target ?? null, from, stages: plan.map((s) => s.key), attemptsPerStage: attempts },
   metadata: { from, attemptsPerStage: attempts, target: target ?? null, gitCommit: gitCommit(ROOT) ?? null },
 });
+history.setTraceId(observability.traceId?.());
 
 for (const stage of plan) {
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
   const stageTrace = observability.startStage(stage);
+  const stageHistory = history.stage(stage);
 
   // Give the discovery stage the surface the host just established.
   if (stage.withSurface) {
@@ -263,9 +282,14 @@ for (const stage of plan) {
     stamp,
     artifactProblem,
     qaArtifactPath: qa.qaArtifactPath,
-    onProgress: saveRecord,
+    onProgress: () => {
+      saveRecord();
+      stageHistory.attempts(entry.attempts.length);
+    },
     trace: stageTrace,
   });
+  if (passed) stageHistory.complete(entry.attempts.length);
+  else stageHistory.fail(entry.attempts.length, 'STAGE_FAILED', entry.attempts.at(-1)?.problem ?? `${stage.artifact}.json was not produced.`);
   // Record what a derived artifact was generated from, so staleness is exact later.
   if (passed && depLib.INPUTS[stage.artifact]) depLib.stampDependency(stage.artifact);
 
@@ -342,7 +366,18 @@ for (const stage of plan) {
     record.failedStage = stage.key;
     record.finishedAt = new Date().toISOString();
     saveRecord();
+    // A failed run is archived too — what it did produce, and its run record —
+    // so its history entry has something to show.
+    const failedArchive = preserveRun({
+      artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, model: env.QA_MODEL, target, startedAt: runStarted,
+      files: runFiles(), outcome: 'failed', extra: { failedStage: stage.key, auxiliaryOrigins: auxLib.auxiliaryOrigins() },
+    });
+    history.finish({
+      status: 'FAILED', errorCode: 'STAGE_FAILED', archiveDir: failedArchive.dir,
+      errorSummary: `${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`,
+    });
     console.error(`\nPhase 1 stopped: ${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`);
+    console.error(`Run preserved   : ${failedArchive.dir}`);
     console.error(`Earlier artifacts are kept. Resume from this stage with:\n  npm run qa:manual -- --from ${stage.key}\n`);
     await observability.endRun({ outcome: 'FAILED', failedStage: stage.key, output: () => runFunnel(qa.readQaArtifact) });
     process.exit(EXIT.FAILED);
@@ -475,16 +510,12 @@ const preserved = preserveRun({
   model: env.QA_MODEL,
   target,
   startedAt: runStarted,
-  files: [
-    'discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json',
-    'automation-prioritization.json', 'discovery-surface.json', 'discovery-observations.json',
-    'discovery-evidence.json', 'phase1-run.json', 'defect-analysis.json',
-    ...qa.listBugReportIds().map((id) => `bugs/${id}.json`),
-  ],
+  files: runFiles(),
   outcome: 'completed',
   extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins(), ...defects },
 });
 console.log(`Run preserved   : ${preserved.dir}`);
+history.finish({ status: 'COMPLETED', archiveDir: preserved.dir });
 
 console.log('\nNext:');
 console.log(`  jq . ${qa.qaArtifactPath('test-cases')}`);

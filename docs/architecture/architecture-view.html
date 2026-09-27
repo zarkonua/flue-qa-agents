@@ -171,6 +171,8 @@ flowchart TD
         canonical[(&quot;Canonical QA artifacts&lt;br/&gt;+ bug reports&quot;)]
         workflow[(&quot;Review workflow state&lt;br/&gt;requests · proposals · bug history&quot;)]
         approval[(&quot;phase1-approval.json&quot;)]
+        archives[(&quot;Run archives&lt;br/&gt;runs/ · one per run, immutable&quot;)]
+        history[(&quot;Run history index&lt;br/&gt;history.sqlite&quot;)]
     end
 
     subgraph workspace [&quot;QA Review Workspace · npm run qa:ui&quot;]
@@ -193,6 +195,9 @@ flowchart TD
     browser --&gt; target
     agents --&gt; browser
     agents --&gt;|validated writes| canonical
+    agents --&gt;|each run archived| archives
+    archives -.-&gt;|indexed: stages · metrics · hashes| history
+    api --&gt;|Runs · read-only| history
     human --&gt; ui
     ui --&gt; api
     api --&gt; canonical
@@ -212,7 +217,7 @@ flowchart TD
 
     class agents,reviewer,phase2 agent
     class api,ui host
-    class canonical,workflow,approval artifact
+    class canonical,workflow,approval,archives,history artifact
     class human person
     class gate gate
     class browser,ollama,openrouter runtime

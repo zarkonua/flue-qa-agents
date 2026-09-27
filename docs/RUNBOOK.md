@@ -257,6 +257,50 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, outside t
 | `automation-project-contract.json` | host, derived from `repo-analysis.json` |
 | `phase1-run.json` · `phase2-run.json` | run logs: stages, attempts, timings |
 | `archive/<timestamp>/` | whatever a re-run replaced — nothing is deleted |
+| `runs/<run-id>/` | every run's own output and `run-metadata.json`, completed or failed — immutable |
+| `history.sqlite` (+ `-wal`, `-shm`) | the run history index; see [Run history](#run-history) |
+
+## Run history
+
+Every QA command records its run in `history.sqlite` under the artifact root. The path is fixed —
+derived from `QA_ARTIFACT_ROOT`, never configurable from a request. Nothing to do in normal use:
+`npm run qa:manual` records, `npm run qa:ui` shows it under **Runs**.
+
+| Command | Run kind | Archived to `runs/<run-id>/` |
+|---|---|---|
+| `qa:manual` | `PHASE1_MANUAL` | the Phase 1 artifacts, bug reports, discovery records and `phase1-run.json` — also when a stage fails |
+| `qa:refresh` / workspace refresh | `DEPENDENCY_REFRESH` | test cases, prioritization, defect analysis, bug reports — when it completes (a failed refresh restores the old files, so it has no archive) |
+| `qa:review` | `PHASE1_REVIEW` | `test-cases-review.json` |
+| `qa:automation` | `PHASE2_AUTOMATION` | `repo-analysis.json`, `automation-project-contract.json`, `phase2-run.json` |
+
+**Lifecycle.** A run is inserted as RUNNING when it starts (after the run lock), each stage is
+recorded as it starts and ends with its attempts, and the run is closed COMPLETED or FAILED with
+its archive's metrics and artifact index in one transaction. Ctrl-C closes it INTERRUPTED. A run
+whose process was killed stays RUNNING until the history is next opened — by the next run, the
+workspace, or `qa:history:import` — which marks it INTERRUPTED once its process is gone (and, for
+a run that took the run lock, once the lock no longer names it).
+
+**When the history fails**, QA does not:
+
+| Problem | What happens |
+|---|---|
+| The database cannot be opened or migrated | `WARNING … run history is unavailable` at the start; the run continues and is archived; the Runs page answers with the reason |
+| A stage update cannot be written | `WARNING`; the run continues |
+| The final index cannot be written | the archive is kept; the run is closed with `HISTORY_INDEX_FAILED`; `qa:history:import` rebuilds it |
+
+```bash
+npm run qa:history:import   # import archives made before the history existed; idempotent, read-only on archives
+npm run qa:history:verify   # compare the index with the archives: missing, changed or unindexed files, stale RUNNING rows
+```
+
+Metrics are derived from the archive, and only when the archive supports them: a missing metric is
+shown as `—`, never as 0. Tool errors, parse errors and context usage are not recorded host-side —
+they are in Langfuse, whose trace id the run keeps when tracing is on.
+
+SQLite settings: WAL (the workspace reads while a run writes), foreign keys on, a 5 s busy timeout,
+`synchronous=NORMAL` (survives a crashed process; a power loss may drop the last commit, which
+`qa:history:import` restores from the archive). The schema version is SQLite's `user_version`; a
+database newer than the code is refused rather than guessed at.
 
 ## Exit codes
 
@@ -296,6 +340,7 @@ npm run probe:browser      # model-free: Flue → MCP → Chromium → page → 
 npm test                   # all unit, integration and documentation checks
 npm run test:ui-e2e        # the workspace in a real browser over fixture artifacts
 npm run docs:architecture  # regenerate docs/architecture/README.md from its .mmd sources
+npm run qa:history:verify  # run history index vs. the archives on disk
 npm run validate <name> <file>    # validate a JSON file as an artifact, without writing
 npm run mcp:playwright[:headed]   # run the confined MCP server yourself
 npm run qa:agentic                # experimental model-driven path; no approval gate

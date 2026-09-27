@@ -334,6 +334,20 @@ name a path, file, artifact, command, script or agent (tested in `test/ui-server
 non-GET request whose `Origin` does not match the host is refused — enforced in code, not yet
 covered by a test. Errors never return a stack or a path.
 
+## Run history: read-only, path-free, parameterised
+
+`src/ui-server/runs-api.ts` and `src/history/` (tested in `test/runs-api.test.ts` and
+`test/history.test.ts`):
+
+- The Runs API is GET-only. A historical snapshot has no decision, edit, apply or approve route.
+- An archived file is read from a run id (pattern-checked, and recorded) and an artifact type
+  (a closed list): the host builds the file name, requires it in that run's artifact index, and
+  resolves it with `resolveInsideRoot` (realpath). A stored `relative_path` is checked, never used.
+- Every SQL value is a bound parameter; filters are closed lists or bounded strings; unknown query
+  parameters are refused. Closed columns (run kind, status) also carry CHECK constraints.
+- Everything stored passes the same redaction as artifacts and traces: targets lose credentials,
+  query and fragment; error text keeps its first line only, with secrets and opaque ids removed.
+
 ## Redaction
 
 `src/lib/redaction.ts` normalises locations and removes secrets before anything is persisted:

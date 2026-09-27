@@ -104,6 +104,32 @@ export interface BugEditPreview {
 }
 type BugMutation = { bug: Bug; sha256: string; phase1: Phase1 };
 
+export type RunKind = 'PHASE1_MANUAL' | 'DEPENDENCY_REFRESH' | 'PHASE1_REVIEW' | 'PHASE2_AUTOMATION';
+export type RunStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'INTERRUPTED';
+export interface Run {
+  id: string; kind: RunKind; status: RunStatus; model: string | null; provider: string | null; target: string | null;
+  gitCommit: string | null; gitDirty: boolean | null; startedAt: string; finishedAt: string | null; durationMs: number | null;
+  authMode: string | null; archiveRelPath: string | null; errorCode: string | null; errorSummary: string | null;
+  currentStage: string | null; langfuseTraceId: string | null; source: 'LIVE' | 'IMPORTED';
+}
+export interface RunSummary extends Run { metrics: Record<string, number>; failedStage: string | null }
+export interface RunStage {
+  stageName: string; label: string | null; ordinal: number; status: RunStatus; startedAt: string | null; finishedAt: string | null;
+  durationMs: number | null; attemptCount: number; errorCode: string | null; errorSummary: string | null;
+}
+export interface RunFilters { status?: string; kind?: string; model?: string; provider?: string; target?: string; from?: string; to?: string }
+export interface RunList {
+  runs: RunSummary[]; total: number; limit: number; offset: number;
+  facets: { models: string[]; providers: string[]; kinds: RunKind[]; targets: string[] };
+  active: { id: string; kind: RunKind; model: string | null; currentStage: string | null; startedAt: string }[];
+}
+
+function runQuery(filters: RunFilters, limit: number, offset: number): string {
+  const q = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v);
+  return q.toString();
+}
+
 export const api = {
   overview: () => call<Overview>('GET', '/api/overview'),
   testCases: () => call<{ testCases: CaseRow[] }>('GET', '/api/test-cases'),
@@ -136,5 +162,11 @@ export const api = {
   bugEditPreview: (id: string, changes: BugChanges) => call<BugEditPreview>('POST', `/api/bugs/${enc(id)}/edit/preview`, { changes }),
   bugEdit: (id: string, changes: BugChanges, baseSha256: string, note?: string) =>
     call<BugMutation>('POST', `/api/bugs/${enc(id)}/edit`, { changes, baseSha256, ...(note ? { note } : {}) }),
+  runs: (filters: RunFilters, limit: number, offset: number) => call<RunList>('GET', `/api/runs?${runQuery(filters, limit, offset)}`),
+  run: (id: string) => call<{ run: Run; stages: RunStage[]; metrics: Record<string, number>; artifacts: string[]; bugIds: string[] }>('GET', `/api/runs/${enc(id)}`),
+  runTestCases: (id: string) => call<{ testCases: Partial<TestCase>[]; prioritization: Record<string, { executionMode: string | null; automationPriority: string | null; automationStrategy: string | null }> }>('GET', `/api/runs/${enc(id)}/test-cases`),
+  runBugs: (id: string) => call<{ bugs: (Omit<BugRow, 'decision'> & { decision: string | null })[] }>('GET', `/api/runs/${enc(id)}/bugs`),
+  runBug: (id: string, bugId: string) => call<{ bug: Partial<Bug> & Record<string, unknown>; classification: string | null; relatedTestCases: { id: string; inSnapshot: boolean }[] }>('GET', `/api/runs/${enc(id)}/bugs/${enc(bugId)}`),
+  runArtifact: (id: string, type: string) => call<{ type: string; artifact: unknown }>('GET', `/api/runs/${enc(id)}/artifacts/${enc(type)}`),
   approvePhase1: () => call<{ ok: boolean; approval?: { approvedBy: string; approvedAt: string } }>('POST', '/api/phase1/approve', {}),
 };

@@ -25,7 +25,8 @@
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { EXIT, ROOT, createObservabilityOrExit } from './lib/runtime.mjs';
-import { gitCommit } from './lib/run-record.mjs';
+import { gitCommit, preserveRun } from './lib/run-record.mjs';
+import { startRunHistory } from './lib/history.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 import { assertWiredStages, NOT_YET_WIRED, PHASE2_AGENTS, PHASE2_STAGES, UNWIRED_ARTIFACTS } from './lib/phase2-stages.mjs';
 
@@ -203,6 +204,9 @@ async function buildContract() {
 }
 
 const { QA_MODEL } = await import(resolve(ROOT, 'src/config/env.ts'));
+// Registered once the entry gate is open: a --gate-only check is not a run.
+const history = await startRunHistory({ kind: 'PHASE2_AUTOMATION', runId: stamp, model: QA_MODEL, target: null, startedAt: runStarted });
+const PHASE2_FILES = ['repo-analysis.json', 'automation-project-contract.json', 'phase2-run.json'];
 observability.startRun({
   command: 'qa-automation',
   runId: stamp,
@@ -210,11 +214,13 @@ observability.startRun({
   input: { stages: plan.map((s) => s.key), automationCases: selected.length, attemptsPerStage: attempts },
   metadata: { from, attemptsPerStage: attempts, automationCases: selected.length, gitCommit: gitCommit(ROOT) ?? null },
 });
+history.setTraceId(observability.traceId?.());
 
 for (const stage of plan) {
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
   const stageTrace = observability.startStage(stage);
+  const stageHistory = history.stage(stage);
 
   const passed = await runStage({
     stage,
@@ -224,9 +230,14 @@ for (const stage of plan) {
     stamp,
     artifactProblem,
     qaArtifactPath: qa.qaArtifactPath,
-    onProgress: saveRecord,
+    onProgress: () => {
+      saveRecord();
+      stageHistory.attempts(entry.attempts.length);
+    },
     trace: stageTrace,
   });
+  if (passed) stageHistory.complete(entry.attempts.length);
+  else stageHistory.fail(entry.attempts.length, 'STAGE_FAILED', entry.attempts.at(-1)?.problem ?? `${stage.artifact}.json was not produced.`);
   await stageTrace.end({ passed, metrics: () => stageMetrics(stage.key, qa.readQaArtifact) });
 
   // The automation project contract: a deterministic projection of the analysis
@@ -252,6 +263,14 @@ for (const stage of plan) {
     record.failedStage = stage.key;
     record.finishedAt = new Date().toISOString();
     saveRecord();
+    const failedArchive = preserveRun({
+      artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, kind: 'PHASE2_AUTOMATION', model: QA_MODEL, target: null,
+      startedAt: runStarted, files: PHASE2_FILES, outcome: 'failed', extra: { failedStage: stage.key },
+    });
+    history.finish({
+      status: 'FAILED', errorCode: 'STAGE_FAILED', archiveDir: failedArchive.dir,
+      errorSummary: `${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`,
+    });
     console.error(`\nPhase 2 stopped: ${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`);
     console.error(`Resume from this stage with:\n  npm run qa:automation -- --from ${stage.key}\n`);
     await observability.endRun({ outcome: 'FAILED', failedStage: stage.key });
@@ -271,6 +290,11 @@ record.unwiredArtifactsWritten = leaked;
 record.result = 'COMPLETE';
 record.finishedAt = new Date().toISOString();
 saveRecord();
+const preserved = preserveRun({
+  artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, kind: 'PHASE2_AUTOMATION', model: QA_MODEL, target: null,
+  startedAt: runStarted, files: PHASE2_FILES, outcome: 'completed',
+});
+history.finish({ status: 'COMPLETED', archiveDir: preserved.dir });
 
 const analysis = qa.readQaArtifact('repo-analysis');
 const count = (list) => (Array.isArray(list) ? list.length : 0);

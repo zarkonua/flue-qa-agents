@@ -60,6 +60,8 @@ export interface StageTrace {
 export interface RunObservability {
   readonly enabled: boolean;
   startRun(info: RunInfo): void;
+  /** The trace id of the run, when tracing is on — a reference for the run history, nothing more. */
+  traceId?(): string | undefined;
   startStage(stage: StageInfo): StageTrace;
   /** End the trace and flush it. Bounded; never throws. */
   endRun(result: { outcome: 'COMPLETE' | 'FAILED'; failedStage?: string; output?: Lazy<Record<string, unknown>> }): Promise<void>;
@@ -75,6 +77,7 @@ const NOOP_STAGE: StageTrace = {
 export const NOOP_RUN: RunObservability = {
   enabled: false,
   startRun: () => {},
+  traceId: () => undefined,
   startStage: () => NOOP_STAGE,
   endRun: async () => {},
 };

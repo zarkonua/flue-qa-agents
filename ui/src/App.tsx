@@ -9,6 +9,9 @@ import { BugsPage } from './pages/BugsPage.tsx';
 import { BugPage } from './pages/BugPage.tsx';
 import { ReviewsPage } from './pages/ReviewsPage.tsx';
 import { ReviewPage } from './pages/ReviewPage.tsx';
+import { RunsPage } from './pages/RunsPage.tsx';
+import { RunPage } from './pages/RunPage.tsx';
+import { RunArtifactPage, RunBugPage, RunBugsPage, RunTestCasesPage } from './pages/RunSnapshotPages.tsx';
 
 export function App() {
   const overview = useQuery({ queryKey: ['overview'], queryFn: api.overview, refetchInterval: 5000 });
@@ -22,6 +25,7 @@ export function App() {
           <NavLink to="/test-cases">Test Cases{c ? ` (${c.testCases})` : ''}</NavLink>
           <NavLink to="/bugs">Bugs{c ? ` (${c.bugs})` : ''}</NavLink>
           <NavLink to="/reviews">Reviews{c ? ` (${c.pendingReviews})` : ''}</NavLink>
+          <NavLink to="/runs">Runs</NavLink>
         </nav>
         {overview.data && <Phase1Badge phase1={overview.data.phase1} />}
       </header>
@@ -35,6 +39,12 @@ export function App() {
           <Route path="/bugs/:id" element={<BugPage />} />
           <Route path="/reviews" element={<ReviewsPage />} />
           <Route path="/reviews/:id" element={<ReviewPage />} />
+          <Route path="/runs" element={<RunsPage />} />
+          <Route path="/runs/:id" element={<RunPage />} />
+          <Route path="/runs/:id/test-cases" element={<RunTestCasesPage />} />
+          <Route path="/runs/:id/bugs" element={<RunBugsPage />} />
+          <Route path="/runs/:id/bugs/:bugId" element={<RunBugPage />} />
+          <Route path="/runs/:id/artifacts/:type" element={<RunArtifactPage />} />
           <Route path="*" element={<p>Not found.</p>} />
         </Routes>
       </main>

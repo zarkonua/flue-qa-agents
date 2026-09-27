@@ -9,6 +9,8 @@
 //   POST /api/bugs/:id/accept | reject | downgrade | request-changes
 //   POST /api/bugs/:id/edit/preview, /api/bugs/:id/edit
 //   POST /api/phase1/refresh                    POST /api/phase1/approve
+//   GET  /api/runs, /api/runs/:runId[/test-cases|/bugs[/:bugId]|/artifacts/:type]
+//        run history, read-only — see runs-api.ts
 //
 // Every mutation takes a small JSON body checked against a strict schema; ids
 // are pattern-checked before use; nothing in a request names a path, an
@@ -31,6 +33,7 @@ import {
 } from '../lib/qa-artifacts.ts';
 import { approvePhase1, inspectPhase1 } from '../lib/phase1-gate.ts';
 import { buildReviewModel } from '../lib/review-view.ts';
+import { runRoutes, RunsApiError, type HistoryProvider } from './runs-api.ts';
 import { dependencyState } from '../lib/phase1-dependencies.ts';
 import {
   bugReportSha256,
@@ -91,6 +94,10 @@ export interface UiServerOptions {
   onBugEvent?: (event: BugReviewEvent & { bugId: string }) => void | Promise<void>;
   /** Built UI directory; absent means the API alone. */
   uiDir?: string;
+  /** The run history, opened on first use. Absent: the Runs endpoints answer 503. */
+  history?: HistoryProvider;
+  /** Where run archives live; defaults to QA_ARTIFACT_ROOT. Tests only. */
+  artifactRoot?: string;
 }
 
 export interface RefreshStatus {
@@ -516,6 +523,8 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
 
     // The read model of the original review page, kept for the CLI-era consumers and tests.
     ['GET', /^\/api\/review$/, async () => [200, { ok: true, artifactRoot: QA_ARTIFACT_ROOT, model: buildReviewModel() }]],
+
+    ...runRoutes(options.history ?? (() => { throw new Error('not configured for this server'); }), options.artifactRoot),
   ];
 
   const send = (res: ServerResponse, status: number, payload: string | Buffer, type = 'application/json; charset=utf-8') => {
@@ -555,6 +564,7 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
       return send(res, 404, 'Not found', 'text/plain; charset=utf-8');
     } catch (error) {
       if (error instanceof HttpError) return send(res, error.status, JSON.stringify({ error: error.message }));
+      if (error instanceof RunsApiError) return send(res, error.status, JSON.stringify({ error: error.message }));
       if (error instanceof ReviewInputError) return send(res, 400, JSON.stringify({ error: error.message }));
       if (error instanceof ReviewConflictError) return send(res, 409, JSON.stringify({ error: error.message }));
       // A review file that is malformed or was edited by hand is refused, never trusted.

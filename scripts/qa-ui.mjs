@@ -27,6 +27,10 @@ const { QA_ARTIFACT_ROOT } = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts
 const { createRunObservability } = await import(resolve(ROOT, 'src/observability/host.ts'));
 const { traceBugEvent } = await import(resolve(ROOT, 'src/observability/workflow-events.ts'));
 const { readRefreshStatus } = await import('./lib/refresh.mjs');
+const historyLib = await import(resolve(ROOT, 'src/history/service.ts'));
+const { importArchives } = await import(resolve(ROOT, 'src/history/importer.ts'));
+const { STAGES } = await import('./lib/phase1-stages.mjs');
+const { PHASE2_STAGES } = await import('./lib/phase2-stages.mjs');
 
 const PORT = envInt('QA_UI_PORT', 4445);
 const HOST = envString('QA_UI_HOST') ?? '127.0.0.1';
@@ -145,6 +149,23 @@ const refresh = {
 
 if (!DEV) await ensureBuilt();
 
+// Run history: settle runs whose process died, and pick up archives the history
+// does not know yet (made before it existed). Only new run ids are read, so this
+// stays cheap however many runs there are. A problem here is shown, never fatal:
+// the Runs page reports it too.
+try {
+  const history = historyLib.runHistory();
+  const interrupted = historyLib.reconcileInterrupted(history);
+  const labels = Object.fromEntries([...STAGES, ...PHASE2_STAGES].map((s) => [s.key, s.label]));
+  const report = importArchives(history, QA_ARTIFACT_ROOT, { stageLabels: { ...labels, review: 'Test Case Reviewer' } });
+  if (report.imported.length || interrupted.length || report.malformed.length) {
+    console.log(`Run history     : ${report.imported.length} archive(s) imported, ${interrupted.length} run(s) marked INTERRUPTED` +
+      `${report.malformed.length ? `, ${report.malformed.length} malformed archive(s) skipped (npm run qa:history:import lists them)` : ''}`);
+  }
+} catch (error) {
+  console.warn(`WARNING         : run history is unavailable (${String(error.message).split('\n')[0]}). The Runs page will say so; everything else works.`);
+}
+
 const server = await createUiServer({
   store: defaultStore(),
   workspace: artifactWorkspace,
@@ -152,6 +173,7 @@ const server = await createUiServer({
   refresh,
   onBugEvent: traceBugEvent,
   uiDir: DEV ? undefined : DIST,
+  history: () => historyLib.runHistory(),
 });
 
 server.on('error', (error) => {

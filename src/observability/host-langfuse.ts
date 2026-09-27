@@ -99,6 +99,10 @@ export class LangfuseRunObservability implements RunObservability {
     );
   }
 
+  traceId(): string | undefined {
+    return this.root?.spanContext().traceId;
+  }
+
   startStage(stage: StageInfo): StageTrace {
     if (!this.root || !this.context || this.ended) {
       return { childEnv: () => childTraceEnv(undefined, undefined), recordAttempt: () => {}, end: async () => {} };

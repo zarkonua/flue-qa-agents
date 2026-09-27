@@ -41,7 +41,7 @@ export function runDir(artifactRoot, runId) {
  * makes the numbers attributable: which model, which provider, which target,
  * how long, and whether it finished.
  */
-export function preserveRun({ artifactRoot, projectRoot, runId, model, target, startedAt, files, outcome, extra }) {
+export function preserveRun({ artifactRoot, projectRoot, runId, kind = 'PHASE1_MANUAL', model, target, startedAt, files, outcome, extra }) {
   const dir = runDir(artifactRoot, runId);
   mkdirSync(dir, { recursive: true });
 
@@ -60,6 +60,7 @@ export function preserveRun({ artifactRoot, projectRoot, runId, model, target, s
   const slash = String(model ?? '').indexOf('/');
   const metadata = {
     runId,
+    kind,
     model: model ?? null,
     provider: slash === -1 ? null : String(model).slice(0, slash),
     target: target ?? null,

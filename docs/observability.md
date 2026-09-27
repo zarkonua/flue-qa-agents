@@ -183,6 +183,14 @@ glance.
 - An interrupted run (Ctrl-C) loses its un-flushed run and stage observations; the agent
   observations already sent stay grouped under the same trace id.
 
+## Run history is not tracing
+
+The workspace's **Runs** page reads a local SQLite index (`.qa/history.sqlite`; see the
+[runbook](RUNBOOK.md#run-history)), not Langfuse. It holds deterministic run metadata — stages,
+attempts, counts derived from the archived artifacts — and, when tracing is on, the run's Langfuse
+trace id as a reference. No prompt, response, token count or tool call is copied into it, and
+Langfuse behaves exactly as before whether the history exists or not.
+
 ## Where it lives
 
 | | |

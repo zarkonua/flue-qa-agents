@@ -27,6 +27,8 @@ import { ROOT } from './runtime.mjs';
 import { acquireRunLock } from './run-lock.mjs';
 import { makeArtifactProblem, runStage } from './stage.mjs';
 import { STAGES } from './phase1-stages.mjs';
+import { startRunHistory } from './history.mjs';
+import { preserveRun } from './run-record.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const depLib = await import(resolve(ROOT, 'src/lib/phase1-dependencies.ts'));
@@ -167,6 +169,9 @@ export async function refreshDependents({ runStageFn = runStage, attempts = 4, o
 
   const status = { status: 'RUNNING', pid: process.pid, startedAt: new Date().toISOString(), stages: [] };
   writeStatus(status);
+  const history = await startRunHistory({
+    kind: 'DEPENDENCY_REFRESH', runId: stamp, model: QA_MODEL, target: process.env.TARGET_URL, startedAt: status.startedAt, holdsRunLock: true, log,
+  });
   const backup = join(qa.QA_ARTIFACT_ROOT, 'archive', `${stamp}-refresh`);
   snapshot(backup);
   const artifactProblem = makeArtifactProblem(qa);
@@ -177,6 +182,7 @@ export async function refreshDependents({ runStageFn = runStage, attempts = 4, o
     input: { stages: REFRESH_STAGES.map((s) => s.key) },
     metadata: { event: 'phase1_refresh_started', stages: REFRESH_STAGES.map((s) => s.key).join(',') },
   });
+  history.setTraceId(observability?.traceId?.());
 
   let failed;
   try {
@@ -184,12 +190,18 @@ export async function refreshDependents({ runStageFn = runStage, attempts = 4, o
       log(`\nRefresh: ${stage.label}`);
       const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
       const trace = observability?.startStage(stage);
+      const stageHistory = history.stage(stage);
       let passed = false;
       try {
-        passed = await runStageFn({ stage, entry, attempts, idPrefix: 'refresh', stamp, artifactProblem, qaArtifactPath: qa.qaArtifactPath, trace });
+        passed = await runStageFn({
+          stage, entry, attempts, idPrefix: 'refresh', stamp, artifactProblem, qaArtifactPath: qa.qaArtifactPath, trace,
+          onProgress: () => stageHistory.attempts(entry.attempts.length),
+        });
       } catch (error) {
         entry.error = error.message;
       }
+      if (passed) stageHistory.complete(entry.attempts.length);
+      else stageHistory.fail(entry.attempts.length, 'STAGE_FAILED', entry.attempts.at(-1)?.problem ?? entry.error);
       await trace?.end({ passed });
       status.stages.push({ stage: stage.key, passed, attempts: entry.attempts.length });
       writeStatus(status);
@@ -204,6 +216,8 @@ export async function refreshDependents({ runStageFn = runStage, attempts = 4, o
       Object.assign(status, { status: 'FAILED', finishedAt: new Date().toISOString(), error: failed.slice(0, 1000) });
       writeStatus(status);
       await observability?.endRun({ outcome: 'FAILED', failedStage: status.stages.at(-1)?.stage });
+      // The previous artifacts are back in place, so there is nothing of this run's to archive.
+      history.finish({ status: 'FAILED', errorCode: 'STAGE_FAILED', errorSummary: failed });
       log(`\nRefresh FAILED — ${failed}\nThe previous artifacts were restored and remain STALE.`);
       return { ok: false, reason: 'STAGE_FAILED', message: failed, stages: status.stages };
     }
@@ -216,6 +230,13 @@ export async function refreshDependents({ runStageFn = runStage, attempts = 4, o
     for (const stage of REFRESH_STAGES) depLib.stampDependency(stage.artifact);
     Object.assign(status, { status: 'COMPLETED', finishedAt: new Date().toISOString() });
     writeStatus(status);
+    // What this refresh produced, kept under its own id like any QA run.
+    const preserved = preserveRun({
+      artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, kind: 'DEPENDENCY_REFRESH', model: QA_MODEL,
+      target: process.env.TARGET_URL, startedAt: status.startedAt, outcome: 'completed',
+      files: ['test-cases.json', 'automation-prioritization.json', 'defect-analysis.json', 'phase1-refresh.json', ...qa.listBugReportIds().map((id) => `bugs/${id}.json`)],
+    });
+    history.finish({ status: 'COMPLETED', archiveDir: preserved.dir });
     await observability?.endRun({ outcome: 'COMPLETE', output: () => ({ bugsPreserved: status.reconciliation.preserved.length, bugsReset: status.reconciliation.reset.length, bugsNew: status.reconciliation.added.length, bugsRemoved: status.reconciliation.removed.length }) });
     const r = status.reconciliation;
     log(`\nBug reviews: ${r.preserved.length} preserved, ${r.reset.length} reset to PENDING, ${r.added.length} new, ${r.removed.length} removed (archived in ${backup}).`);
@@ -226,6 +247,7 @@ export async function refreshDependents({ runStageFn = runStage, attempts = 4, o
     Object.assign(status, { status: 'FAILED', finishedAt: new Date().toISOString(), error: String(error.message).slice(0, 1000) });
     writeStatus(status);
     await observability?.endRun({ outcome: 'FAILED' });
+    history.finish({ status: 'FAILED', errorCode: 'REFRESH_ERROR', errorSummary: error.message });
     throw error;
   } finally {
     lock.release();

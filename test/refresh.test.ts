@@ -176,6 +176,31 @@ describe('refresh dependent analysis', () => {
     assert.equal(readRefreshStatus().status, 'FAILED');
   });
 
+  it('records every refresh in the run history: completed with its archive, failed without one', async () => {
+    const { runHistory } = await import('../src/history/service.ts');
+    await applyCaseChange();
+    assert.equal((await refreshDependents({ runStageFn: passing(), log: () => {} })).ok, true);
+    await new Promise((r) => setTimeout(r, 5)); // distinct run ids
+    await applyCaseChange();
+    const failing = async ({ entry }: any) => {
+      entry.attempts.push({ attempt: 1, passed: false, problem: 'automation-prioritization.json was not written by this attempt.' });
+      return false;
+    };
+    assert.equal((await refreshDependents({ runStageFn: failing, log: () => {} })).ok, false);
+    const store = runHistory();
+    const [failed, completed] = store.listRuns({ kind: 'DEPENDENCY_REFRESH', limit: 2 }).runs;
+    assert.equal(completed.status, 'COMPLETED');
+    assert.equal(completed.archiveRelPath, `runs/${completed.id}`);
+    assert.deepEqual(store.getStages(completed.id).map((st) => [st.label, st.status, st.attemptCount]), [['Automation Prioritizer', 'COMPLETED', 1], ['Defect Analyzer', 'COMPLETED', 1]]);
+    assert.ok(store.getArtifacts(completed.id).some((a) => a.artifactType === 'DEFECT_ANALYSIS'));
+    assert.ok('defects_confirmed' in store.getMetrics(completed.id));
+    assert.ok(existsSync(join(ROOT, 'runs', completed.id, 'run-metadata.json')));
+    assert.equal(failed.status, 'FAILED');
+    assert.equal(failed.archiveRelPath, null, 'a failed refresh restores the old files: nothing of its own to archive');
+    assert.deepEqual(store.getStages(failed.id).map((st) => [st.stageName, st.status, st.errorCode]), [['prioritization', 'FAILED', 'STAGE_FAILED']]);
+    assert.equal(failed.failedStage, 'Automation Prioritizer');
+  });
+
   it('an interrupted refresh reads as FAILED, retryable', () => {
     writeFileSync(join(ROOT, 'phase1-refresh.json'), JSON.stringify({ status: 'RUNNING', pid: 99999999, startedAt: 'x' }));
     assert.equal(readRefreshStatus().status, 'FAILED');

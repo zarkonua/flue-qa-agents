@@ -30,6 +30,8 @@ before it is written.
   bugs, dependency freshness and Phase 1 approval.
 - **Hash-based human approval** — Phase 2 refuses to start unless a person approved the exact
   Phase 1 content on disk.
+- **Run history** — every QA run, completed, failed or interrupted, is recorded in a local SQLite
+  index with its stages, metrics and archived files, and browsable read-only under **Runs**.
 - **Phase 2 Repo Analyzer** — reads the target automation repository and records how tests are
   written there.
 - **Models** — local Ollama or OpenRouter, selected by one setting.
@@ -46,6 +48,10 @@ Target application ──► PHASE 1 agents (host-sequenced) ──► canonical
                          Phase 1 approval (hash-locked, human-only)
                                                               │
                          PHASE 2 ──► entry gate ──► Repo Analyzer ──► STOP
+
+Every run  ├─ immutable archive  → .qa/runs/<run-id>/
+           ├─ searchable history → .qa/history.sqlite   (Runs page)
+           └─ LLM telemetry      → Langfuse             (optional)
 ```
 
 Diagrams (Mermaid) for the system, Phase 1, discovery, the review workspace, trust boundaries
@@ -104,6 +110,9 @@ on `127.0.0.1:4445` (loopback by default, no login). It is React + TypeScript + 
   **Apply**, **Reject** and **Request Changes**.
 - **Bugs** — the bug reports with their evidence, related test cases and review history, with
   the decisions described under [Bugs](#bugs).
+- **Runs** — every recorded QA run, newest first, filterable by status, kind, model, provider,
+  target and date; a run shows its stages, metrics, and a **read-only snapshot** of the test cases,
+  bugs and other artifacts it archived. See [Run history](#run-history).
 
 ## Human-in-the-loop approval model
 
@@ -215,6 +224,26 @@ instance (`LANGFUSE_BASE_URL`). Prompts and tool I/O are sent only with
 `LANGFUSE_CAPTURE_IO=true`, and are redacted even then. See
 **[docs/observability.md](docs/observability.md)**.
 
+## Run history
+
+Each QA command — `qa:manual`, `qa:refresh` (and the workspace's refresh), `qa:review`,
+`qa:automation` — registers its run in `.qa/history.sqlite` when it **starts**, records each stage
+as it runs, and on the way out archives what it produced to `.qa/runs/<run-id>/` and indexes that
+archive: file hashes and the counts derivable from it. A failed run is archived and recorded too;
+a run whose process dies is marked INTERRUPTED the next time the history is opened.
+
+- **SQLite is an index, not the source of truth.** The archive files are what a run produced;
+  the database says which runs happened and how they went, and can be rebuilt from the archives.
+- **SQLite is not Langfuse.** It holds deterministic run metadata for the workspace; model turns,
+  tokens and tool calls stay in Langfuse, referenced by trace id.
+- **History never blocks QA.** If the database cannot be opened, the run prints a warning and
+  proceeds; archives are never deleted because indexing failed.
+
+Archives made before the history existed are imported with `npm run qa:history:import`
+(idempotent; the workspace also picks up new archives when it starts), and
+`npm run qa:history:verify` checks the index against the archives. Details:
+[RUNBOOK — Run history](docs/RUNBOOK.md#run-history).
+
 ## Artifacts
 
 Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, which must be outside
@@ -229,7 +258,9 @@ this project).
 | **Review workflow state** — never hashed or approved | `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` · `reviews/bugs/BUG-NNN.json` |
 | Freshness | `phase1-dependencies.json` · `phase1-refresh.json` |
 | Phase 2 | `repo-analysis.json` · `automation-project-contract.json` |
-| Run records | `phase1-run.json` · `phase2-run.json` · `runs/<id>/` · `archive/<timestamp>/` |
+| Run records | `phase1-run.json` · `phase2-run.json` · `archive/<timestamp>/` (what a run replaced) |
+| **Run archive** — immutable, one per run | `runs/<run-id>/` — what the run produced, plus `run-metadata.json` |
+| Run history index | `history.sqlite` — runs, stages, metrics, artifact index; rebuilt from `runs/` if lost |
 
 Canonical artifacts are plain files. Review workflow state goes through the `ReviewStore`
 interface (`src/review/review-store.ts`), whose only implementation is file-backed.
@@ -253,6 +284,8 @@ the tests behind them):
 - **Approval is hash-locked and human-only.** No agent can read or write the approval.
 - **The UI names no paths or commands.** The workspace API accepts small, strictly-typed JSON
   with pattern-checked ids and refuses cross-origin writes.
+- **History is read-only and path-free.** The Runs API is GET-only; an archived file is found from
+  a run id and an artifact type by host code, never from a path, and SQL values are always bound.
 - **Secrets stay out.** One-time values in URLs and known keys are redacted before anything is
   written or traced, and an artifact carrying a real credential value is rejected.
 
@@ -268,6 +301,7 @@ src/
   tools/          narrow agent tools
   lib/            schema + semantic validation · discovery surface and completion gate · defects · Phase 1 gate · redaction
   review/         ReviewStore, change requests, proposals, host-side apply
+  history/        run history: SQLite schema and migrations, RunHistoryStore, archive import
   ui-server/      the workspace's host API
   config/         .env loading · helper origins
   connections/    Playwright MCP, with a per-role tool allowlist
@@ -310,6 +344,9 @@ must name the stages the code actually runs.
 - **Phase 2 stops after Repo Analyzer.**
 - **The workspace is single-user and local**: no login, bound to loopback by default; review
   state is file-backed.
+- **Run history records what the host counts.** Tool errors, parse errors and context usage are
+  in Langfuse only; runs imported from old archives have stage durations but no stage start times.
+  There is no retention or deletion of runs yet.
 
 Next directions (not built): wiring the remaining Phase 2 agents (UI Explorer, Automation
 Generator) and adding test execution and failure analysis.

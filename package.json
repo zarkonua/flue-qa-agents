@@ -16,6 +16,8 @@
     "qa:approve": "node scripts/qa-approve.mjs",
     "qa:automation": "node scripts/qa-automation.mjs",
     "qa:defects": "node scripts/qa-defects.mjs",
+    "qa:history:import": "node scripts/qa-history-import.mjs",
+    "qa:history:verify": "node scripts/qa-history-verify.mjs",
     "qa:manual": "node scripts/qa-manual.mjs",
     "qa:prioritize": "node scripts/qa-manual.mjs --from prioritization",
     "qa:refresh": "node scripts/qa-refresh.mjs",
@@ -45,12 +47,14 @@
     "@opentelemetry/sdk-node": "^0.222.0",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "ajv": "^8.20.0",
+    "better-sqlite3": "^12.11.1",
     "valibot": "^1.5.0"
   },
   "devDependencies": {
     "@flue/cli": "^2.1.0",
     "@playwright/test": "^1.63.0",
     "@tanstack/react-query": "^5.104.0",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
@@ -63,5 +67,8 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
   }
 }

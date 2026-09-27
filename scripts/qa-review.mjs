@@ -10,6 +10,8 @@
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { EXIT, ROOT, runAgent } from './lib/runtime.mjs';
+import { startRunHistory } from './lib/history.mjs';
+import { preserveRun } from './lib/run-record.mjs';
 
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { PHASE1_LOCKED, sha256Of } = await import(resolve(ROOT, 'src/lib/phase1-gate.ts'));
@@ -26,7 +28,12 @@ const before = Object.fromEntries(PHASE1_LOCKED.map((n) => [n, sha256Of(n)]));
 console.log('\nPHASE 1 — Test Case Review (advisory; edits nothing)\n');
 const path = qa.qaArtifactPath('test-cases-review');
 const attempts = Math.max(1, Number(process.env.QA_STAGE_ATTEMPTS ?? 4));
-const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+const runStarted = new Date();
+const stamp = runStarted.toISOString().replace(/[:.]/g, '-');
+const { QA_MODEL } = await import(resolve(ROOT, 'src/config/env.ts'));
+const history = await startRunHistory({ kind: 'PHASE1_REVIEW', runId: stamp, model: QA_MODEL, target: process.env.TARGET_URL, startedAt: runStarted });
+const stageHistory = history.stage({ key: 'review', label: 'Test Case Reviewer' });
+let attemptsMade = 0;
 let id;
 let written = false;
 let code = EXIT.FAILED;
@@ -41,6 +48,8 @@ for (let attempt = 1; attempt <= attempts && !written; attempt += 1) {
       ? 'Review the four Phase 1 artifacts and write the test-cases-review artifact.'
       : 'Nothing was saved: your last turn ended without a successful write_qa_artifact call. Call write_qa_artifact now with name "test-cases-review" and the complete object.';
   code = await runAgent('src/agents/test-case-reviewer.ts', message, id, { resume });
+  attemptsMade = attempt;
+  stageHistory.attempts(attemptsMade);
   written = existsSync(path) && statSync(path).mtimeMs >= started - 1000;
   if (!written && attempt < attempts) console.log(`\n--- review not written; retrying (attempt ${attempt + 1}/${attempts})\n`);
 }
@@ -48,14 +57,24 @@ for (let attempt = 1; attempt <= attempts && !written; attempt += 1) {
 const tampered = PHASE1_LOCKED.filter((n) => sha256Of(n) !== before[n]);
 if (tampered.length > 0) {
   console.error(`\nSECURITY: reviewed artifacts changed during review: ${tampered.join(', ')}. Treat this run as untrusted.\n`);
+  stageHistory.fail(attemptsMade, 'INPUTS_CHANGED', 'Reviewed artifacts changed during review.');
+  history.finish({ status: 'FAILED', errorCode: 'INPUTS_CHANGED', errorSummary: `Reviewed artifacts changed during review: ${tampered.join(', ')}.` });
   process.exit(EXIT.FAILED);
 }
 
 if (!written) {
   console.error(`\nThe reviewer did not write a review (agent exit ${code}). Re-run: npm run qa:review\n`);
+  stageHistory.fail(attemptsMade, 'STAGE_FAILED', 'test-cases-review.json was not written.');
+  history.finish({ status: 'FAILED', errorCode: 'STAGE_FAILED', errorSummary: `The reviewer did not write a review after ${attemptsMade} attempt(s).` });
   process.exit(EXIT.FAILED);
 }
 const review = qa.readQaArtifact('test-cases-review');
+stageHistory.complete(attemptsMade);
+const preserved = preserveRun({
+  artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, kind: 'PHASE1_REVIEW', model: QA_MODEL,
+  target: process.env.TARGET_URL, startedAt: runStarted, files: ['test-cases-review.json'], outcome: 'completed',
+});
+history.finish({ status: 'COMPLETED', archiveDir: preserved.dir });
 const bySeverity = review.issues.reduce((acc, i) => ({ ...acc, [i.severity]: (acc[i.severity] ?? 0) + 1 }), {});
 
 console.log('\n==============================================================');

@@ -70,6 +70,8 @@ npm run check:tools        # uses QA_MODEL, whichever provider that selects
 | `QA_DISCOVERY_AUX_ORIGINS` | unset | Comma-separated helper origins discovery may use (a test mailbox). See [Sign-in](#sign-in-and-helper-origins). |
 | `QA_FRESH_BROWSER` | unset | `true` = `--fresh-browser`: restart the MCP server so the run owns a signed-out browser. |
 | `QA_UI_PORT` · `QA_UI_HOST` | `4445` · `127.0.0.1` | Where `qa:ui` listens. The workspace has no login; keep it on loopback. |
+| `QA_UI_MODELS` | unset | Further models **New Run** may offer besides `QA_MODEL` (comma-separated `<provider>/<model>`). |
+| `QA_UI_TARGETS` | unset | Further targets **New Run** may offer besides `TARGET_URL` (comma-separated URLs). |
 | `QA_ENV_FILE` | `./.env` | Load settings from another file. |
 | `LANGFUSE_*` | off | See [observability.md](observability.md). |
 | `PLAYWRIGHT_MCP_URL` | unset → `http://localhost:8931/mcp` | `default` expands to the same. |
@@ -260,6 +262,36 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, outside t
 | `runs/<run-id>/` | every run's own output and `run-metadata.json`, completed or failed — immutable |
 | `history.sqlite` (+ `-wal`, `-shm`) | the run history index; see [Run history](#run-history) |
 
+## Run control (starting runs from the workspace)
+
+```text
+npm run qa:ui  →  New Run  →  Start Phase 1  →  Live Run  (→ Cancel Run)
+```
+
+- **What can be chosen** comes from the host: `GET /api/run-config` lists the targets
+  (`TARGET_URL`, `QA_UI_TARGETS`), the models (`QA_MODEL`, `QA_UI_MODELS`; an `openrouter/*` model
+  is offered only when `OPENROUTER_API_KEY` is set — its value is never shown), the fresh-browser
+  default (`QA_FRESH_BROWSER`), and the helper origins and Langfuse state, read-only. There is no authentication choice: there is no auth bootstrap on main, so
+  discovery signs up or signs in through the product itself.
+- **Starting.** `POST /api/runs` → the RunController validates the choices, refuses if the run lock
+  is held (by the workspace or a terminal run), and forks `scripts/qa-manual.mjs --run-id <id>
+  [--fresh-browser]` with only `TARGET_URL`, `QA_MODEL` and `QA_FRESH_BROWSER` set from the chosen
+  values. It is the same runner as `npm run qa:manual`: same lock, stages, history, archive, traces.
+- **Following.** The runner appends every event to `runs/<run-id>/events.jsonl` (redacted, at most
+  5000 per run — past that only stages, artifacts, metrics and the end are kept). The Live Run page
+  reads it over SSE (`GET /api/runs/<id>/events`), replaying at most 500 events on (re)connect and
+  resuming after `Last-Event-ID`. Terminal runs write the same log and can be watched too.
+- **Cancelling.** Only a run this workspace started. The controller asks the runner over IPC; the
+  runner stops its agent, archives what it has, stops its browser, records CANCELLED and exits 130.
+  After 30 s without exit: TERM to its process group; 10 s later: KILL. Then the controller stops a
+  browser server the run reported owning, removes a lock left by it, and closes its history row and
+  event log if the run could not. A terminal run is stopped in its terminal (Ctrl-C = INTERRUPTED).
+- **During a run** the workspace refuses to apply proposals, record bug decisions or approve Phase 1
+  (409): those artifacts are being regenerated.
+- **Restarting the workspace** does not stop a run it started — the runner is its own process and
+  writes to the same terminal. The new workspace can watch it but not cancel it (it did not start
+  it); stop it with `kill -INT <pid>` from the run lock, which records INTERRUPTED.
+
 ## Run history
 
 Every QA command records its run in `history.sqlite` under the artifact root. The path is fixed —
@@ -268,14 +300,16 @@ derived from `QA_ARTIFACT_ROOT`, never configurable from a request. Nothing to d
 
 | Command | Run kind | Archived to `runs/<run-id>/` |
 |---|---|---|
-| `qa:manual` | `PHASE1_MANUAL` | the Phase 1 artifacts, bug reports, discovery records and `phase1-run.json` — also when a stage fails |
+| `qa:manual` (terminal or New Run) | `PHASE1_MANUAL` | the Phase 1 artifacts, bug reports, discovery records, `phase1-run.json` and `events.jsonl` — also when a stage fails or the run is cancelled |
 | `qa:refresh` / workspace refresh | `DEPENDENCY_REFRESH` | test cases, prioritization, defect analysis, bug reports — when it completes (a failed refresh restores the old files, so it has no archive) |
 | `qa:review` | `PHASE1_REVIEW` | `test-cases-review.json` |
 | `qa:automation` | `PHASE2_AUTOMATION` | `repo-analysis.json`, `automation-project-contract.json`, `phase2-run.json` |
 
-**Lifecycle.** A run is inserted as RUNNING when it starts (after the run lock), each stage is
-recorded as it starts and ends with its attempts, and the run is closed COMPLETED or FAILED with
-its archive's metrics and artifact index in one transaction. Ctrl-C closes it INTERRUPTED. A run
+**Lifecycle.** A Phase 1 run is inserted as STARTING when it takes the run lock and becomes
+RUNNING when its first stage begins; each stage is recorded as it starts and ends with its attempts,
+and the run's counts are recorded as stages produce artifacts. It is closed COMPLETED, FAILED or
+CANCELLED (a person's cancel from the workspace — never recorded as a failure) with its archive's
+metrics and artifact index in one transaction. Ctrl-C in a terminal closes it INTERRUPTED. A run
 whose process was killed stays RUNNING until the history is next opened — by the next run, the
 workspace, or `qa:history:import` — which marks it INTERRUPTED once its process is gone (and, for
 a run that took the run lock, once the lock no longer names it).

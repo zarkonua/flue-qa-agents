@@ -31,6 +31,7 @@ const historyLib = await import(resolve(ROOT, 'src/history/service.ts'));
 const { importArchives } = await import(resolve(ROOT, 'src/history/importer.ts'));
 const { STAGES } = await import('./lib/phase1-stages.mjs');
 const { PHASE2_STAGES } = await import('./lib/phase2-stages.mjs');
+const { RunController } = await import(resolve(ROOT, 'src/run-control/run-controller.ts'));
 
 const PORT = envInt('QA_UI_PORT', 4445);
 const HOST = envString('QA_UI_HOST') ?? '127.0.0.1';
@@ -174,6 +175,8 @@ const server = await createUiServer({
   onBugEvent: traceBugEvent,
   uiDir: DEV ? undefined : DIST,
   history: () => historyLib.runHistory(),
+  // Starts Phase 1 exactly as `npm run qa:manual` does — it forks that same script.
+  runController: new RunController({ artifactRoot: QA_ARTIFACT_ROOT, projectRoot: ROOT, history: () => historyLib.runHistory() }),
 });
 
 server.on('error', (error) => {

@@ -348,6 +348,22 @@ covered by a test. Errors never return a stack or a path.
 - Everything stored passes the same redaction as artifacts and traces: targets lose credentials,
   query and fragment; error text keeps its first line only, with secrets and opaque ids removed.
 
+## Run control: a typed request, never a command
+
+`src/run-control/` and `src/ui-server/run-control-api.ts` (tested in `test/run-control.test.ts`):
+
+- `POST /api/runs` takes a strict object — pipeline, target, model, fresh browser;
+  unknown keys (a command, an env, a path) are refused. Each value must be one the host configured;
+  the runner receives the host's value, not the browser's string.
+- The RunController forks one fixed script with fixed flags (`--run-id` must match the run-id
+  pattern, which the runner checks again) and sets exactly three environment keys.
+- Cancel takes a run id only. It reaches the process this controller started (IPC, then its own
+  process group) and the browser server that run reported owning — never a pid from a request.
+- The run lock is the only concurrency control: a start is refused while any live process holds it.
+- Every event passes `normalizeEvent`: a closed set of fields, bounded, each string redacted
+  (URLs, `name=value` / `name: value` pairs with sensitive names, key-shaped strings, stack lines).
+  Tool events are built from the tool's name and outcome only; arguments and results never reach them.
+
 ## Redaction
 
 `src/lib/redaction.ts` normalises locations and removes secrets before anything is persisted:

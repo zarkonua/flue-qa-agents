@@ -105,7 +105,7 @@ export interface BugEditPreview {
 type BugMutation = { bug: Bug; sha256: string; phase1: Phase1 };
 
 export type RunKind = 'PHASE1_MANUAL' | 'DEPENDENCY_REFRESH' | 'PHASE1_REVIEW' | 'PHASE2_AUTOMATION';
-export type RunStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'INTERRUPTED';
+export type RunStatus = 'STARTING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'INTERRUPTED';
 export interface Run {
   id: string; kind: RunKind; status: RunStatus; model: string | null; provider: string | null; target: string | null;
   gitCommit: string | null; gitDirty: boolean | null; startedAt: string; finishedAt: string | null; durationMs: number | null;
@@ -114,14 +114,41 @@ export interface Run {
 }
 export interface RunSummary extends Run { metrics: Record<string, number>; failedStage: string | null }
 export interface RunStage {
-  stageName: string; label: string | null; ordinal: number; status: RunStatus; startedAt: string | null; finishedAt: string | null;
+  stageName: string; label: string | null; ordinal: number; status: RunStatus | 'SKIPPED'; startedAt: string | null; finishedAt: string | null;
   durationMs: number | null; attemptCount: number; errorCode: string | null; errorSummary: string | null;
 }
 export interface RunFilters { status?: string; kind?: string; model?: string; provider?: string; target?: string; from?: string; to?: string }
 export interface RunList {
   runs: RunSummary[]; total: number; limit: number; offset: number;
   facets: { models: string[]; providers: string[]; kinds: RunKind[]; targets: string[] };
-  active: { id: string; kind: RunKind; model: string | null; currentStage: string | null; startedAt: string }[];
+  active: { id: string; kind: RunKind; status: RunStatus; model: string | null; currentStage: string | null; startedAt: string }[];
+}
+
+export interface RunDetail {
+  run: Run; stages: RunStage[]; plannedStages: { key: string; label: string }[]; metrics: Record<string, number>;
+  artifacts: string[]; bugIds: string[]; live: boolean; cancellable: boolean; langfuseUrl: string | null;
+}
+
+export interface RunConfig {
+  pipelines: 'PHASE1_MANUAL'[];
+  targets: { url: string; default: boolean }[];
+  models: { id: string; provider: string; default: boolean; available: boolean; reason?: string }[];
+  freshBrowser: { default: boolean };
+  auxiliaryOrigins: string[];
+  langfuse: { enabled: boolean; baseUrl?: string };
+}
+export interface RunConfigResponse {
+  config: RunConfig;
+  activeRun: { runId: string; status: string; model: string; startedAt: string; cancelRequested: boolean } | null;
+  lockHolder: { runId: string | null; model: string | null; command: string | null; startedAt: string | null } | null;
+}
+export interface StartRunRequest { pipeline: 'PHASE1_MANUAL'; target: string; model: string; freshBrowser: boolean }
+
+/** One structured event from a run's event log — host-normalised and redacted. */
+export interface RunEvent {
+  id: number; runId: string; timestamp: string; type: string; category: string; level: 'info' | 'warn' | 'error'; message: string;
+  stage?: string; stageLabel?: string; attempt?: number; tool?: string; artifactType?: string; count?: number;
+  metrics?: Record<string, number>; plan?: { key: string; label: string }[]; status?: string; errorCode?: string;
 }
 
 function runQuery(filters: RunFilters, limit: number, offset: number): string {
@@ -163,7 +190,12 @@ export const api = {
   bugEdit: (id: string, changes: BugChanges, baseSha256: string, note?: string) =>
     call<BugMutation>('POST', `/api/bugs/${enc(id)}/edit`, { changes, baseSha256, ...(note ? { note } : {}) }),
   runs: (filters: RunFilters, limit: number, offset: number) => call<RunList>('GET', `/api/runs?${runQuery(filters, limit, offset)}`),
-  run: (id: string) => call<{ run: Run; stages: RunStage[]; metrics: Record<string, number>; artifacts: string[]; bugIds: string[] }>('GET', `/api/runs/${enc(id)}`),
+  run: (id: string) => call<RunDetail>('GET', `/api/runs/${enc(id)}`),
+  runConfig: () => call<RunConfigResponse>('GET', '/api/run-config'),
+  startRun: (request: StartRunRequest) => call<{ runId: string; status: string }>('POST', '/api/runs', request),
+  cancelRun: (id: string) => call<{ accepted: boolean }>('POST', `/api/runs/${enc(id)}/cancel`, {}),
+  /** The URL of a run's event stream; the page opens it with EventSource. */
+  runEventsUrl: (id: string) => `/api/runs/${enc(id)}/events`,
   runTestCases: (id: string) => call<{ testCases: Partial<TestCase>[]; prioritization: Record<string, { executionMode: string | null; automationPriority: string | null; automationStrategy: string | null }> }>('GET', `/api/runs/${enc(id)}/test-cases`),
   runBugs: (id: string) => call<{ bugs: (Omit<BugRow, 'decision'> & { decision: string | null })[] }>('GET', `/api/runs/${enc(id)}/bugs`),
   runBug: (id: string, bugId: string) => call<{ bug: Partial<Bug> & Record<string, unknown>; classification: string | null; relatedTestCases: { id: string; inSnapshot: boolean }[] }>('GET', `/api/runs/${enc(id)}/bugs/${enc(bugId)}`),

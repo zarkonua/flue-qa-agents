@@ -228,12 +228,12 @@ export class LangfuseRunObservability implements RunObservability {
         this.root.setAttributes(
           observation('chain', {
             output: { outcome, ...(failedStage ? { failedStage } : {}), ...result },
-            level: outcome === 'COMPLETE' ? 'DEFAULT' : 'ERROR',
-            statusMessage: outcome === 'COMPLETE' ? undefined : `failed at ${failedStage ?? 'unknown stage'}`,
+            level: outcome === 'COMPLETE' ? 'DEFAULT' : outcome === 'CANCELLED' ? 'WARNING' : 'ERROR',
+            statusMessage: outcome === 'COMPLETE' ? undefined : outcome === 'CANCELLED' ? 'cancelled by the operator' : `failed at ${failedStage ?? 'unknown stage'}`,
             metadata: { outcome, ...(failedStage ? { failedStage } : {}), ...result },
           }),
         );
-        if (outcome !== 'COMPLETE') this.root.setStatus({ code: SpanStatusCode.ERROR });
+        if (outcome === 'FAILED') this.root.setStatus({ code: SpanStatusCode.ERROR });
         this.root.end();
       }
     } finally {

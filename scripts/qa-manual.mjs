@@ -25,7 +25,8 @@
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { EXIT, ROOT, createObservabilityOrExit, ensureMcp, mcpUrl, preflightTarget, requireTarget, stopMcpAndWait } from './lib/runtime.mjs';
+import { EXIT, ROOT, createObservabilityOrExit, ensureMcp, mcpUrl, preflightTarget, requireTarget, startedMcpPid, stopMcpAndWait } from './lib/runtime.mjs';
+import { cancellation, reportOwned } from './lib/cancellation.mjs';
 import { makeArtifactProblem, runStage } from './lib/stage.mjs';
 import { STAGES } from './lib/phase1-stages.mjs';
 import { acquireRunLock } from './lib/run-lock.mjs';
@@ -41,6 +42,9 @@ const ledgerLib = await import(resolve(ROOT, 'src/lib/observation-ledger.ts'));
 const { completionMetrics, runFunnel, stageMetrics } = await import(resolve(ROOT, 'src/observability/qa-metrics.ts'));
 const { defectMetrics } = await import(resolve(ROOT, 'src/lib/defects.ts'));
 const depLib = await import(resolve(ROOT, 'src/lib/phase1-dependencies.ts'));
+const { EventLogWriter } = await import(resolve(ROOT, 'src/run-control/events.ts'));
+const { metricsFromArchive } = await import(resolve(ROOT, 'src/history/archive.ts'));
+const { RUN_ID } = await import(resolve(ROOT, 'src/history/types.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
@@ -92,6 +96,14 @@ if (startIndex < 0) {
 const attempts = Math.max(1, Number(option('attempts') ?? process.env.QA_STAGE_ATTEMPTS ?? 4));
 const plan = STAGES.slice(startIndex);
 
+// A run started from the workspace is given its id by the RunController, so the
+// page can follow it from the first moment. From the terminal the id is the start time.
+const requestedRunId = option('run-id');
+if (requestedRunId !== undefined && !RUN_ID.test(requestedRunId)) {
+  console.error(`--run-id must look like 2026-09-27T18-07-17-457Z; got "${String(requestedRunId).slice(0, 40)}".`);
+  process.exit(EXIT.BAD_CONFIG);
+}
+
 // ---------------------------------------------------------------------------
 // Preconditions
 // ---------------------------------------------------------------------------
@@ -122,7 +134,7 @@ for (const stage of STAGES.slice(0, startIndex)) {
 // ---------------------------------------------------------------------------
 
 const runStarted = new Date();
-const stamp = runStarted.toISOString().replace(/[:.]/g, '-');
+const stamp = requestedRunId ?? runStarted.toISOString().replace(/[:.]/g, '-');
 const archiveDir = join(qa.QA_ARTIFACT_ROOT, 'archive', stamp);
 
 // One run at a time. Two concurrent runs share Flue's conversation store, this
@@ -143,8 +155,62 @@ if (!lock.ok) {
 // Registered now, while it is still RUNNING — a run that fails or is stopped
 // part-way stays in the history. Never fatal: see scripts/lib/history.mjs.
 const history = await startRunHistory({
-  kind: 'PHASE1_MANUAL', runId: stamp, model: envForLock.QA_MODEL, target, startedAt: runStarted, holdsRunLock: true,
+  kind: 'PHASE1_MANUAL', runId: stamp, model: envForLock.QA_MODEL, target, startedAt: runStarted, holdsRunLock: true, status: 'STARTING',
 });
+
+// The run's structured event log — what the workspace's Live Run page shows.
+// Written the same way from the terminal and from the workspace; redacted on the way in.
+const events = new EventLogWriter(join(qa.QA_ARTIFACT_ROOT, 'runs', stamp, 'events.jsonl'), stamp);
+const emit = (event) => events.emit(event);
+emit({
+  type: 'RUN_STARTED', status: 'STARTING', plan: plan.map((s) => ({ key: s.key, label: s.label })),
+  message: `Phase 1 started: ${plan.map((s) => s.label).join(' → ')}`,
+});
+
+/** Artifact types, as the history and the workspace name them. */
+const ARTIFACT_TYPE = {
+  'discovered-behavior': 'DISCOVERED_BEHAVIOR', 'requirements-analysis': 'REQUIREMENTS_ANALYSIS', 'test-cases': 'TEST_CASES',
+  'automation-prioritization': 'AUTOMATION_PRIORITIZATION', 'defect-analysis': 'DEFECT_ANALYSIS',
+};
+let lastMetrics = {};
+/** The counts the artifacts written so far support — sent as they change, recorded in the history. */
+function publishMetrics() {
+  let metrics;
+  try {
+    metrics = metricsFromArchive(qa.QA_ARTIFACT_ROOT);
+  } catch {
+    return;
+  }
+  const changed = Object.fromEntries(Object.entries(metrics).filter(([k, v]) => lastMetrics[k] !== v));
+  lastMetrics = metrics;
+  if (Object.keys(changed).length === 0) return;
+  history.setMetrics(changed);
+  emit({ type: 'METRIC_UPDATED', metrics: changed, message: `Metrics: ${Object.entries(changed).slice(0, 6).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`).join(', ')}` });
+}
+
+/**
+ * End the run as CANCELLED — the operator asked, from the workspace. What the
+ * run produced so far is archived and kept; the browser it started is stopped;
+ * the lock is released on the way out.
+ */
+async function endCancelled(stage) {
+  record.result = 'CANCELLED';
+  if (stage) record.cancelledStage = stage.key;
+  record.finishedAt = new Date().toISOString();
+  saveRecord();
+  if (browserStarted) record.mcpStoppedCleanly = await stopMcpAndWait();
+  const cancelled = preserveRun({
+    artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, model: env.QA_MODEL, target, startedAt: runStarted,
+    files: runFiles(), outcome: 'cancelled', onlyWrittenSince: runStarted, extra: { cancelledStage: stage?.key ?? null, auxiliaryOrigins: auxLib.auxiliaryOrigins() },
+  });
+  const summary = `Stopped by the operator${stage ? ` during ${stage.label}` : ' before the first stage'}.`;
+  // The final event is written before the archive is indexed, so the index hashes the complete log.
+  emit({ type: 'RUN_CANCELLED', status: 'CANCELLED', stage: stage?.key, stageLabel: stage?.label, level: 'warn', message: `${summary} Completed artifacts are kept.` });
+  history.finish({ status: 'CANCELLED', errorCode: 'CANCELLED', errorSummary: summary, archiveDir: cancelled.dir });
+  console.error(`\nPhase 1 CANCELLED — ${summary}\nRun preserved   : ${cancelled.dir}\n`);
+  await observability.endRun({ outcome: 'CANCELLED', failedStage: stage?.key });
+  process.exit(EXIT.CANCELLED);
+}
 
 function archive(path) {
   if (!existsSync(path)) return;
@@ -224,6 +290,9 @@ if (plan.some((s) => s.browser)) {
   const freshBrowser = process.argv.includes('--fresh-browser') || process.env.QA_FRESH_BROWSER === 'true';
   await ensureMcp({ fresh: freshBrowser });
   browserStarted = true;
+  // If this run cannot stop its own browser (killed outright), the controller that started it will.
+  if (startedMcpPid()) reportOwned({ mcpPid: startedMcpPid() });
+  emit({ type: 'LOG', category: 'BROWSER', message: `Playwright MCP ready${freshBrowser ? ' (fresh browser)' : ''}` });
   // The preflight snapshot is what establishes the product surface: the
   // same-origin links the browser actually rendered. Written fresh for this
   // run, so a retry can never inherit a stale queue.
@@ -243,6 +312,7 @@ if (plan.some((s) => s.browser)) {
         overflow: surface.overflow,
         externalOrigins: surface.externalOrigins,
       };
+      emit({ type: 'LOG', category: 'BROWSER', message: `Product surface: ${surface.locations.length} location(s) on the entry page` });
       console.log(`Product surface : ${surface.locations.length} location(s) from the entry page` +
         `${surface.overflow ? `, ${surface.overflow} beyond the cap` : ''}` +
         `${surface.externalOrigins.length ? `, ${surface.externalOrigins.length} external origin(s) ignored` : ''}`);
@@ -262,12 +332,20 @@ observability.startRun({
   metadata: { from, attemptsPerStage: attempts, target: target ?? null, gitCommit: gitCommit(ROOT) ?? null },
 });
 history.setTraceId(observability.traceId?.());
+if (!cancellation.requested) {
+  history.markRunning();
+  emit({ type: 'RUN_RUNNING', status: 'RUNNING', message: 'Preflight done; stages starting' });
+}
 
 for (const stage of plan) {
+  // A cancel between stages (or during preflight or evidence collection) ends the run here.
+  if (cancellation.requested) await endCancelled(undefined);
   const entry = { stage: stage.key, agent: stage.agent, artifact: stage.artifact, attempts: [] };
   record.stages.push(entry);
   const stageTrace = observability.startStage(stage);
   const stageHistory = history.stage(stage);
+  const stageStarted = Date.now();
+  emit({ type: 'STAGE_STARTED', stage: stage.key, stageLabel: stage.label, message: `${stage.label} started` });
 
   // Give the discovery stage the surface the host just established.
   if (stage.withSurface) {
@@ -287,7 +365,27 @@ for (const stage of plan) {
       stageHistory.attempts(entry.attempts.length);
     },
     trace: stageTrace,
+    onEvent: emit,
+    isCancelled: () => cancellation.requested,
   });
+  if (cancellation.requested) {
+    stageHistory.cancel(entry.attempts.length);
+    emit({ type: 'STAGE_CANCELLED', stage: stage.key, stageLabel: stage.label, level: 'warn', message: `${stage.label} stopped by the operator` });
+    await stageTrace.end({ passed: false });
+    await endCancelled(stage);
+  }
+  const stageSeconds = Math.round((Date.now() - stageStarted) / 1000);
+  if (passed) {
+    emit({ type: 'STAGE_COMPLETED', stage: stage.key, stageLabel: stage.label, attempt: entry.attempts.length, message: `${stage.label} completed in ${stageSeconds}s (${entry.attempts.length} attempt${entry.attempts.length === 1 ? '' : 's'})` });
+    emit({ type: 'ARTIFACT_CREATED', stage: stage.key, artifactType: ARTIFACT_TYPE[stage.artifact], message: `${stage.artifact}.json created` });
+    if (stage.key === 'defects') {
+      const bugCount = qa.listBugReportIds().length;
+      emit({ type: 'ARTIFACT_CREATED', stage: stage.key, artifactType: 'BUG_REPORT', count: bugCount, message: `${bugCount} bug report(s) created` });
+    }
+    publishMetrics();
+  } else {
+    emit({ type: 'STAGE_FAILED', stage: stage.key, stageLabel: stage.label, attempt: entry.attempts.length, errorCode: 'STAGE_FAILED', message: `${stage.label} failed after ${entry.attempts.length} attempt(s): ${entry.attempts.at(-1)?.problem ?? 'no valid artifact'}` });
+  }
   if (passed) stageHistory.complete(entry.attempts.length);
   else stageHistory.fail(entry.attempts.length, 'STAGE_FAILED', entry.attempts.at(-1)?.problem ?? `${stage.artifact}.json was not produced.`);
   // Record what a derived artifact was generated from, so staleness is exact later.
@@ -312,6 +410,7 @@ for (const stage of plan) {
         const { evidenceSummary } = await import(resolve(ROOT, 'src/lib/browser-evidence.ts'));
         record.evidence = { ...evidence.totals, locations: evidence.locations.length, overflow: evidence.overflow };
         console.log(`Browser evidence: ${evidenceSummary(evidence)}`);
+        emit({ type: 'ARTIFACT_CREATED', stage: stage.key, artifactType: 'DISCOVERY_EVIDENCE', message: `Browser evidence collected: ${evidenceSummary(evidence)}` });
       }
     } catch (error) {
       record.evidence = { error: error.message };
@@ -370,8 +469,9 @@ for (const stage of plan) {
     // so its history entry has something to show.
     const failedArchive = preserveRun({
       artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, model: env.QA_MODEL, target, startedAt: runStarted,
-      files: runFiles(), outcome: 'failed', extra: { failedStage: stage.key, auxiliaryOrigins: auxLib.auxiliaryOrigins() },
+      files: runFiles(), outcome: 'failed', onlyWrittenSince: runStarted, extra: { failedStage: stage.key, auxiliaryOrigins: auxLib.auxiliaryOrigins() },
     });
+    emit({ type: 'RUN_FAILED', status: 'FAILED', stage: stage.key, stageLabel: stage.label, errorCode: 'STAGE_FAILED', message: `Stopped at ${stage.label}: no valid ${stage.artifact}.json after ${attempts} attempt(s).` });
     history.finish({
       status: 'FAILED', errorCode: 'STAGE_FAILED', archiveDir: failedArchive.dir,
       errorSummary: `${stage.label} did not produce a valid ${stage.artifact}.json after ${attempts} attempt(s).`,
@@ -515,6 +615,8 @@ const preserved = preserveRun({
   extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins(), ...defects },
 });
 console.log(`Run preserved   : ${preserved.dir}`);
+publishMetrics();
+emit({ type: 'RUN_COMPLETED', status: 'COMPLETED', message: `Phase 1 complete: ${counts.total} test case(s)${record.defects ? `, ${record.defects.bug_reports_created} bug report(s)` : ''}` });
 history.finish({ status: 'COMPLETED', archiveDir: preserved.dir });
 
 console.log('\nNext:');

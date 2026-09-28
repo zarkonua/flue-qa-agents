@@ -84,13 +84,15 @@ export function retryMessage(stage, problem) {
  *                                     absent or no-op unless LANGFUSE_ENABLED=true
  * @returns {Promise<boolean>} whether the stage passed
  */
-export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifactProblem, qaArtifactPath, onProgress, trace }) {
+export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifactProblem, qaArtifactPath, onProgress, trace, onEvent, isCancelled = () => false }) {
   let passed = false;
   let lastProblem;
   let id;
   entry.conversationIds = [];
 
   for (let attempt = 1; attempt <= attempts && !passed; attempt += 1) {
+    // Cancellation ends a stage at an attempt boundary; the agent itself is stopped by the canceller.
+    if (isCancelled()) break;
     const resume = attempt % 2 === 0;
     if (!resume) {
       id = `${idPrefix}-${stage.key}-${stamp}-${attempt}`;
@@ -104,7 +106,22 @@ export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifa
     const message = resume ? retryMessage(stage, lastProblem) : stage.message;
     // Each attempt's agent process parents its spans under this stage.
     const extraEnv = trace?.childEnv({ attempt, resumed: resume }) ?? {};
-    const { exitCode, toolCalls } = await runAgent(stage.agent, message, id, { resume, extraEnv });
+    onEvent?.({ type: 'ATTEMPT_STARTED', stage: stage.key, stageLabel: stage.label, attempt, message: `${stage.label}: attempt ${attempt} of ${attempts}${resume ? ', continuing with a correction' : ''}` });
+    const { exitCode, toolCalls } = await runAgent(stage.agent, message, id, {
+      resume,
+      extraEnv,
+      onTool: onEvent && ((phase, name) => onEvent({
+        type: phase === 'done' ? 'TOOL_COMPLETED' : phase === 'error' ? 'TOOL_FAILED' : 'TOOL_STARTED',
+        stage: stage.key, tool: name, attempt,
+        message: `${name} ${phase === 'done' ? 'completed' : phase === 'error' ? 'failed' : 'started'}`,
+      })),
+    });
+    if (isCancelled()) {
+      entry.cancelled = true;
+      entry.attempts.push({ attempt, resumed: resume, conversationId: id, agentExitCode: exitCode, durationMs: Date.now() - started, toolCallsByTool: toolCalls, toolCallsTotal: Object.values(toolCalls).reduce((a, b) => a + b, 0), passed: false, problem: 'cancelled' });
+      onProgress?.();
+      break;
+    }
 
     const path = qaArtifactPath(stage.artifact);
     // Fresh = written during this attempt. A file from before cannot pass.
@@ -129,6 +146,7 @@ export async function runStage({ stage, entry, attempts, idPrefix, stamp, artifa
     });
     trace?.recordAttempt(entry.attempts.at(-1));
     onProgress?.();
+    if (!passed) onEvent?.({ type: 'ATTEMPT_FAILED', stage: stage.key, stageLabel: stage.label, attempt, message: `${stage.label}: attempt ${attempt} did not produce a valid artifact — ${problem}` });
     console.log(`\n--- ${stage.label}: ${passed ? 'artifact written and valid' : `FAILED — ${problem}`}`);
   }
 

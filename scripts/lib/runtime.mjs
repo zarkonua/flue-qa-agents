@@ -20,7 +20,7 @@ const { spawnMcpServer, stopProcessGroup } = await import(resolve(ROOT, 'scripts
 export { MCP_OUTPUT_ROOT };
 
 /** Exit codes, so a script calling `npm run qa:*` can tell failures apart. */
-export const EXIT = { OK: 0, FAILED: 1, BAD_CONFIG: 2, TARGET_UNREACHABLE: 3, GATE_REFUSED: 4 };
+export const EXIT = { OK: 0, FAILED: 1, BAD_CONFIG: 2, TARGET_UNREACHABLE: 3, GATE_REFUSED: 4, CANCELLED: 130 };
 
 // ---------------------------------------------------------------------------
 // Target
@@ -265,13 +265,46 @@ export async function stopMcpAndWait(timeoutMs = 10_000) {
 // Clean up on every way out. Node does not run 'exit' handlers when a signal
 // kills the process, so signals are handled explicitly.
 let activeAgent;
+
+/**
+ * Stop the agent process this run is waiting on, if any: TERM, then KILL if it
+ * has not gone within `graceMs`. Used by cancellation; the stage sees the agent
+ * exit and stops there.
+ */
+export function stopActiveAgent(graceMs = 10_000) {
+  const child = activeAgent;
+  if (!child || child.exitCode !== null) return;
+  signalAgent(child, 'SIGTERM');
+  const timer = setTimeout(() => {
+    if (child.exitCode === null) signalAgent(child, 'SIGKILL');
+  }, graceMs);
+  timer.unref();
+}
+
+/**
+ * Signal an agent's whole process tree. `npx` starts `flue run` as a child that
+ * holds the output pipes; signalling npx alone leaves it running and the stage
+ * waiting. Each agent has its own process group (see runAgent), so the group is
+ * the tree — and never this process.
+ */
+function signalAgent(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch {
+    try { child.kill(signal); } catch { /* already gone */ }
+  }
+}
+
+/** The process group of the Playwright MCP server this process started, if any. */
+export const startedMcpPid = () => startedMcp?.pid;
 process.on('exit', () => {
-  activeAgent?.kill('SIGTERM');
+  if (activeAgent) signalAgent(activeAgent, 'SIGTERM');
   stopMcp();
 });
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
-    activeAgent?.kill(signal);
+    // The agent is in its own process group, so a terminal Ctrl-C reaches only this process: pass it on.
+    if (activeAgent) signalAgent(activeAgent, signal);
     stopMcp();
     process.exit(130);
   });
@@ -372,6 +405,19 @@ export function countToolInvocations(text, into = {}) {
 }
 
 /**
+ * Tool lifecycle from the same presenter lines: `tool X` (started), `tool done X`,
+ * `tool error X`. Names only — the lines carry no arguments or results.
+ */
+export function toolEvents(text) {
+  const out = [];
+  for (const raw of text.split('\n')) {
+    const match = /^tool (?:(done|error) )?([A-Za-z0-9_]+)/.exec(raw.replace(/\u001b\[[0-9;]*m/g, ''));
+    if (match) out.push({ phase: match[1] ?? 'started', name: match[2].replace(/^mcp__[a-z0-9]+__/, '') });
+  }
+  return out;
+}
+
+/**
  * Tee a child's output to this process while counting tool invocations in it.
  *
  * `flue run` writes its whole event stream -- including every `tool <name>`
@@ -383,7 +429,7 @@ export function countToolInvocations(text, into = {}) {
  *
  * Both streams are counted. One carries the lines; the other costs nothing.
  */
-export function attachToolCounter(child, out = process.stdout, err = process.stderr) {
+export function attachToolCounter(child, out = process.stdout, err = process.stderr, onTool) {
   const toolCalls = {};
   const pending = { out: '', err: '' };
   const tee = (key, sink) => (chunk) => {
@@ -393,7 +439,9 @@ export function attachToolCounter(child, out = process.stdout, err = process.std
     pending[key] += chunk;
     const lastBreak = pending[key].lastIndexOf('\n');
     if (lastBreak === -1) return;
-    countToolInvocations(pending[key].slice(0, lastBreak + 1), toolCalls);
+    const lines = pending[key].slice(0, lastBreak + 1);
+    countToolInvocations(lines, toolCalls);
+    if (onTool) for (const event of toolEvents(lines)) onTool(event.phase, event.name);
     pending[key] = pending[key].slice(lastBreak + 1);
   };
   child.stdout?.on('data', tee('out', out));
@@ -420,17 +468,19 @@ export function attachToolCounter(child, out = process.stdout, err = process.std
  * instead of starting a fresh one — used to retry a stage with a corrective
  * message while keeping everything the agent already read.
  */
-export function runAgent(agentPath, message, id, { extraEnv = {}, resume = false } = {}) {
+export function runAgent(agentPath, message, id, { extraEnv = {}, resume = false, onTool } = {}) {
   return new Promise((resolvePromise) => {
     const args = ['flue', 'run', agentPath, '--id', id, '-m', message];
     if (!resume) args.splice(3, 0, '--new');
     // Piped rather than inherited so the host can count tool calls itself
     // instead of trusting the model to report them. Everything still reaches
     // the terminal unchanged, chunk by chunk.
-    const child = spawn('npx', args, { cwd: ROOT, stdio: ['inherit', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv } });
+    // Its own process group, so cancellation can stop the whole agent tree (npx and flue run) and
+    // nothing else. stdin is ignored: `flue run -m` never reads it, and a background group must not.
+    const child = spawn('npx', args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv }, detached: true });
     activeAgent = child;
 
-    const counter = attachToolCounter(child);
+    const counter = attachToolCounter(child, process.stdout, process.stderr, onTool);
     const { toolCalls } = counter;
 
     child.on('error', (error) => {

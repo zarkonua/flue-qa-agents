@@ -10,7 +10,7 @@
 // model that produced it — which the archive cannot do, since it is written
 // before the run starts and names the run that displaced it.
 
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
@@ -41,7 +41,7 @@ export function runDir(artifactRoot, runId) {
  * makes the numbers attributable: which model, which provider, which target,
  * how long, and whether it finished.
  */
-export function preserveRun({ artifactRoot, projectRoot, runId, kind = 'PHASE1_MANUAL', model, target, startedAt, files, outcome, extra }) {
+export function preserveRun({ artifactRoot, projectRoot, runId, kind = 'PHASE1_MANUAL', model, target, startedAt, files, outcome, extra, onlyWrittenSince }) {
   const dir = runDir(artifactRoot, runId);
   mkdirSync(dir, { recursive: true });
 
@@ -49,6 +49,8 @@ export function preserveRun({ artifactRoot, projectRoot, runId, kind = 'PHASE1_M
   for (const name of files) {
     const from = join(artifactRoot, name);
     if (!existsSync(from)) continue;
+    // A run that stopped early keeps only what it wrote: a file from an earlier run is not its output.
+    if (onlyWrittenSince !== undefined && statSync(from).mtimeMs < new Date(onlyWrittenSince).getTime()) continue;
     // A name may carry a subdirectory — `bugs/BUG-001.json`.
     mkdirSync(dirname(join(dir, name)), { recursive: true });
     copyFileSync(from, join(dir, name));

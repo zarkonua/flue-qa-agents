@@ -11,6 +11,8 @@
 //   POST /api/phase1/refresh                    POST /api/phase1/approve
 //   GET  /api/runs, /api/runs/:runId[/test-cases|/bugs[/:bugId]|/artifacts/:type]
 //        run history, read-only — see runs-api.ts
+//   GET  /api/run-config                        POST /api/runs, /api/runs/:runId/cancel
+//   GET  /api/runs/:runId/events  (SSE)         run control — see run-control-api.ts
 //
 // Every mutation takes a small JSON body checked against a strict schema; ids
 // are pattern-checked before use; nothing in a request names a path, an
@@ -34,6 +36,8 @@ import {
 import { approvePhase1, inspectPhase1 } from '../lib/phase1-gate.ts';
 import { buildReviewModel } from '../lib/review-view.ts';
 import { runRoutes, RunsApiError, type HistoryProvider } from './runs-api.ts';
+import { runControlRoutes, serveRunEvents } from './run-control-api.ts';
+import type { RunController } from '../run-control/run-controller.ts';
 import { dependencyState } from '../lib/phase1-dependencies.ts';
 import {
   bugReportSha256,
@@ -98,7 +102,21 @@ export interface UiServerOptions {
   history?: HistoryProvider;
   /** Where run archives live; defaults to QA_ARTIFACT_ROOT. Tests only. */
   artifactRoot?: string;
+  /** Starts and cancels Phase 1 runs. Absent: the workspace can watch runs but not start them. */
+  runController?: RunController;
 }
+
+/**
+ * While a QA run holds the lock, the workspace's artifacts are being regenerated
+ * under it: changing them now would be overwritten, or worse, mixed in. These
+ * operations wait for the run to end. (Proposals are processed under the lock
+ * anyway; reading, previews and the run's own controls are always allowed.)
+ */
+const BLOCKED_DURING_RUN = [
+  /^\/api\/proposals\/[^/]+\/apply$/,
+  /^\/api\/bugs\/[^/]+\/(accept|reject|downgrade|request-changes|edit)$/,
+  /^\/api\/phase1\/approve$/,
+];
 
 export interface RefreshStatus {
   status: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'FAILED';
@@ -293,6 +311,18 @@ function staticFiles(dir: string | undefined): Map<string, string> {
 }
 
 // ---------------------------------------------------------------------------
+
+/** The live holder of the run lock, if any. */
+function runLockHolder(root: string): { command?: string } | undefined {
+  try {
+    const lock = JSON.parse(readFileSync(join(root, 'run.lock'), 'utf8')) as { pid?: number; command?: string };
+    if (!lock.pid) return undefined;
+    process.kill(lock.pid, 0);
+    return lock;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM' ? {} : undefined;
+  }
+}
 
 export async function createUiServer(options: UiServerOptions): Promise<Server> {
   const { store, workspace: ws } = options;
@@ -524,7 +554,12 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
     // The read model of the original review page, kept for the CLI-era consumers and tests.
     ['GET', /^\/api\/review$/, async () => [200, { ok: true, artifactRoot: QA_ARTIFACT_ROOT, model: buildReviewModel() }]],
 
-    ...runRoutes(options.history ?? (() => { throw new Error('not configured for this server'); }), options.artifactRoot),
+    ...runControlRoutes({ controller: options.runController, readBody: body }),
+    ...runRoutes(options.history ?? (() => { throw new Error('not configured for this server'); }), options.artifactRoot, {
+      getRun: (runId) => options.runController?.getRun(runId),
+      isCancellable: (runId) => { const a = options.runController?.activeRun(); return !!a && a.runId === runId && !a.cancelRequested; },
+      langfuseBaseUrl: () => options.runController?.config().langfuse.baseUrl,
+    }),
   ];
 
   const send = (res: ServerResponse, status: number, payload: string | Buffer, type = 'application/json; charset=utf-8') => {
@@ -547,6 +582,13 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
           host = undefined;
         }
         if (host !== req.headers.host) return send(res, 403, JSON.stringify({ error: 'Cross-origin requests are refused.' }));
+      }
+      if (serveRunEvents(req, res, path, { artifactRoot: options.artifactRoot ?? QA_ARTIFACT_ROOT, history: options.history, controller: options.runController })) return;
+      if (req.method === 'POST' && BLOCKED_DURING_RUN.some((re) => re.test(path))) {
+        const lock = runLockHolder(options.artifactRoot ?? QA_ARTIFACT_ROOT);
+        if (lock && lock.command === 'qa:manual') {
+          return send(res, 409, JSON.stringify({ error: 'A QA run is in progress and is regenerating these artifacts. This change is disabled until the run ends.' }));
+        }
       }
       if (path.startsWith('/api/')) {
         for (const [method, pattern, handler] of handlers) {

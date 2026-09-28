@@ -28,6 +28,8 @@ before it is written.
   ids resolve, no invented routes, messages, features or credentials.
 - **QA Review Workspace** — a local React UI for test cases, change requests and proposals,
   bugs, dependency freshness and Phase 1 approval.
+- **Run control** — start Phase 1 from the workspace, follow its stages, activity and counts live,
+  open artifacts as they are written, and cancel it safely.
 - **Hash-based human approval** — Phase 2 refuses to start unless a person approved the exact
   Phase 1 content on disk.
 - **Run history** — every QA run, completed, failed or interrupted, is recorded in a local SQLite
@@ -50,8 +52,13 @@ Target application ──► PHASE 1 agents (host-sequenced) ──► canonical
                          PHASE 2 ──► entry gate ──► Repo Analyzer ──► STOP
 
 Every run  ├─ immutable archive  → .qa/runs/<run-id>/
-           ├─ searchable history → .qa/history.sqlite   (Runs page)
-           └─ LLM telemetry      → Langfuse             (optional)
+           ├─ event log          → .qa/runs/<run-id>/events.jsonl  (Live Run page, via SSE)
+           ├─ searchable history → .qa/history.sqlite             (Runs page)
+           └─ LLM telemetry      → Langfuse                       (optional)
+
+CLI (npm run qa:manual) ──┐
+                          ├── scripts/qa-manual.mjs — one Phase 1 runner
+UI  (New Run) ─ RunController ┘
 ```
 
 Diagrams (Mermaid) for the system, Phase 1, discovery, the review workspace, trust boundaries
@@ -67,8 +74,8 @@ npm install
 cp .env.example .env      # set TARGET_URL, and QA_MODEL (+ OPENROUTER_API_KEY for OpenRouter)
 
 npm run check:playwright  # Chromium and the MCP server are usable
-npm run qa:manual         # Phase 1: five stages in fixed order, then STOP
-npm run qa:ui             # QA Review Workspace at http://127.0.0.1:4445
+npm run qa:manual         # Phase 1: five stages in fixed order, then STOP — or start it from the workspace
+npm run qa:ui             # QA Review Workspace at http://127.0.0.1:4445 (New Run → Start Phase 1 → Live Run)
 npm run qa:approve        # approve Phase 1 (the workspace has the same button)
 npm run qa:automation     # Phase 2: entry gate, Repo Analyzer, then STOP (needs QA_TARGET_REPO_ROOT)
 ```
@@ -98,6 +105,7 @@ Then the run stops. Review, refresh and approval are separate, human-started ste
 on `127.0.0.1:4445` (loopback by default, no login). It is React + TypeScript + Vite;
 `npm run qa:ui:dev` adds hot reload.
 
+- **New Run / Live Run** — see [Run control](#run-control).
 - **Overview** — counts, requirement coverage, and Phase 1 health: each derived artifact is
   CURRENT or STALE with the reason (e.g. "TC-012 was modified"). **Refresh dependent
   analysis** and **Approve Phase 1** live here.
@@ -224,6 +232,28 @@ instance (`LANGFUSE_BASE_URL`). Prompts and tool I/O are sent only with
 `LANGFUSE_CAPTURE_IO=true`, and are redacted even then. See
 **[docs/observability.md](docs/observability.md)**.
 
+## Run control
+
+**New Run** starts Phase 1 with choices the host offers — target (`TARGET_URL`, `QA_UI_TARGETS`),
+model (`QA_MODEL`, `QA_UI_MODELS`), fresh browser — and shows the helper origins and Langfuse state
+read-only. The browser sends a typed request; the **RunController** validates it, checks the run
+lock, and forks **the same runner as `npm run qa:manual`** with argv and environment it builds
+itself. A second run is refused while one is active, from the workspace or the terminal.
+
+**Live Run** (`/runs/<run-id>/live`) follows the run without reloading: the pipeline with each
+stage PENDING → RUNNING → COMPLETED / FAILED / CANCELLED and its attempts, a filterable activity
+feed (stages, agent attempts, browser and tool calls by name, artifacts, errors), counts as they
+appear (states, behaviors, acceptance points, test cases, defects), links to artifacts already
+written (read-only), and a link to the Langfuse trace when tracing is on. It is fed by the run's
+event log over Server-Sent Events; a refresh, a dropped connection or a workspace restart resumes
+where it left off, and CLI-started runs can be watched the same way.
+
+**Cancel Run** (with confirmation) asks the runner to stop: its current agent is stopped, what it
+completed is archived, the browser it started is stopped, and the run is recorded **CANCELLED** —
+not FAILED. If it does not stop in time it is terminated, and the controller cleans up after it.
+While a run is active, changes to the workspace's artifacts (apply, bug decisions, approval) wait.
+Retrying a stage or re-running from a stage is not part of this yet.
+
 ## Run history
 
 Each QA command — `qa:manual`, `qa:refresh` (and the workspace's refresh), `qa:review`,
@@ -284,8 +314,11 @@ the tests behind them):
 - **Approval is hash-locked and human-only.** No agent can read or write the approval.
 - **The UI names no paths or commands.** The workspace API accepts small, strictly-typed JSON
   with pattern-checked ids and refuses cross-origin writes.
-- **History is read-only and path-free.** The Runs API is GET-only; an archived file is found from
-  a run id and an artifact type by host code, never from a path, and SQL values are always bound.
+- **History is read-only and path-free.** Historical snapshots are GET-only; an archived file is
+  found from a run id and an artifact type by host code, never from a path, and SQL values are always bound.
+- **Starting a run takes no command.** `POST /api/runs` is a strict typed request checked against
+  host configuration; the command, argv and environment are the controller's. Cancel signals only the
+  process the controller started. Live events are redacted when written; tool events carry names only.
 - **Secrets stay out.** One-time values in URLs and known keys are redacted before anything is
   written or traced, and an artifact carrying a real credential value is rejected.
 
@@ -302,6 +335,7 @@ src/
   lib/            schema + semantic validation · discovery surface and completion gate · defects · Phase 1 gate · redaction
   review/         ReviewStore, change requests, proposals, host-side apply
   history/        run history: SQLite schema and migrations, RunHistoryStore, archive import
+  run-control/    RunController, run configuration, the run event contract
   ui-server/      the workspace's host API
   config/         .env loading · helper origins
   connections/    Playwright MCP, with a per-role tool allowlist
@@ -344,6 +378,9 @@ must name the stages the code actually runs.
 - **Phase 2 stops after Repo Analyzer.**
 - **The workspace is single-user and local**: no login, bound to loopback by default; review
   state is file-backed.
+- **Run control is Phase 1 only, with no retry yet.** A failed stage cannot be retried, and a run
+  cannot be re-run from a stage, from the workspace. A workspace restarted during a run can watch
+  it but not cancel it.
 - **Run history records what the host counts.** Tool errors, parse errors and context usage are
   in Langfuse only; runs imported from old archives have stage durations but no stage start times.
   There is no retention or deletion of runs yet.

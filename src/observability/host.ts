@@ -64,7 +64,7 @@ export interface RunObservability {
   traceId?(): string | undefined;
   startStage(stage: StageInfo): StageTrace;
   /** End the trace and flush it. Bounded; never throws. */
-  endRun(result: { outcome: 'COMPLETE' | 'FAILED'; failedStage?: string; output?: Lazy<Record<string, unknown>> }): Promise<void>;
+  endRun(result: { outcome: 'COMPLETE' | 'FAILED' | 'CANCELLED'; failedStage?: string; output?: Lazy<Record<string, unknown>> }): Promise<void>;
 }
 
 const NOOP_STAGE: StageTrace = {

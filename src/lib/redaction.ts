@@ -28,6 +28,8 @@
  * `sessionId` and `X-Api-Key` are all caught by the same few stems.
  */
 const SENSITIVE_PARAM = /(token|code|secret|password|passwd|session|auth|key|signature|sig|nonce|otp|credential)/i;
+/** The same word list, for building patterns that look for these names in prose. */
+export const SENSITIVE_PARAM_SOURCE = SENSITIVE_PARAM.source;
 
 /** Replacement written in place of a secret value. Never a real value. */
 export const REDACTED = '<redacted>';

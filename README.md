@@ -61,8 +61,10 @@ CLI (npm run qa:manual) ──┐
 UI  (New Run) ─ RunController ┘
 ```
 
-Diagrams (Mermaid) for the system, Phase 1, discovery, the review workspace, trust boundaries
-and Phase 2 live in **[docs/architecture/](docs/architecture/README.md)**.
+Diagrams for the system, Phase 1, discovery, the review workspace, trust boundaries and Phase 2,
+plus the agent capability matrix, are on one page at
+**[zarkonua.github.io/flue-qa-agents](https://zarkonua.github.io/flue-qa-agents/)** —
+published from [docs/architecture/architecture-view.html](docs/architecture/architecture-view.html).
 
 ## Quick start
 
@@ -395,5 +397,4 @@ Generator) and adding test execution and failure analysis.
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operating it: settings, commands, options, refresh, bugs, exit codes, troubleshooting |
 | [docs/VALIDATION.md](docs/VALIDATION.md) | What the deterministic checks guarantee, and what they do not |
 | [docs/observability.md](docs/observability.md) | Langfuse tracing: configuration, trace shape, metrics, content policy |
-| [docs/architecture/README.md](docs/architecture/README.md) | Architecture diagrams (Mermaid sources, rendered on GitHub) |
-| [docs/architecture/architecture-view.html](docs/architecture/architecture-view.html) | The same diagrams on one styled page, plus the agent capability matrix — open locally in a browser |
+| [docs/architecture/architecture-view.html](docs/architecture/architecture-view.html) | Architecture diagrams on one styled page, plus the agent capability matrix. Published at [zarkonua.github.io/flue-qa-agents](https://zarkonua.github.io/flue-qa-agents/); also opens straight from disk |

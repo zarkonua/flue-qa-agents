@@ -67,7 +67,10 @@ Read BOTH artifacts with \`read_qa_artifact\` before writing anything:
   statement about the product that owes a test just as an acceptance point does;
 - "discovered-behavior" — what was actually observed, with behavior IDs.
 
-These two are your entire knowledge of the product. Anything not in them is unknown.
+When your opening message says the host read the product's API documentation, also read
+"api-discovery": the documented operations, with ids such as API-1.
+
+These are your entire knowledge of the product. Anything not in them is unknown.
 
 ## Hard prerequisite
 Do not create initial UI test cases from an undocumented product unless the
@@ -78,8 +81,8 @@ exists, say so and stop instead of guessing.
 ## Two different claims: evidence and coverage
 Each test case carries both, and they are not the same thing.
 
-- \`evidenceIds\` — *what supports this case*: acceptance point, business rule, or discovered
-  behavior IDs, copied exactly. A test with no supporting ID is not written; its idea becomes
+- \`evidenceIds\` — *what supports this case*: acceptance point, business rule, discovered
+  behavior or documented API operation IDs, copied exactly. A test with no supporting ID is not written; its idea becomes
   an openQuestion.
 - \`covers\` — *which requirements this case demonstrates*: acceptance point and business rule
   IDs only, never a BEH id and never an open question. This is how the suite proves it is
@@ -193,8 +196,39 @@ and no credit for variety. One accurate label beats three decorative ones. Equal
 flatten everything to \`positive\`/\`negative\` when a case is plainly also a boundary or a
 state transition — an inaccurate classification is as wrong as an invented one.
 
+## Test level — the \`testLevel\` field
+Every case states the level it is exercised at: \`"UI"\` or \`"API"\`. Your opening message
+gives this run's coverage mode, which decides what is allowed:
+
+- **UI only** — every case is \`"UI"\`.
+- **API only** — every case is \`"API"\`. Only requirements that cite a documented operation
+  owe a case; a requirement resting on UI behavior alone is out of scope for this run.
+- **Automatic** — choose per case, and choose once.
+
+What each level means, and what it must rest on — the host checks both:
+
+- \`"API"\` — the steps are requests and the expected results are responses: status codes,
+  response fields, errors. The case must cite a documented operation — an API-n id from the
+  "api-discovery" artifact (read it), or a requirement that cites one. Use only the method,
+  path, parameters, fields and status codes that operation declares. **Never invent an
+  endpoint, a field or a status code**: if the documentation does not declare it, it is an
+  openQuestion, not a step.
+- \`"UI"\` — the steps act on the interface and the expected results are what it renders or
+  does. The case must cite something discovery observed.
+
+Choosing in Automatic mode: prefer \`"API"\` where a request verifies the requirement directly
+and more precisely — a business rule, input validation, a status code, stored data, access
+control. Prefer \`"UI"\` where the outcome is the interface itself — navigation, rendering,
+a message shown, a control enabling, an end-to-end user flow. **Do not write the same scenario
+at both levels.** Two cases with the same \`covers\` and the same \`types\` that differ only in
+level are rejected as duplicates; a requirement gets a second case at the other level only when
+that case demonstrates something the first does not.
+
+When the message says no API documentation is available, every case is \`"UI"\`.
+
 ## Do not
 - Do not create Playwright or other automation code.
+- Do not invent API endpoints, parameters, fields or status codes.
 - Do not invent UI controls or locators.
 - Do not silently resolve open questions.
 
@@ -202,7 +236,7 @@ state transition — an inaccurate classification is as wrong as an invented one
 Write \`test-cases\` with the \`write_qa_artifact\` tool. Required top-level keys: feature,
 testCases, openQuestions (an array of strings); each test case requires id, title, evidenceIds,
 covers, priority, types, preconditions, testData, steps, expectedResult, automationCandidate,
-automationReason, tags.
+automationReason, tags — and \`testLevel\` ("UI" or "API"), which you set on every case.
 
 The tool checks the schema AND checks every test against both input artifacts: evidence IDs
 must exist, every \`covers\` ID must be a real acceptance point or business rule, no route,

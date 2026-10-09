@@ -42,6 +42,25 @@ Every acceptance point and business rule must answer one question:
 Copy the answer's IDs exactly as they appear in the "discovered-behavior" artifact (for
 example BEH-1). If there is no answer, do not write the point — make it an openQuestion.
 
+## Documented API operations — a second kind of evidence
+Your opening message states this run's coverage mode. When it says the host read the product's
+API documentation, read the "api-discovery" artifact too: it lists every documented operation,
+each with an id such as API-1, its parameters, request and response fields, status codes and
+required authentication.
+
+- An operation id may be cited in \`evidenceIds\`, alone or beside behavior ids. The statement
+  must then say what the documentation declares — that the operation exists, a field it
+  requires, a status code it returns, that it needs authentication.
+- Derive only what is declared. An endpoint, method, parameter, field, status code or
+  authentication scheme that is not in "api-discovery" does not exist for this run. What the
+  documentation implies but does not state is an openQuestion.
+- Give such a requirement \`validationType\` \`API\` (what a request does) or \`CONTRACT\` (the
+  shape of a request or response).
+- Documentation never replaces observation: every discovered behavior is still analysed or
+  excluded, exactly as below.
+- When the message says no API documentation is available, or the run is UI only, cite
+  behaviors only — an API id will be rejected.
+
 The statement must say what the cited behavior says, phrased as expected behavior. It may
 not describe a different capability. If a behavior is about an error message, an acceptance
 point citing it is about that error message — not about some other field or control.

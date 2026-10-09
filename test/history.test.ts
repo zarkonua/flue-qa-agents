@@ -67,7 +67,7 @@ describe('run history database', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('migrates a version-1 database with data to version 2 without losing a row', async () => {
+  it('migrates a version-1 database with data to the current version without losing a row', async () => {
     const Database = (await import('better-sqlite3')).default;
     const dir = mkdtempSync(join(tmpdir(), 'qa-hdb-v1-'));
     const path = join(dir, 'h.sqlite');
@@ -80,7 +80,10 @@ describe('run history database', () => {
     raw.prepare(`INSERT INTO run_metrics (run_id, name, numeric_value) VALUES ('${RID(1)}', 'test_cases_total', 7)`).run();
     raw.close();
     const s = new SqliteRunHistoryStore(openHistoryDatabase(path));
-    assert.equal(s.db.pragma('user_version', { simple: true }), 2);
+    assert.equal(s.db.pragma('user_version', { simple: true }), 3);
+    // A run recorded before coverage modes has none — shown as unknown, never guessed.
+    assert.equal(s.getRun(RID(1))!.coverageMode, null);
+    assert.equal(s.getRun(RID(1))!.apiDocsUrl, null);
     assert.equal(s.db.pragma('foreign_keys', { simple: true }), 1, 'foreign keys back on after the rebuild');
     assert.equal(s.getRun(RID(1))!.status, 'COMPLETED');
     assert.equal(s.getStages(RID(1)).length, 1, 'the rebuild did not cascade-delete stages');
@@ -336,7 +339,7 @@ describe('archive derivation', () => {
     assert.ok(!('tool_errors' in m) && !('max_context_usage_pct' in m), 'never recorded host-side');
     const old = metricsFromArchive(join(RUNS, OLD));
     // A run record with no stages supports zero attempts — a real count; nothing else is claimed.
-    assert.deepEqual(Object.keys(old).sort(), ['artifact_not_written_attempts', 'semantic_rejections', 'stage_attempts_total', 'test_cases_total']);
+    assert.deepEqual(Object.keys(old).sort(), ['artifact_not_written_attempts', 'semantic_rejections', 'stage_attempts_total', 'test_cases_api', 'test_cases_total', 'test_cases_ui']);
     assert.equal(old.stage_attempts_total, 0);
   });
 

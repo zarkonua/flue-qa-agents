@@ -22,7 +22,7 @@ export type FieldChange =
   | { kind: 'steps'; field: 'steps'; changes: StepChange[] };
 
 /** Field order as a reader expects it, then anything else in name order. */
-const ORDER = ['title', 'priority', 'types', 'preconditions', 'testData', 'steps', 'expectedResult', 'covers', 'evidenceIds', 'automationCandidate', 'automationReason', 'tags'];
+const ORDER = ['title', 'testLevel', 'priority', 'types', 'preconditions', 'testData', 'steps', 'expectedResult', 'covers', 'evidenceIds', 'automationCandidate', 'automationReason', 'tags'];
 
 const isStrings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);

@@ -22,11 +22,21 @@ async function call<T>(method: 'GET' | 'POST', url: string, body?: unknown): Pro
 
 const enc = encodeURIComponent;
 
+export type CoverageMode = 'AUTOMATIC' | 'UI_ONLY' | 'API_ONLY';
+export type TestLevel = 'UI' | 'API';
+/** The suite's coverage mode and the API documentation read for it. */
+export interface CoverageModeView {
+  mode: CoverageMode; label: string; recorded: boolean; apiDocsUrl: string | null;
+  api: { status: 'AVAILABLE' | 'UNAVAILABLE' | 'NOT_REQUESTED'; endpoints: number; reason: string | null };
+}
+
 export interface Step { action: string; expected: string }
 export interface TestCase {
   id: string; title: string; priority: string; types: string[]; covers: string[]; evidenceIds: string[];
   preconditions: string[]; testData: Record<string, unknown>; steps: Step[]; expectedResult: string;
   automationCandidate: boolean; automationReason: string; tags: string[];
+  /** UI or API. Absent on a suite written before levels existed; read it through `levelOf`. */
+  testLevel?: TestLevel;
 }
 export type RequestStatus = 'PENDING' | 'PROCESSING' | 'PROPOSAL_READY' | 'CHANGES_REQUESTED' | 'REJECTED' | 'APPLIED' | 'FAILED';
 export type Operation = 'update' | 'create' | 'delete';
@@ -76,11 +86,13 @@ export interface Health {
 export interface Overview {
   artifactRoot: string; phase1: Phase1; health: Health;
   counts: { testCases: number; pendingReviews: number; bugs: number; openBugs: number; confirmedBugs: number; potentialBugs: number };
-  coverage: { testable: number; covered: number; uncovered: number } | null;
+  coverage: { testable: number; covered: number; uncovered: number; outOfScope?: number; testLevels?: Partial<Record<TestLevel, number>> } | null;
+  coverageMode?: CoverageModeView;
   requirements: { id: string; kind: 'acceptancePoint' | 'businessRule'; statement: string; testable: boolean; validationType: string | null; coveredBy: string[] }[];
 }
 export interface CaseRow {
   id: string; title: string; priority: string; types: string[]; covers: string[]; evidenceIds: string[];
+  testLevel: TestLevel;
   executionMode?: string; automationPriority?: string; automationStrategy: string | null; strategyReason: string | null; relatedBugIds: string[];
   pendingReview: { id: string; status: RequestStatus; operation: Operation } | null;
 }
@@ -111,6 +123,8 @@ export interface Run {
   gitCommit: string | null; gitDirty: boolean | null; startedAt: string; finishedAt: string | null; durationMs: number | null;
   authMode: string | null; archiveRelPath: string | null; errorCode: string | null; errorSummary: string | null;
   currentStage: string | null; langfuseTraceId: string | null; source: 'LIVE' | 'IMPORTED';
+  /** Null for a run recorded before coverage modes. */
+  coverageMode: CoverageMode | null; apiDocsUrl: string | null;
 }
 export interface RunSummary extends Run { metrics: Record<string, number>; failedStage: string | null }
 export interface RunStage {
@@ -134,6 +148,8 @@ export interface RunConfig {
   targets: { url: string; default: boolean }[];
   models: { id: string; provider: string; default: boolean; available: boolean; reason?: string }[];
   freshBrowser: { default: boolean };
+  coverageModes: { id: CoverageMode; default: boolean }[];
+  apiDocs: { default: string | null };
   auxiliaryOrigins: string[];
   langfuse: { enabled: boolean; baseUrl?: string };
 }
@@ -142,7 +158,7 @@ export interface RunConfigResponse {
   activeRun: { runId: string; status: string; model: string; startedAt: string; cancelRequested: boolean } | null;
   lockHolder: { runId: string | null; model: string | null; command: string | null; startedAt: string | null } | null;
 }
-export interface StartRunRequest { pipeline: 'PHASE1_MANUAL'; target: string; model: string; freshBrowser: boolean }
+export interface StartRunRequest { pipeline: 'PHASE1_MANUAL'; target: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string }
 
 /** One structured event from a run's event log — host-normalised and redacted. */
 export interface RunEvent {
@@ -161,7 +177,7 @@ export const api = {
   overview: () => call<Overview>('GET', '/api/overview'),
   testCases: () => call<{ testCases: CaseRow[] }>('GET', '/api/test-cases'),
   testCase: (id: string) => call<{
-    testCase: TestCase; prioritization: { executionMode: string; automationPriority: string; automationStrategy?: string; reason: string } | null;
+    testCase: TestCase; testLevel: TestLevel; prioritization: { executionMode: string; automationPriority: string; automationStrategy?: string; reason: string } | null;
     covers: { id: string; statement: string | null }[]; evidence: { id: string; statement: string | null; status: string | null }[];
     relatedBugIds: string[]; reviews: { id: string; operation: Operation; status: RequestStatus; updatedAt: string }[]; openReviewId: string | null;
   }>('GET', `/api/test-cases/${enc(id)}`),

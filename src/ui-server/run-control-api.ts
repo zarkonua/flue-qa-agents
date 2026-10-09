@@ -1,7 +1,7 @@
 // Starting, following and cancelling a Phase 1 run from the workspace.
 //
 //   GET  /api/run-config            what a run may be started with (host configuration; nothing secret)
-//   POST /api/runs                  start a Phase 1 run            { pipeline, target, model, freshBrowser }
+//   POST /api/runs                  start a Phase 1 run            { pipeline, target, model, freshBrowser, coverageMode?, apiDocsUrl? }
 //   POST /api/runs/:runId/cancel    cancel a run this workspace started
 //   GET  /api/runs/:runId/events    the run's structured events, as Server-Sent Events
 //
@@ -20,6 +20,7 @@ import type { RunHistoryStore } from '../history/run-history-store.ts';
 import { RUN_ID } from '../history/types.ts';
 import { isFinal, readEventLog, type RunEvent } from '../run-control/events.ts';
 import { PIPELINES, RunConfigError } from '../run-control/run-config.ts';
+import { COVERAGE_MODES, MAX_API_DOCS_URL } from '../lib/coverage-mode.ts';
 import { RunConflictError, type RunController } from '../run-control/run-controller.ts';
 import { RunsApiError } from './runs-api.ts';
 
@@ -31,6 +32,9 @@ const StartBody = v.strictObject({
   target: v.pipe(v.string(), v.maxLength(300)),
   model: v.pipe(v.string(), v.maxLength(200)),
   freshBrowser: v.boolean(),
+  // Optional, so a client from before coverage modes still starts an AUTOMATIC run.
+  coverageMode: v.optional(v.picklist(COVERAGE_MODES)),
+  apiDocsUrl: v.optional(v.pipe(v.string(), v.maxLength(MAX_API_DOCS_URL))),
 });
 const EmptyBody = v.strictObject({});
 
@@ -60,7 +64,7 @@ export function runControlRoutes(deps: { controller?: RunController; readBody: R
       const active = c.activeRun();
       return [200, {
         config: c.config(),
-        activeRun: active ? { runId: active.runId, status: active.status, model: active.model, startedAt: active.startedAt, cancelRequested: active.cancelRequested } : null,
+        activeRun: active ? { runId: active.runId, status: active.status, model: active.model, coverageMode: active.coverageMode, startedAt: active.startedAt, cancelRequested: active.cancelRequested } : null,
         lockHolder: holderView(c.lockHolder()),
       }];
     }],

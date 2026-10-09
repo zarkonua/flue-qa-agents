@@ -470,7 +470,10 @@ describe('coverage summary is derived, not reported', () => {
       covered: 3,
       uncovered: 0,
       exempt: 0,
+      outOfScope: 0,
       testCases: 3,
+      // A suite that states no level is UI — every suite from before levels was.
+      testLevels: { UI: 3 },
       uncoveredIds: [],
       multiRequirementCases: 0,
       requirementsWithMultipleCases: 0,

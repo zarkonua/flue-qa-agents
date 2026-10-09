@@ -36,6 +36,10 @@ import {
 import { approvePhase1, inspectPhase1 } from '../lib/phase1-gate.ts';
 import { buildReviewModel } from '../lib/review-view.ts';
 import { runRoutes, RunsApiError, type HistoryProvider } from './runs-api.ts';
+import { COVERAGE_MODE_LABEL, TEST_LEVELS, testLevelOf } from '../lib/coverage-mode.ts';
+import { apiDiscoverySummary, describeEndpoint } from '../lib/api-discovery.ts';
+import { apiOperations } from '../lib/semantic-validate.ts';
+import { readCoverageContext, readRunConfig } from '../lib/qa-artifacts.ts';
 import { runControlRoutes, serveRunEvents } from './run-control-api.ts';
 import type { RunController } from '../run-control/run-controller.ts';
 import { dependencyState } from '../lib/phase1-dependencies.ts';
@@ -152,6 +156,7 @@ const manualEdits = v.strictObject({
   automationCandidate: v.optional(v.boolean()),
   automationReason: v.optional(text(2000)),
   tags: v.optional(v.pipe(v.array(text(60)), v.maxLength(20))),
+  testLevel: v.optional(v.picklist(TEST_LEVELS)),
 });
 const CreateReviewBody = v.strictObject({
   operation: v.picklist(OPERATIONS),
@@ -259,6 +264,21 @@ function phase1Health(ws: Workspace, allBugs: BugReport[], refresh: RefreshStatu
   };
 }
 
+/** The suite's coverage mode and API documentation, as the pages show them. Never a path, never a query string. */
+function coverageView() {
+  const config = readRunConfig();
+  const context = readCoverageContext();
+  const api = apiDiscoverySummary(context.api);
+  return {
+    mode: context.mode,
+    label: COVERAGE_MODE_LABEL[context.mode],
+    // False for a workspace written before coverage modes: the mode shown is the default, not a recorded choice.
+    recorded: config !== undefined,
+    apiDocsUrl: config?.apiDocsUrl ?? null,
+    api: { status: api.status, endpoints: api.endpoints, reason: api.reason ?? null },
+  };
+}
+
 function bugs(ws: Workspace): BugReport[] {
   try {
     return ws.listBugs ? ws.listBugs() : listBugReportIds().map((b) => readBugReport(b)).filter((b): b is BugReport => b !== undefined);
@@ -352,6 +372,8 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
         },
         defectSummary: analysis?.summary ?? null,
         coverage: model.coverage ?? null,
+        // How the suite on disk was designed: its coverage mode and the API documentation read for it.
+        coverageMode: coverageView(),
         // Each requirement with the cases that cover it — the reverse traceability question.
         requirements: model.requirements.map((r) => ({ id: r.id, kind: r.kind, statement: r.statement, testable: r.testable, validationType: r.validationType ?? null, coveredBy: r.coveredBy })),
         health: phase1Health(ws, allBugs, options.refresh.status()),
@@ -368,6 +390,8 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
         const open = requests.filter((r) => r.targetTestCaseId === tc.id && OPEN_STATUSES.has(r.status)).at(-1);
         return {
           id: tc.id, title: tc.title, priority: tc.priority, types: tc.types ?? [], covers: tc.covers ?? [],
+          // UI or API. A case that states none is UI — see testLevelOf().
+          testLevel: testLevelOf(tc),
           evidenceIds: tc.evidenceIds ?? [], executionMode: prio?.executionMode, automationPriority: prio?.automationPriority,
           automationStrategy: prio?.automationStrategy ?? null, strategyReason: prio?.strategyReason ?? null,
           pendingReview: open ? { id: open.id, status: open.status, operation: open.operation } : null,
@@ -385,13 +409,21 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
       const discovery = read<DiscoveredBehavior>('discovered-behavior');
       const statements = new Map([...(requirements?.acceptancePoints ?? []), ...(requirements?.businessRules ?? [])].map((r) => [r.id, r.statement]));
       const behaviors = new Map((discovery?.behaviors ?? []).map((b) => [b.id, b]));
+      const operations = apiOperations(readCoverageContext());
       const prio = read<AutomationPrioritization>('automation-prioritization')?.cases.find((c) => c.testCaseId === caseId);
       const reviews = (await store.listRequests()).filter((r) => r.targetTestCaseId === caseId);
       return [200, {
         testCase: tc,
         prioritization: prio ?? null,
         covers: (tc.covers ?? []).map((r) => ({ id: r, statement: statements.get(r) ?? null })),
-        evidence: (tc.evidenceIds ?? []).map((b) => ({ id: b, statement: behaviors.get(b)?.statement ?? null, status: behaviors.get(b)?.status ?? null })),
+        testLevel: testLevelOf(tc),
+        // Evidence is a discovered behavior or a documented API operation; either is shown with what it says.
+        evidence: (tc.evidenceIds ?? []).map((b) => {
+          const operation = operations.get(b);
+          return operation
+            ? { id: b, statement: describeEndpoint(operation), status: 'DOCUMENTED' }
+            : { id: b, statement: behaviors.get(b)?.statement ?? null, status: behaviors.get(b)?.status ?? null };
+        }),
         relatedBugIds: bugsForCase(bugs(ws), caseId),
         reviews: reviews.map((r) => ({ id: r.id, operation: r.operation, status: r.status, updatedAt: r.updatedAt })),
         openReviewId: (await openRequestFor(store, caseId))?.id ?? null,

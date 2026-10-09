@@ -11,7 +11,7 @@
 
 import { defineTool } from '@flue/runtime';
 import * as v from 'valibot';
-import { readQaArtifact, scenarioTypeVocabulary } from '../lib/qa-artifacts.ts';
+import { readCoverageContext, readQaArtifact, scenarioTypeVocabulary } from '../lib/qa-artifacts.ts';
 import type { DiscoveredBehavior, RequirementsAnalysis, TestCases } from '../lib/semantic-validate.ts';
 import { focusedContext } from '../review/context.ts';
 import { REQUEST_ID } from '../review/review-store.ts';
@@ -32,8 +32,8 @@ export const readChangeRequestTool = defineTool({
   name: 'read_change_request',
   description:
     'Read the change request you were assigned, with everything it needs: the person\'s comment and edits, ' +
-    'the target test case if any, the behaviors and requirements it can rest on, the other active cases, ' +
-    'and the allowed priority and type values. Takes no arguments.',
+    'the target test case if any, the behaviors, documented API operations and requirements it can rest on, ' +
+    'the other active cases, the run\'s coverage mode, and the allowed priority, type and test-level values. Takes no arguments.',
   input: v.object({}),
   async run() {
     const request = await currentRequest();
@@ -47,6 +47,7 @@ export const readChangeRequestTool = defineTool({
         requirements: readQaArtifact('requirements-analysis') as RequirementsAnalysis | undefined,
         proposals: await defaultStore().listProposals(request.id),
         types: scenarioTypeVocabulary(),
+        coverage: readCoverageContext(),
       }),
     };
   },

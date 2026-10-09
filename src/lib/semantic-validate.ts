@@ -19,6 +19,8 @@
 
 // `redaction.ts` is pure too, so importing it keeps this module free of I/O.
 import { locationIdentity } from './redaction.ts';
+import { apiEvidenceTexts, describeEndpoint, hasApi, pathMatchesTemplate, type ApiDiscovery, type ApiEndpoint } from './api-discovery.ts';
+import { allowedTestLevels, DEFAULT_COVERAGE_MODE, testLevelOf, usesApiDocs, type CoverageMode, type TestLevel } from './coverage-mode.ts';
 
 export type SemanticErrorCode =
   | 'UNKNOWN_EVIDENCE_ID'
@@ -62,6 +64,10 @@ export type SemanticErrorCode =
   | 'COVERAGE_NOT_EVIDENCED'
   | 'CONTRADICTORY_STRATEGY'
   | 'UNSUPPORTED_STRATEGY'
+  // Coverage modes and test levels (src/lib/coverage-mode.ts)
+  | 'TEST_LEVEL_OUT_OF_MODE'
+  | 'UNSUPPORTED_TEST_LEVEL'
+  | 'DUPLICATE_ACROSS_LEVELS'
   // Defect analysis (src/lib/defects.ts)
   | 'UNSUPPORTED_EXPECTED'
   | 'UNOBSERVED_ACTUAL'
@@ -173,7 +179,26 @@ export interface TestCase {
   steps: { action: string; expected: string }[];
   expectedResult: string;
   automationReason: string;
+  /** At which level the case is exercised. Absent means UI — see `testLevelOf`. */
+  testLevel?: TestLevel;
   [key: string]: unknown;
+}
+
+/**
+ * What a run was configured with, as far as validation is concerned: its
+ * coverage mode and the API documentation the host read for it. Read from disk
+ * by `qa-artifacts.ts`; absent means a run from before modes existed, which is
+ * AUTOMATIC with no API documentation — exactly how those runs behaved.
+ */
+export interface CoverageContext {
+  mode: CoverageMode;
+  api?: ApiDiscovery;
+}
+
+/** The documented operations a run may cite as evidence, by id. Empty in UI_ONLY and when there is no documentation. */
+export function apiOperations(context: CoverageContext | undefined): Map<string, ApiEndpoint> {
+  if (!context || !usesApiDocs(context.mode) || !hasApi(context.api)) return new Map();
+  return new Map(context.api.endpoints.map((e) => [e.id, e]));
 }
 
 export interface TestCases {
@@ -471,6 +496,12 @@ export interface Corpus {
   routes: Set<string>;
   paths: Set<string>;
   hasRoutes: boolean;
+  /**
+   * Documented API operations, by method and templated path (`DELETE /notes/{id}`).
+   * A concrete path matching a template is supported; a method named beside
+   * it has to be one the documentation declares for that path.
+   */
+  operations: { method: string; path: string }[];
 }
 
 /**
@@ -482,8 +513,11 @@ export function buildCorpus(
   discovery: DiscoveredBehavior | undefined,
   requirements?: RequirementsAnalysis,
   extra: string[] = [],
+  context?: CoverageContext,
 ): Corpus {
-  const texts: string[] = [...extra];
+  // Documented API operations are evidence too, when this run read them.
+  const operations = [...apiOperations(context).values()];
+  const texts: string[] = [...extra, ...(operations.length > 0 ? apiEvidenceTexts(context!.api) : [])];
   const routes = new Set<string>();
 
   if (discovery) {
@@ -519,6 +553,7 @@ export function buildCorpus(
     routes,
     paths,
     hasRoutes: routes.size > 0,
+    operations: operations.map((e) => ({ method: e.method, path: e.path })),
   };
 }
 
@@ -556,6 +591,7 @@ export function checkFacts(
   knownCredentials: ReadonlySet<string> = new Set(),
 ): void {
   checkRoutes(text, path, corpus, errors);
+  checkRequests(text, path, corpus, errors);
   checkLiteralsAndFeatures(text, path, corpus, errors, knownCredentials);
 }
 
@@ -574,7 +610,7 @@ function checkRoutes(text: string, path: string, corpus: Corpus, errors: Semanti
   for (const route of pathsIn(text)) {
     const key = route.replace(/\/+$/, '') || '/';
     if (key === '/' && corpus.hasRoutes) continue;
-    if (!corpus.paths.has(key)) {
+    if (!corpus.paths.has(key) && !corpus.operations.some((o) => pathMatchesTemplate(key, o.path))) {
       errors.push({
         code: 'UNSUPPORTED_FACT',
         path,
@@ -582,6 +618,34 @@ function checkRoutes(text: string, path: string, corpus: Corpus, errors: Semanti
         details: `No evidence that the route "${route}" exists. Describe the outcome without a route, or raise it as an open question.`,
       });
     }
+  }
+}
+
+/** `POST /notes`, `DELETE /notes/42` — a request written out as method and path. */
+const REQUEST_PATTERN = /\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\/[A-Za-z0-9_\-./{}:]*)/g;
+
+/**
+ * A request named as method + path must be an operation the documentation
+ * declares. The path alone is checked by `checkRoutes`; this catches the other
+ * half of an invented endpoint — a real path with a method it does not have.
+ * Only applies where documented operations exist: without them a method and a
+ * path in prose are not a claim about any API.
+ */
+function checkRequests(text: string, path: string, corpus: Corpus, errors: SemanticError[]): void {
+  if (corpus.operations.length === 0) return;
+  for (const [, method, rawPath] of text.matchAll(REQUEST_PATTERN)) {
+    const requestPath = rawPath.replace(/[.,;:!?]+$/, '').replace(/\/+$/, '') || '/';
+    const samePath = corpus.operations.filter((o) => pathMatchesTemplate(requestPath, o.path));
+    // An undocumented path is already reported by checkRoutes; say it once.
+    if (samePath.length === 0 || samePath.some((o) => o.method === method)) continue;
+    errors.push({
+      code: 'UNSUPPORTED_FACT',
+      path,
+      value: `${method} ${requestPath}`,
+      details:
+        `The API documentation declares no ${method} for "${requestPath}" (it declares: ${[...new Set(samePath.map((o) => o.method))].join(', ')}). ` +
+        'Use an operation the documentation declares, or raise it as an open question.',
+    });
   }
 }
 
@@ -1123,12 +1187,15 @@ export function validateDiscoveredBehavior(
 export function validateRequirementsAnalysis(
   discovery: DiscoveredBehavior,
   requirements: RequirementsAnalysis,
+  context?: CoverageContext,
 ): SemanticError[] {
   const errors: SemanticError[] = [];
-  const corpus = buildCorpus(discovery);
+  const corpus = buildCorpus(discovery, undefined, [], context);
   const behaviors = new Map(discovery.behaviors.map((b) => [b.id, b]));
+  // Documented API operations, citable as evidence beside what discovery observed.
+  const operations = apiOperations(context);
   const questionIds = new Set(discovery.openQuestions.map((q) => q.id));
-  const validIds = [...behaviors.keys()].join(', ') || '(none)';
+  const validIds = [...behaviors.keys(), ...operations.keys()].join(', ') || '(none)';
 
   checkDuplicateIds([...requirements.acceptancePoints, ...requirements.businessRules], 'acceptancePoints+businessRules', errors);
 
@@ -1148,10 +1215,14 @@ export function validateRequirementsAnalysis(
       }
 
       const cited: Behavior[] = [];
+      const citedOperations: ApiEndpoint[] = [];
       item.evidenceIds.forEach((id, j) => {
         const behavior = behaviors.get(id);
+        const operation = operations.get(id);
         if (behavior) {
           cited.push(behavior);
+        } else if (operation) {
+          citedOperations.push(operation);
         } else if (questionIds.has(id)) {
           errors.push({
             code: 'NOT_EVIDENCE',
@@ -1164,15 +1235,20 @@ export function validateRequirementsAnalysis(
             code: 'UNKNOWN_EVIDENCE_ID',
             path: `${base}.evidenceIds[${j}]`,
             value: id,
-            details: `No discovered behavior has this ID. Valid behavior IDs: ${validIds}.`,
+            details: operations.size > 0
+              ? `No discovered behavior or documented API operation has this ID. Valid IDs: ${validIds}.`
+              : `No discovered behavior has this ID. Valid behavior IDs: ${validIds}.`,
           });
         }
       });
 
-      if (cited.length > 0) {
+      if (cited.length > 0 || citedOperations.length > 0) {
         // The evidence policy: suspected issues and inferences never become
-        // expected behavior on their own.
-        if (cited.every((b) => b.suspectedIssue)) {
+        // expected behavior on their own. A documented operation is its own
+        // support, so these apply only to a requirement resting on behaviors alone.
+        if (citedOperations.length > 0) {
+          // nothing: the documentation states it
+        } else if (cited.every((b) => b.suspectedIssue)) {
           errors.push({
             code: 'NOT_EVIDENCE',
             path: `${base}.evidenceIds`,
@@ -1187,7 +1263,13 @@ export function validateRequirementsAnalysis(
             details: 'Every cited behavior is INFERRED. An inference cannot become a requirement on its own; raise an open question instead.',
           });
         }
-        checkOverlap(item.statement, cited.map((b) => b.statement), `${base}.statement`, item.evidenceIds, errors);
+        checkOverlap(
+          item.statement,
+          [...cited.map((b) => b.statement), ...citedOperations.map(describeEndpoint)],
+          `${base}.statement`,
+          item.evidenceIds,
+          errors,
+        );
       }
 
       checkFacts(item.statement, `${base}.statement`, corpus, errors);
@@ -1378,10 +1460,28 @@ export function analysisCoverageSummary(
  * not the host's to infer. Open questions are never included: a question is
  * uncertainty, and demanding a test for it would invite invention.
  */
-export function testableRequirements(requirements: RequirementsAnalysis): EvidencedItem[] {
+export function testableRequirements(requirements: RequirementsAnalysis, context?: CoverageContext): EvidencedItem[] {
   return [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])].filter(
-    (r) => r?.testable !== false,
+    (r) => r?.testable !== false && inCoverageScope(r, context),
   );
+}
+
+/**
+ * Is this requirement something the run's coverage mode can test at all?
+ *
+ * Decided from the requirement's own evidence, never from its wording:
+ *   - API_ONLY tests what the API documentation supports, so a requirement owes
+ *     a case only if it cites a documented operation;
+ *   - UI_ONLY and AUTOMATIC leave nothing out. (In UI_ONLY no operation is
+ *     citable, so every requirement rests on observed behavior anyway.)
+ *
+ * Out of scope is not "not testable": the requirement stands, and a later run
+ * in another mode owes it a case.
+ */
+export function inCoverageScope(requirement: EvidencedItem, context?: CoverageContext): boolean {
+  if (context?.mode !== 'API_ONLY') return true;
+  const operations = apiOperations(context);
+  return (requirement?.evidenceIds ?? []).some((id) => operations.has(id));
 }
 
 export interface CoverageSummary {
@@ -1391,7 +1491,11 @@ export interface CoverageSummary {
   uncovered: number;
   /** Requirements the analyst marked `testable: false`. */
   exempt: number;
+  /** Testable requirements this run's coverage mode cannot exercise — API_ONLY leaves UI-evidenced ones out. */
+  outOfScope: number;
   testCases: number;
+  /** Cases per test level, host-counted. A case that states none is UI. */
+  testLevels: Record<string, number>;
   uncoveredIds: string[];
   /**
    * Scenario shape, host-counted from the cases' own `types`. Coverage says
@@ -1445,15 +1549,19 @@ export function scenarioDiversityDiagnostic(summary: CoverageSummary): string | 
  * Coverage, computed from the two artifacts — never from a total the model
  * reports about itself. Used by the validator and by the run log.
  */
-export function coverageSummary(requirements: RequirementsAnalysis, testCases: TestCases): CoverageSummary {
-  const testable = testableRequirements(requirements);
+export function coverageSummary(requirements: RequirementsAnalysis, testCases: TestCases, context?: CoverageContext): CoverageSummary {
+  const testable = testableRequirements(requirements, context);
   const claimed = new Set((testCases.testCases ?? []).flatMap((tc) => tc?.covers ?? []));
   const uncoveredIds = testable.filter((r) => !claimed.has(r.id)).map((r) => r.id);
   const all = [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])];
+  const exempt = all.filter((r) => r?.testable === false).length;
   const cases = testCases.testCases ?? [];
   const scenarioTypes: Record<string, number> = {};
+  const testLevels: Record<string, number> = {};
   for (const tc of cases) {
-    for (const type of tc?.types ?? []) scenarioTypes[type] = (scenarioTypes[type] ?? 0) + 1;
+    for (const type of (tc?.types as string[] | undefined) ?? []) scenarioTypes[type] = (scenarioTypes[type] ?? 0) + 1;
+    const level = testLevelOf(tc);
+    testLevels[level] = (testLevels[level] ?? 0) + 1;
   }
   const casesPerRequirement = new Map<string, number>();
   for (const tc of cases) {
@@ -1464,8 +1572,10 @@ export function coverageSummary(requirements: RequirementsAnalysis, testCases: T
     testable: testable.length,
     covered: testable.length - uncoveredIds.length,
     uncovered: uncoveredIds.length,
-    exempt: all.length - testable.length,
+    exempt,
+    outOfScope: all.length - exempt - testable.length,
     testCases: cases.length,
+    testLevels,
     uncoveredIds,
     scenarioTypes,
     multiRequirementCases: cases.filter((tc) => (tc?.covers ?? []).length > 1).length,
@@ -1477,9 +1587,13 @@ export function validateTestCases(
   discovery: DiscoveredBehavior | undefined,
   requirements: RequirementsAnalysis,
   testCases: TestCases,
+  context?: CoverageContext,
 ): SemanticError[] {
   const errors: SemanticError[] = [];
-  const corpus = buildCorpus(discovery, requirements);
+  const corpus = buildCorpus(discovery, requirements, [], context);
+  const mode = context?.mode ?? DEFAULT_COVERAGE_MODE;
+  const operations = apiOperations(context);
+  const allowedLevels = allowedTestLevels(mode);
 
   const behaviors = new Map((discovery?.behaviors ?? []).map((b) => [b.id, b]));
   const derived = new Map([...requirements.acceptancePoints, ...requirements.businessRules].map((a) => [a.id, a]));
@@ -1487,7 +1601,7 @@ export function validateTestCases(
     ...requirements.openQuestions.map((q) => q.id),
     ...(discovery?.openQuestions ?? []).map((q) => q.id),
   ]);
-  const validIds = [...derived.keys(), ...behaviors.keys()].join(', ') || '(none)';
+  const validIds = [...derived.keys(), ...behaviors.keys(), ...operations.keys()].join(', ') || '(none)';
 
   checkDuplicateIds(testCases.testCases, 'testCases', errors);
 
@@ -1556,17 +1670,35 @@ export function validateTestCases(
     }
 
     const evidenceTexts: string[] = [];
+    // What the case ultimately rests on: something the documentation declares,
+    // something observed in the interface, or both. This is what a test level
+    // has to be consistent with.
+    let restsOnApi = false;
+    let restsOnBehavior = false;
     tc.evidenceIds.forEach((id, j) => {
       const item = derived.get(id);
       const behavior = behaviors.get(id);
+      const operation = operations.get(id);
       if (item) {
         evidenceTexts.push(item.statement);
         for (const upstream of item.evidenceIds) {
           const b = behaviors.get(upstream);
-          if (b) evidenceTexts.push(b.statement);
+          const o = operations.get(upstream);
+          if (b) {
+            evidenceTexts.push(b.statement);
+            restsOnBehavior = true;
+          }
+          if (o) {
+            evidenceTexts.push(describeEndpoint(o));
+            restsOnApi = true;
+          }
         }
       } else if (behavior) {
         evidenceTexts.push(behavior.statement);
+        restsOnBehavior = true;
+      } else if (operation) {
+        evidenceTexts.push(describeEndpoint(operation));
+        restsOnApi = true;
       } else if (questionIds.has(id)) {
         errors.push({
           code: 'NOT_EVIDENCE',
@@ -1586,6 +1718,45 @@ export function validateTestCases(
 
     const claim = [tc.title, tc.expectedResult, ...tc.steps.map((s) => `${s.action} ${s.expected}`)].join(' ');
     checkOverlap(claim, evidenceTexts, `${base}`, tc.evidenceIds, errors);
+
+    // ---- Test level ----------------------------------------------------------
+    //
+    // Two separate questions. Does the run's coverage mode allow this level at
+    // all? And does the case's own evidence support it — an API-level case
+    // needs an operation the documentation declares, a UI-level case needs
+    // something a browser observed. The second is what keeps "API test" from
+    // meaning "an endpoint I assume exists".
+    const level = testLevelOf(tc);
+    if (!allowedLevels.includes(level)) {
+      errors.push({
+        code: 'TEST_LEVEL_OUT_OF_MODE',
+        path: `${base}.testLevel`,
+        value: level,
+        details:
+          mode === 'UI_ONLY'
+            ? `${tc.id} is API level, but this run is UI only. Set "testLevel": "UI" and exercise it through the interface, or remove the case.`
+            : `${tc.id} is UI level, but this run is API only. Set "testLevel": "API" and exercise a documented operation, or remove the case.`,
+      });
+    } else if (level === 'API' && !restsOnApi) {
+      errors.push({
+        code: 'UNSUPPORTED_TEST_LEVEL',
+        path: `${base}.testLevel`,
+        value: 'API',
+        details:
+          operations.size === 0
+            ? `${tc.id} is API level, but this run has no API documentation, so no operation is known to exist. Set "testLevel": "UI", or remove the case.`
+            : `${tc.id} is API level but cites no documented operation. Cite the operation it calls (${[...operations.keys()].slice(0, 12).join(', ')}${operations.size > 12 ? ', …' : ''}) or a requirement that cites one — or set "testLevel": "UI".`,
+      });
+    } else if (level === 'UI' && restsOnApi && !restsOnBehavior) {
+      errors.push({
+        code: 'UNSUPPORTED_TEST_LEVEL',
+        path: `${base}.testLevel`,
+        value: 'UI',
+        details:
+          `${tc.id} is UI level but rests only on API documentation: nothing it cites was observed in the interface. ` +
+          'Set "testLevel": "API", or cite the discovered behavior the scenario exercises.',
+      });
+    }
 
     const fields: [string, string][] = [
       [`${base}.title`, tc.title],
@@ -1614,7 +1785,7 @@ export function validateTestCases(
   // The other direction: every test case being supported does not make a suite
   // complete. Each testable requirement must be demonstrated by some case, or
   // the analyst must have marked it `testable: false` with a reason.
-  for (const requirement of testableRequirements(requirements)) {
+  for (const requirement of testableRequirements(requirements, context)) {
     const covered = testCases.testCases.some((tc) => (tc?.covers ?? []).includes(requirement.id));
     if (!covered) {
       errors.push({
@@ -1624,6 +1795,39 @@ export function validateTestCases(
         details: `"${clip(requirement.statement, 100)}" has no test case. Add one whose covers includes ${requirement.id}.`,
       });
     }
+  }
+
+  // ---- No scenario twice, once per level -----------------------------------
+  //
+  // AUTOMATIC lets each scenario take the level that fits it. Writing the same
+  // one at both is the failure that invites: two cases that demonstrate the
+  // same requirements with the same kind of scenario, differing only in how
+  // they are driven. Identity here is deliberately narrow — the same `covers`
+  // and the same `types` — so a UI smoke check and an API validation case for
+  // one requirement are two cases, and only a true restatement is refused.
+  if (allowedLevels.length > 1) {
+    const signature = (tc: TestCase) =>
+      `${[...(tc.covers ?? [])].sort().join(',')}|${[...((tc.types as string[] | undefined) ?? [])].sort().join(',')}`;
+    const firstAt = new Map<string, { id: string; level: TestLevel }>();
+    testCases.testCases.forEach((tc, i) => {
+      if ((tc.covers ?? []).length === 0) return;
+      const key = signature(tc);
+      const level = testLevelOf(tc);
+      const earlier = firstAt.get(key);
+      if (earlier === undefined) {
+        firstAt.set(key, { id: tc.id, level });
+      } else if (earlier.level !== level) {
+        errors.push({
+          code: 'DUPLICATE_ACROSS_LEVELS',
+          path: `testCases[${i}]`,
+          value: tc.id,
+          details:
+            `${tc.id} (${level}) and ${earlier.id} (${earlier.level}) cover the same requirements (${(tc.covers ?? []).join(', ')}) ` +
+            'with the same scenario types. Keep the level that verifies it best and remove the other, or make them ' +
+            'demonstrate different things — different requirements, or a different kind of scenario.',
+        });
+      }
+    });
   }
 
   return errors;
@@ -1687,6 +1891,8 @@ export function strategySummary(prioritization: AutomationPrioritization): Recor
 export function observedCapabilities(input: {
   requirements?: RequirementsAnalysis;
   evidence?: { findings?: { type?: string; source?: string }[] };
+  /** The run's coverage mode and API documentation, when known. */
+  context?: CoverageContext;
 }): { api: boolean; visual: boolean } {
   const items = [
     ...(input.requirements?.acceptancePoints ?? []),
@@ -1699,8 +1905,12 @@ export function observedCapabilities(input: {
     (f) => f?.type === 'REQUEST_FAILED' || f?.type === 'BROKEN_RESOURCE',
   );
 
+  // A UI-only run automates nothing through an API, whatever was observed.
+  if (input.context?.mode === 'UI_ONLY') return { api: false, visual: typed.has('VISUAL') };
+
   return {
-    api: typed.has('API') || typed.has('CONTRACT') || sawRequests,
+    // Documentation the host read is a fourth signal: the operations are declared.
+    api: typed.has('API') || typed.has('CONTRACT') || sawRequests || apiOperations(input.context).size > 0,
     visual: typed.has('VISUAL'),
   };
 }
@@ -1711,15 +1921,27 @@ const STRATEGY_CONFLICTS: Record<string, readonly AutomationStrategy[]> = {
   AUTOMATION: ['MANUAL'],
 };
 
+/** Strategies that are incompatible with the level a test case was designed at. */
+const LEVEL_CONFLICTS: Record<TestLevel, readonly AutomationStrategy[]> = {
+  API: ['UI', 'UI_API', 'VISUAL'],
+  UI: ['API'],
+};
+
 export function validateAutomationPrioritization(
   testCases: TestCases,
   prioritization: AutomationPrioritization,
   discovery?: DiscoveredBehavior,
   requirements?: RequirementsAnalysis,
   capabilities?: { api: boolean; visual: boolean },
+  context?: CoverageContext,
 ): SemanticError[] {
   const errors: SemanticError[] = [];
   const ids = testCases.testCases.map((tc) => tc.id);
+  // Only a level the case states. A suite from before levels says nothing, and a
+  // strategy chosen for it then is not contradicted by a default it never saw.
+  const levels = new Map(
+    testCases.testCases.filter((tc) => tc.testLevel !== undefined).map((tc) => [tc.id, testLevelOf(tc)]),
+  );
   const known = new Set(ids);
   const counts = new Map<string, number>();
 
@@ -1768,6 +1990,26 @@ export function validateAutomationPrioritization(
         });
       }
 
+      // The route has to agree with the level the case was designed at: an
+      // API-level case is a request and its response, so it is not automated
+      // through a browser; a UI-level case is not automated without one.
+      const level = levels.get(entry.testCaseId);
+      const mismatch =
+        level === 'API' ? (LEVEL_CONFLICTS.API as readonly string[]).includes(strategy)
+          : level === 'UI' ? (LEVEL_CONFLICTS.UI as readonly string[]).includes(strategy)
+            : false;
+      if (mismatch && entry.executionMode === 'AUTOMATION') {
+        errors.push({
+          code: 'CONTRADICTORY_STRATEGY',
+          path: `${base}.automationStrategy`,
+          value: `${level}/${strategy}`,
+          details:
+            level === 'API'
+              ? `${entry.testCaseId} is an API-level test case; it cannot be automated through ${strategy}. Use API, or UNKNOWN.`
+              : `${entry.testCaseId} is a UI-level test case; it cannot be automated through API alone. Use UI, UI_API or VISUAL, or UNKNOWN.`,
+        });
+      }
+
       // Capabilities are only checked when the host worked them out; a run
       // without that context skips the check rather than guessing.
       if (capabilities !== undefined) {
@@ -1777,8 +2019,11 @@ export function validateAutomationPrioritization(
             path: `${base}.automationStrategy`,
             value: strategy,
             details:
-              'No API surface was observed in this run — no requirement is typed API or CONTRACT and no HTTP ' +
-              'request was recorded. Use UI for what was actually observed, or UNKNOWN. Do not assume an API exists.',
+              context?.mode === 'UI_ONLY'
+                ? 'This run is UI only: nothing is automated through an API. Use UI, or UNKNOWN.'
+                : 'No API surface was observed in this run — no requirement is typed API or CONTRACT, no HTTP ' +
+                  'request was recorded and no API documentation was read. Use UI for what was actually observed, ' +
+                  'or UNKNOWN. Do not assume an API exists.',
           });
         }
         if (strategy === 'VISUAL' && !capabilities.visual) {
@@ -1818,7 +2063,7 @@ export function validateAutomationPrioritization(
 
   // Reasons are judgements, so only hard facts are checked: an invented route
   // or account is still wrong even inside a rationale.
-  const corpus = buildCorpus(discovery, requirements, testCases.testCases.flatMap(testCaseTexts));
+  const corpus = buildCorpus(discovery, requirements, testCases.testCases.flatMap(testCaseTexts), context);
   prioritization.cases.forEach((entry, i) => {
     for (const [path, text] of [[`cases[${i}].reason`, entry.reason], ...entry.blockingFactors.map((b, j): [string, string] => [`cases[${i}].blockingFactors[${j}]`, b])] as [string, string][]) {
       checkRoutes(text, path, corpus, errors);
@@ -1954,6 +2199,9 @@ const ORDER: SemanticErrorCode[] = [
   'COVERAGE_NOT_EVIDENCED',
   'CONTRADICTORY_STRATEGY',
   'UNSUPPORTED_STRATEGY',
+  'TEST_LEVEL_OUT_OF_MODE',
+  'UNSUPPORTED_TEST_LEVEL',
+  'DUPLICATE_ACROSS_LEVELS',
   'UNCOVERED_ACCEPTANCE_POINT',
   'MISSING_COVERAGE',
   'UNKNOWN_LOCATION',
@@ -2011,6 +2259,11 @@ const HOW_TO_FIX: Record<SemanticErrorCode, string> = {
     'A case may only claim to cover a requirement whose evidence it actually cites. Split the scenario, or cite the evidence.',
   CONTRADICTORY_STRATEGY: 'An automation strategy may not contradict the execution mode.',
   UNSUPPORTED_STRATEGY: 'A strategy may only name a capability this run actually observed.',
+  TEST_LEVEL_OUT_OF_MODE: "Set testLevel to a level this run's coverage mode allows, or remove the case.",
+  UNSUPPORTED_TEST_LEVEL:
+    'An API-level case must rest on a documented operation (API-n), and a UI-level case on something observed in the interface. Change the level, cite the right evidence, or remove the case.',
+  DUPLICATE_ACROSS_LEVELS:
+    'The same scenario is written at both UI and API level. Keep the level that verifies it best, or make the two cases demonstrate different things.',
   UNKNOWN_OBSERVATION: 'cite only observation ids the ledger actually holds',
   UNOBSERVED_ACTUAL:
     'A defect needs an OBSERVED product behavior as its actual result. Without one, classify it INSUFFICIENT_EVIDENCE.',
@@ -2242,6 +2495,9 @@ const SPECIFIC = new Set<SemanticErrorCode>([
   'EVIDENCE_MISMATCH',
   'CONTRADICTS_UPSTREAM',
   'UNKNOWN_AREA',
+  'TEST_LEVEL_OUT_OF_MODE',
+  'UNSUPPORTED_TEST_LEVEL',
+  'DUPLICATE_ACROSS_LEVELS',
 ]);
 
 const MAX_REPORTED = 24;

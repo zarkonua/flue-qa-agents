@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.ts';
 import { STATUS_LABEL } from '../lib/review-state.ts';
+import { levelCounts, levelOf, matchesLevel, type LevelFilter } from '../lib/coverage.ts';
 
 export function TestCasesPage() {
   const navigate = useNavigate();
@@ -11,6 +12,7 @@ export function TestCasesPage() {
   const [priority, setPriority] = useState('ALL');
   const [type, setType] = useState('ALL');
   const [strategy, setStrategy] = useState('ALL');
+  const [level, setLevel] = useState<LevelFilter>('ALL');
   const [pendingOnly, setPendingOnly] = useState(false);
   const [adding, setAdding] = useState(false);
   const [intent, setIntent] = useState('');
@@ -26,7 +28,9 @@ export function TestCasesPage() {
   const rows = data?.testCases ?? [];
   const types = useMemo(() => [...new Set(rows.flatMap((r) => r.types))].sort(), [rows]);
   const strategies = useMemo(() => [...new Set(rows.map((r) => r.automationStrategy).filter((x): x is string => !!x))].sort(), [rows]);
+  const levels = useMemo(() => levelCounts(rows), [rows]);
   const shown = rows.filter((r) =>
+    matchesLevel(r, level) &&
     (priority === 'ALL' || r.priority === priority) &&
     (type === 'ALL' || r.types.includes(type)) &&
     (strategy === 'ALL' || r.automationStrategy === strategy) &&
@@ -40,6 +44,11 @@ export function TestCasesPage() {
         <input type="search" placeholder="Search id, title, covers…" value={q} onChange={(e) => setQ(e.target.value)} />
         <select value={priority} onChange={(e) => setPriority(e.target.value)} aria-label="Priority">
           {['ALL', 'P0', 'P1', 'P2', 'P3'].map((p) => <option key={p}>{p}</option>)}
+        </select>
+        <select value={level} onChange={(e) => setLevel(e.target.value as LevelFilter)} aria-label="Test level" data-testid="level-filter">
+          <option value="ALL">All levels</option>
+          <option value="UI">UI ({levels.UI})</option>
+          <option value="API">API ({levels.API})</option>
         </select>
         <select value={type} onChange={(e) => setType(e.target.value)} aria-label="Type">
           <option>ALL</option>{types.map((t) => <option key={t}>{t}</option>)}
@@ -67,12 +76,13 @@ export function TestCasesPage() {
       )}
 
       <table className="list">
-        <thead><tr><th>ID</th><th>Title</th><th>Priority</th><th>Types</th><th>Covers</th><th>Automation</th><th>Bugs</th><th>Review</th></tr></thead>
+        <thead><tr><th>ID</th><th>Title</th><th>Level</th><th>Priority</th><th>Types</th><th>Covers</th><th>Automation</th><th>Bugs</th><th>Review</th></tr></thead>
         <tbody>
           {shown.map((r) => (
             <tr key={r.id} data-testid={`case-row-${r.id}`}>
               <td><Link to={`/test-cases/${encodeURIComponent(r.id)}`}>{r.id}</Link></td>
               <td>{r.title}</td>
+              <td><span className={`badge level-${levelOf(r).toLowerCase()}`} data-testid={`case-level-${r.id}`}>{levelOf(r)}</span></td>
               <td>{r.priority}</td>
               <td>{r.types.join(', ')}</td>
               <td>{r.covers.join(', ')}</td>

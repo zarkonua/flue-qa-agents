@@ -29,6 +29,8 @@ export type ProposalStatus = 'READY' | 'APPLIED' | 'REJECTED' | 'SUPERSEDED';
 /** Fields a person may edit on a case. The id, coverage and evidence are not among them. */
 export const EDITABLE_FIELDS = [
   'title', 'priority', 'types', 'preconditions', 'testData', 'steps', 'expectedResult', 'automationCandidate', 'automationReason', 'tags',
+  // Editable, and checked like everything else: the level has to be one the run's coverage mode allows and the case's evidence supports.
+  'testLevel',
 ] as const;
 
 export interface ManualEdits {
@@ -42,6 +44,7 @@ export interface ManualEdits {
   automationCandidate?: boolean;
   automationReason?: string;
   tags?: string[];
+  testLevel?: 'UI' | 'API';
 }
 
 export type HistoryEvent = 'created' | 'processing' | 'proposal' | 'failed' | 'rejected' | 'changes_requested' | 'applied' | 'comment';

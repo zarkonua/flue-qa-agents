@@ -43,6 +43,7 @@ import {
   validateTestCasesReview,
   validateRepoAnalysis,
   type AutomationPrioritization,
+  type CoverageContext,
   type TestCasesReview,
   type DiscoveredBehavior,
   type RepoAnalysis,
@@ -50,6 +51,8 @@ import {
   type SemanticError,
   type TestCases,
 } from './semantic-validate.ts';
+import type { ApiDiscovery } from './api-discovery.ts';
+import { DEFAULT_COVERAGE_MODE, parseCoverageMode, type RunConfigRecord } from './coverage-mode.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCHEMAS_DIR = resolve(here, '..', '..', 'schemas');
@@ -124,7 +127,13 @@ export type QaArtifactName =
   | 'discovery-evidence'
   // Host-projected from repo-analysis; see src/lib/automation-contract.ts.
   // Readable by the automation agents, writable by none of them.
-  | 'automation-project-contract';
+  | 'automation-project-contract'
+  // Host-written only. What the product's API documentation declares, read by
+  // `src/lib/api-discovery.ts`. Readable by the agents, writable by none.
+  | 'api-discovery'
+  // Host-written only, and not readable by agents either: the run's coverage
+  // mode. See `src/lib/coverage-mode.ts`.
+  | 'run-config';
 
 interface ArtifactDef {
   fileName: string;
@@ -143,6 +152,8 @@ const ARTIFACTS: Record<QaArtifactName, ArtifactDef> = {
   'automation-plan': { fileName: 'automation-plan.json', schemaFile: 'automation-plan.schema.json' },
   'discovery-evidence': { fileName: 'discovery-evidence.json', schemaFile: 'discovery-evidence.schema.json' },
   'automation-project-contract': { fileName: 'automation-project-contract.json', schemaFile: 'automation-project-contract.schema.json' },
+  'api-discovery': { fileName: 'api-discovery.json', schemaFile: 'api-discovery.schema.json' },
+  'run-config': { fileName: 'run-config.json', schemaFile: 'run-config.schema.json' },
 };
 
 /** A schema file as plain JSON — for reading a vocabulary out of it, never for validating. */
@@ -210,6 +221,43 @@ export function readQaArtifact(name: QaArtifactName): unknown {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+/**
+ * The run configuration beside the artifacts, or undefined when there is none
+ * (a workspace from before coverage modes) or it cannot be read.
+ */
+export function readRunConfig(): RunConfigRecord | undefined {
+  try {
+    const raw = readQaArtifact('run-config') as Partial<RunConfigRecord> | undefined;
+    const coverageMode = parseCoverageMode(raw?.coverageMode);
+    return raw && coverageMode ? { ...raw, coverageMode } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * What the validators judge a suite by: the coverage mode the run was started
+ * in and the API documentation the host read for it. Always read from disk —
+ * never from a model, never from the environment of whichever process happens
+ * to be validating — so an agent's write, a refresh, an edit applied from the
+ * workspace and the approval all apply the same rules.
+ *
+ * No `run-config.json` means AUTOMATIC with whatever API discovery exists,
+ * which for every workspace older than this feature is none: those suites are
+ * judged exactly as they were.
+ */
+export function readCoverageContext(): CoverageContext {
+  const mode = readRunConfig()?.coverageMode ?? DEFAULT_COVERAGE_MODE;
+  let api: ApiDiscovery | undefined;
+  try {
+    const raw = readQaArtifact('api-discovery');
+    if (raw !== undefined && schemaLines(ARTIFACTS['api-discovery'].schemaFile, raw).length === 0) api = raw as ApiDiscovery;
+  } catch {
+    api = undefined;
+  }
+  return { mode, api };
+}
+
 /** Thrown when an artifact is schema-valid but unsupported by upstream evidence. */
 export class SemanticValidationError extends Error {
   // Explicit fields, not constructor parameter properties: Node's built-in type
@@ -262,7 +310,7 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
       // Requirements-driven workflow: no discovery ran, so there is no
       // evidence set to check against. See docs/VALIDATION.md.
       if (discovery === undefined) return [];
-      return validateRequirementsAnalysis(discovery, data as RequirementsAnalysis);
+      return validateRequirementsAnalysis(discovery, data as RequirementsAnalysis, readCoverageContext());
     }
 
     case 'test-cases': {
@@ -277,12 +325,13 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
         ];
       }
       const discovery = readQaArtifact('discovered-behavior') as DiscoveredBehavior | undefined;
+      const context = readCoverageContext();
 
       // The upstream artifact may itself be stale — written against an earlier
       // discovery run. Building tests on it would launder its problems, so
       // refuse and say which stage has to re-run. Not the Test Designer's to fix.
       if (discovery !== undefined) {
-        const upstream = validateRequirementsAnalysis(discovery, requirements);
+        const upstream = validateRequirementsAnalysis(discovery, requirements, context);
         if (upstream.length > 0) {
           return [
             {
@@ -296,7 +345,7 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
           ];
         }
       }
-      return validateTestCases(discovery, requirements, data as TestCases);
+      return validateTestCases(discovery, requirements, data as TestCases, context);
     }
 
     case 'automation-prioritization': {
@@ -307,6 +356,7 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
       // Validated against the test cases as they are NOW, which may include the
       // operator's hand edits — the prioritization must cover exactly those.
       const priorRequirements = readQaArtifact('requirements-analysis') as RequirementsAnalysis | undefined;
+      const context = readCoverageContext();
       return validateAutomationPrioritization(
         testCases,
         data as AutomationPrioritization,
@@ -318,7 +368,9 @@ export function semanticErrorsFor(name: QaArtifactName, data: unknown): Semantic
         observedCapabilities({
           requirements: priorRequirements,
           evidence: readQaArtifact('discovery-evidence') as { findings?: { type?: string }[] } | undefined,
+          context,
         }),
+        context,
       );
     }
 

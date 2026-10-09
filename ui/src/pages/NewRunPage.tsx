@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { api } from '../api/client.ts';
+import { api, type CoverageMode } from '../api/client.ts';
+import { apiDocsProblem, COVERAGE_MODES, showsApiDocs } from '../lib/coverage.ts';
 import { formatWhen } from '../lib/runs.ts';
 
 /**
@@ -14,6 +15,8 @@ export function NewRunPage() {
   const [target, setTarget] = useState('');
   const [model, setModel] = useState('');
   const [freshBrowser, setFreshBrowser] = useState(false);
+  const [coverageMode, setCoverageMode] = useState<CoverageMode>('AUTOMATIC');
+  const [apiDocsUrl, setApiDocsUrl] = useState('');
   const [touched, setTouched] = useState(false);
 
   // Defaults from the host, once.
@@ -22,10 +25,16 @@ export function NewRunPage() {
     setTarget(data.config.targets.find((t) => t.default)?.url ?? data.config.targets[0]?.url ?? '');
     setModel(data.config.models.find((m) => m.default && m.available)?.id ?? data.config.models.find((m) => m.available)?.id ?? '');
     setFreshBrowser(data.config.freshBrowser.default);
+    setCoverageMode(data.config.coverageModes.find((m) => m.default)?.id ?? 'AUTOMATIC');
+    setApiDocsUrl(data.config.apiDocs.default ?? '');
   }, [data, touched]);
 
   const start = useMutation({
-    mutationFn: () => api.startRun({ pipeline: 'PHASE1_MANUAL', target, model, freshBrowser }),
+    // The URL is sent only for the modes that read it; an empty one says "none", not "use the host default".
+    mutationFn: () => api.startRun({
+      pipeline: 'PHASE1_MANUAL', target, model, freshBrowser, coverageMode,
+      ...(showsApiDocs(coverageMode) ? { apiDocsUrl: apiDocsUrl.trim() } : {}),
+    }),
     onSuccess: ({ runId }) => navigate(`/runs/${runId}/live`),
   });
 
@@ -34,6 +43,8 @@ export function NewRunPage() {
   const { config } = data;
   const busy = data.activeRun ?? data.lockHolder;
   const touch = <T,>(set: (v: T) => void) => (v: T) => { setTouched(true); set(v); };
+  const offered = COVERAGE_MODES.filter((m) => config.coverageModes.some((c) => c.id === m.id));
+  const docsProblem = apiDocsProblem(coverageMode, apiDocsUrl);
 
   return (
     <>
@@ -62,6 +73,26 @@ export function NewRunPage() {
             {config.models.map((m) => <option key={m.id} value={m.id} disabled={!m.available}>{m.id}{m.default ? ' (default)' : ''}{m.available ? '' : ` — ${m.reason}`}</option>)}
           </select>
         </label>
+        <fieldset className="coverage-mode" data-testid="coverage-mode">
+          <legend>Test coverage</legend>
+          {offered.map((m) => (
+            <label key={m.id} className="check">
+              <input type="radio" name="coverage-mode" value={m.id} checked={coverageMode === m.id} onChange={() => touch(setCoverageMode)(m.id)} />
+              <span><b>{m.label}</b>{config.coverageModes.find((c) => c.id === m.id)?.default ? ' (default)' : ''} <span className="muted">— {m.hint}</span></span>
+            </label>
+          ))}
+        </fieldset>
+        {showsApiDocs(coverageMode) && (
+          <label>API documentation URL <span className="muted">({coverageMode === 'API_ONLY' ? 'required for API only' : 'optional'})</span>
+            <input type="url" aria-label="API documentation URL" data-testid="api-docs-url" value={apiDocsUrl} maxLength={500}
+              placeholder="https://example.test/openapi.json" onChange={(e) => touch(setApiDocsUrl)(e.target.value)} />
+            <span className="muted small">
+              An OpenAPI / Swagger document — JSON or YAML — or a Swagger UI page. The host reads it before the agents run.
+              {coverageMode === 'AUTOMATIC' ? ' Without one, or if it cannot be read, the run continues with UI-level test cases only.' : ''}
+            </span>
+            {docsProblem && touched && <span className="notice bad small" data-testid="api-docs-problem">{docsProblem}</span>}
+          </label>
+        )}
         <label className="check">
           <input type="checkbox" aria-label="Fresh browser" checked={freshBrowser} onChange={(e) => touch(setFreshBrowser)(e.target.checked)} />
           Fresh browser — restart the browser server so the run starts signed out
@@ -72,7 +103,7 @@ export function NewRunPage() {
         <div className="muted">Langfuse tracing: {config.langfuse.enabled ? `on (${config.langfuse.baseUrl})` : 'off'}</div>
         {start.error && <p className="notice bad" data-testid="start-error">{(start.error as Error).message}</p>}
         <div className="buttons">
-          <button className="primary" type="submit" disabled={!!busy || start.isPending || !target || !model}>Start Phase 1</button>
+          <button className="primary" type="submit" disabled={!!busy || start.isPending || !target || !model || !!docsProblem}>Start Phase 1</button>
         </div>
       </form>
     </>

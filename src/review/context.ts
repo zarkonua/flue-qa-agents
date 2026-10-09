@@ -1,7 +1,8 @@
 // What the review agent sees for one change request — only what that request
 // needs, assembled by the host. The agent never names an artifact or a path.
 
-import type { Behavior, DiscoveredBehavior, EvidencedItem, RequirementsAnalysis, TestCase, TestCases } from '../lib/semantic-validate.ts';
+import { apiOperations, type Behavior, type CoverageContext, type DiscoveredBehavior, type EvidencedItem, type RequirementsAnalysis, type TestCase, type TestCases } from '../lib/semantic-validate.ts';
+import { allowedTestLevels, DEFAULT_COVERAGE_MODE, testLevelOf, type CoverageMode, type TestLevel } from '../lib/coverage-mode.ts';
 import type { ChangeProposal, ChangeRequest } from './review-store.ts';
 
 export interface FocusedContext {
@@ -18,9 +19,16 @@ export interface FocusedContext {
   /** Behaviors this change can rest on. For a new case, all of them. */
   behaviors: Pick<Behavior, 'id' | 'area' | 'statement' | 'status' | 'suspectedIssue'>[];
   requirements: (Pick<EvidencedItem, 'id' | 'statement' | 'evidenceIds'> & { kind: 'acceptancePoint' | 'businessRule' })[];
+  /**
+   * Documented API operations this change can rest on — the only API facts
+   * there are. Empty when the run read no API documentation, or is UI only.
+   */
+  apiOperations: { id: string; method: string; path: string; summary?: string; responses: string[]; requiresAuthentication: boolean }[];
   /** Every other active case, briefly — for duplicate awareness. */
-  otherCases: { id: string; title: string; covers: string[] }[];
-  vocabulary: { priority: string[]; types: string[] };
+  otherCases: { id: string; title: string; covers: string[]; testLevel: TestLevel }[];
+  /** The run's coverage mode; `testLevels` in the vocabulary is what it allows. */
+  coverageMode: CoverageMode;
+  vocabulary: { priority: string[]; types: string[]; testLevels: TestLevel[] };
 }
 
 export function focusedContext(input: {
@@ -30,6 +38,8 @@ export function focusedContext(input: {
   requirements?: RequirementsAnalysis;
   proposals: ChangeProposal[];
   types: string[];
+  /** The run's coverage mode and API documentation. Absent: AUTOMATIC, no API. */
+  coverage?: CoverageContext;
 }): FocusedContext {
   const { request, suite, discovery, requirements, proposals } = input;
   const target = suite.testCases.find((tc) => tc.id === request.targetTestCaseId);
@@ -49,6 +59,15 @@ export function focusedContext(input: {
   const behaviors = (discovery?.behaviors ?? [])
     .filter((b) => relevantBehaviorIds === undefined || relevantBehaviorIds.has(b.id))
     .map(({ id, area, statement, status, suspectedIssue }) => ({ id, area, statement, status, suspectedIssue }));
+
+  // Same narrowing for documented operations: an update sees the ones its case rests on.
+  const operations = [...apiOperations(input.coverage).values()]
+    .filter((o) => relevantBehaviorIds === undefined || relevantBehaviorIds.has(o.id))
+    .map((o) => ({
+      id: o.id, method: o.method, path: o.path, ...(o.summary ? { summary: o.summary } : {}),
+      responses: o.responses.map((r) => r.status), requiresAuthentication: o.security.length > 0,
+    }));
+  const mode = input.coverage?.mode ?? DEFAULT_COVERAGE_MODE;
 
   const feedback = request.history.filter((h) => h.event === 'changes_requested');
   const earlierRounds = proposals
@@ -71,7 +90,9 @@ export function focusedContext(input: {
     ...(target ? { targetCase: target } : {}),
     behaviors,
     requirements: relevantReqs.map(({ id, statement, evidenceIds, kind }) => ({ id, statement, evidenceIds, kind })),
-    otherCases: suite.testCases.filter((tc) => tc.id !== target?.id).map((tc) => ({ id: tc.id, title: tc.title, covers: tc.covers ?? [] })),
-    vocabulary: { priority: ['P0', 'P1', 'P2', 'P3'], types: input.types },
+    apiOperations: operations,
+    otherCases: suite.testCases.filter((tc) => tc.id !== target?.id).map((tc) => ({ id: tc.id, title: tc.title, covers: tc.covers ?? [], testLevel: testLevelOf(tc) })),
+    coverageMode: mode,
+    vocabulary: { priority: ['P0', 'P1', 'P2', 'P3'], types: input.types, testLevels: [...allowedTestLevels(mode)] },
   };
 }

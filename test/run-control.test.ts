@@ -94,6 +94,46 @@ describe('run configuration', () => {
     const json = JSON.stringify(view);
     assert.doesNotMatch(json, /supersecret|sk-lf-secret|sk-or-v1/);
     assert.ok(!('authModes' in view), 'there is no auth bootstrap to choose');
+    // Coverage: three modes, Automatic by default, and no API documentation unless the host configures one.
+    assert.deepEqual(view.coverageModes, [{ id: 'AUTOMATIC', default: true }, { id: 'UI_ONLY', default: false }, { id: 'API_ONLY', default: false }]);
+    assert.deepEqual(view.apiDocs, { default: null });
+  });
+
+  it('takes its coverage defaults from the host: QA_COVERAGE_MODE and QA_API_DOCS_URL', () => {
+    const view = readRunConfig({ ...process.env, QA_COVERAGE_MODE: 'api', QA_API_DOCS_URL: 'http://localhost:4444/api/doc' });
+    assert.equal(view.coverageModes.find((m) => m.default)!.id, 'API_ONLY');
+    assert.equal(view.apiDocs.default, 'http://localhost:4444/api/doc');
+    // A value that is not a mode, or not a fetchable URL, is not offered as a default.
+    const bad = readRunConfig({ ...process.env, QA_COVERAGE_MODE: 'everything', QA_API_DOCS_URL: 'file:///etc/passwd' });
+    assert.equal(bad.coverageModes.find((m) => m.default)!.id, 'AUTOMATIC');
+    assert.equal(bad.apiDocs.default, null);
+  });
+
+  it('validates the coverage mode and the API documentation URL — the one typed value', () => {
+    const config = readRunConfig();
+    const ok = { pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444/', model: 'ollama/fake-complete', freshBrowser: false } as const;
+    // Backward compatible: a request that names no mode is an Automatic run with no API documentation.
+    assert.deepEqual(validateStartRequest(ok, config), { ...ok, coverageMode: 'AUTOMATIC' });
+    assert.deepEqual(
+      validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: ' http://localhost:4444/api/doc#top ' }, config),
+      { ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: 'http://localhost:4444/api/doc' },
+    );
+    // Automatic with an empty field: no documentation, and that is fine.
+    assert.equal(validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: '' }, config).apiDocsUrl, undefined);
+    // UI only reads no API documentation: a URL sent with it is dropped, not used.
+    assert.deepEqual(validateStartRequest({ ...ok, coverageMode: 'UI_ONLY', apiDocsUrl: 'http://localhost:4444/api/doc' }, config), { ...ok, coverageMode: 'UI_ONLY' });
+    // API only cannot run without it.
+    assert.throws(() => validateStartRequest({ ...ok, coverageMode: 'API_ONLY' }, config), /API only needs an API documentation URL/);
+    assert.throws(() => validateStartRequest({ ...ok, coverageMode: 'API_ONLY', apiDocsUrl: '  ' }, config), /API only needs/);
+    assert.equal(validateStartRequest({ ...ok, coverageMode: 'API_ONLY', apiDocsUrl: 'https://example.test/openapi.yaml' }, config).apiDocsUrl, 'https://example.test/openapi.yaml');
+    for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'https://user:secret@example.test/doc', 'localhost:4444/api/doc', 'http://exa mple.test/']) {
+      assert.throws(() => validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: bad }, config), RunConfigError, bad);
+    }
+    assert.throws(() => validateStartRequest({ ...ok, coverageMode: 'EVERYTHING' } as never, config), /coverage mode/);
+    // A host default applies only when the request does not mention the field at all.
+    const withDefault = readRunConfig({ ...process.env, QA_API_DOCS_URL: 'http://localhost:4444/api/doc' });
+    assert.equal(validateStartRequest({ ...ok, coverageMode: 'API_ONLY' }, withDefault).apiDocsUrl, 'http://localhost:4444/api/doc');
+    assert.equal(validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: '' }, withDefault).apiDocsUrl, undefined, 'cleared in the form means none');
   });
 
   it('refuses a target, model or pipeline the host did not configure', () => {
@@ -111,11 +151,16 @@ describe('run configuration', () => {
 
   it('builds the runner command from fixed flags and fixed environment keys — the same runner as the CLI', () => {
     assert.equal(PHASE1_RUNNER, 'scripts/qa-manual.mjs');
-    const run = { pipeline: 'PHASE1_MANUAL' as const, target: 'http://localhost:4444/', model: 'ollama/x' as const, freshBrowser: true };
+    const run = { pipeline: 'PHASE1_MANUAL' as const, target: 'http://localhost:4444/', model: 'ollama/x' as const, freshBrowser: true, coverageMode: 'AUTOMATIC' as const };
     assert.deepEqual(runnerArgs('2026-09-27T18-07-17-457Z', run), ['--run-id', '2026-09-27T18-07-17-457Z', '--fresh-browser']);
     assert.throws(() => runnerArgs('--help; rm -rf /', run));
-    const env = runnerEnv(run, { PATH: '/bin', QA_MODEL: 'other' });
-    assert.deepEqual(env, { PATH: '/bin', QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true' });
+    const env = runnerEnv(run, { PATH: '/bin', QA_MODEL: 'other', QA_API_DOCS_URL: 'http://leftover.example/doc' });
+    // No API documentation chosen: the key is set empty, so the server's own environment cannot supply one.
+    assert.deepEqual(env, { PATH: '/bin', QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true', QA_COVERAGE_MODE: 'AUTOMATIC', QA_API_DOCS_URL: '' });
+    assert.deepEqual(
+      runnerEnv({ ...run, coverageMode: 'API_ONLY', apiDocsUrl: 'http://localhost:4444/api/doc' }, {}),
+      { QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true', QA_COVERAGE_MODE: 'API_ONLY', QA_API_DOCS_URL: 'http://localhost:4444/api/doc' },
+    );
     // The real runner implements the same contract: it validates --run-id before doing anything else.
     const r = spawnSync(process.execPath, [join(PROJECT, 'scripts', 'qa-manual.mjs'), '--run-id', 'not-an-id', '--from', 'defects'], { cwd: PROJECT, encoding: 'utf8', env: process.env });
     assert.equal(r.status, 2);
@@ -176,6 +221,38 @@ describe('RunController', () => {
     assert.doesNotMatch(text, /987654|sk-or-v1-0123/);
     assert.equal(existsSync(join(ROOT, 'run.lock')), false);
     assert.equal(controller.activeRun(), undefined);
+    // A request that names no coverage mode is recorded as what it was: Automatic.
+    assert.equal(row.coverageMode, 'AUTOMATIC');
+    assert.equal(row.apiDocsUrl, null);
+  });
+
+  it('carries the chosen coverage mode and API documentation URL to the runner, the history and the archive', async () => {
+    const run = start('ollama/fake-complete', { coverageMode: 'API_ONLY', apiDocsUrl: 'http://localhost:4444/api/doc?api_key=s3cr3t' });
+    assert.equal(run.coverageMode, 'API_ONLY');
+    assert.equal(run.apiDocsUrl, 'http://localhost:4444/api/doc', 'shown without its query');
+    await controller.waitForExit(run.runId);
+    const row = history().getRun(run.runId)!;
+    assert.equal(row.status, 'COMPLETED');
+    assert.equal(row.coverageMode, 'API_ONLY');
+    assert.equal(row.apiDocsUrl, 'http://localhost:4444/api/doc');
+    // The configuration is written beside the artifacts — what every later validation reads — and archived with the run.
+    const live = JSON.parse(readFileSync(join(ROOT, 'run-config.json'), 'utf8'));
+    assert.equal(live.coverageMode, 'API_ONLY');
+    assert.equal(live.runId, run.runId);
+    const meta = JSON.parse(readFileSync(join(ROOT, 'runs', run.runId, 'run-metadata.json'), 'utf8'));
+    assert.equal(meta.coverageMode, 'API_ONLY');
+    assert.ok(history().getArtifacts(run.runId).some((a) => a.artifactType === 'RUN_CONFIG'));
+    assert.doesNotMatch(JSON.stringify([row, live, meta]), /s3cr3t/);
+    // And the workspace API reports it on the run.
+    const view = (await (await fetch(`${base}/api/runs/${run.runId}`)).json()) as any;
+    assert.equal(view.run.coverageMode, 'API_ONLY');
+    assert.equal(view.run.apiDocsUrl, 'http://localhost:4444/api/doc');
+
+    // UI only: no API documentation reaches the runner, whatever the form held.
+    const ui = start('ollama/fake-complete', { coverageMode: 'UI_ONLY', apiDocsUrl: 'http://localhost:4444/api/doc' });
+    await controller.waitForExit(ui.runId);
+    assert.equal(history().getRun(ui.runId)!.coverageMode, 'UI_ONLY');
+    assert.equal(history().getRun(ui.runId)!.apiDocsUrl, null);
   });
 
   it('refuses a second run while one is active, and a run while another process holds the lock', async () => {
@@ -350,7 +427,15 @@ describe('the run-control API is privileged and narrow', () => {
       { ...good, freshBrowser: 'yes' },
       { ...good, pipeline: 'PHASE2_AUTOMATION' },
       { ...good, authMode: 'storage_state' },
+      { ...good, coverageMode: 'EVERYTHING' },
+      { ...good, coverageMode: 'automatic' },
+      { ...good, coverageMode: 'AUTOMATIC', apiDocsUrl: 'file:///etc/passwd' },
+      { ...good, coverageMode: 'AUTOMATIC', apiDocsUrl: `http://localhost/${'a'.repeat(600)}` },
+      { ...good, coverageMode: 'AUTOMATIC', apiDocsUrl: ['http://localhost:4444/api/doc'] },
+      { ...good, coverageMode: 'API_ONLY' },
     ]) assert.equal((await post('/api/runs', body)).status, 400, JSON.stringify(body));
+    const refused = (await (await post('/api/runs', { ...good, coverageMode: 'API_ONLY' })).json()) as any;
+    assert.match(refused.error, /API only needs an API documentation URL/);
     assert.equal((await post('/api/runs', good, { origin: 'http://evil.example' })).status, 403);
     assert.equal((await post('/api/runs/2030-01-01T00-00-00-000Z/cancel', {})).status, 404);
     assert.equal((await post(`/api/runs/${encodeURIComponent('1; kill -9 1')}/cancel`, {})).status, 400);
@@ -361,6 +446,8 @@ describe('the run-control API is privileged and narrow', () => {
     const body = (await (await fetch(`${base}/api/run-config`)).json()) as any;
     assert.ok(body.config.models.length > 0);
     assert.doesNotMatch(JSON.stringify(body), /"pid"|sk-or|OPENROUTER_API_KEY=/);
+    assert.deepEqual(body.config.coverageModes.map((m: any) => m.id), ['AUTOMATIC', 'UI_ONLY', 'API_ONLY']);
+    assert.equal(body.config.apiDocs.default, null);
   });
 
   it('GET /api/runs/:id tells the page the plan, whether it is live, and whether it can cancel', async () => {

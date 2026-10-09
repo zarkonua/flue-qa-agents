@@ -5,6 +5,27 @@ import { expect, test } from '@playwright/test';
 
 test.describe.configure({ mode: 'serial' });
 
+test('test cases: every case shows its level, and the list filters by UI / API', async ({ page }) => {
+  await page.goto('/test-cases');
+  const rows = page.locator('tr[data-testid^="case-row-"]');
+  await expect(rows.first()).toBeVisible();
+  const total = await rows.count();
+  // The fixture suite predates test levels: a case that states none is UI.
+  await expect(page.locator('[data-testid^="case-level-"]').first()).toHaveText('UI');
+  const filter = page.getByTestId('level-filter');
+  await expect(filter.locator('option')).toHaveText(['All levels', `UI (${total})`, 'API (0)']);
+  await filter.selectOption('API');
+  await expect(rows).toHaveCount(0);
+  await filter.selectOption('UI');
+  await expect(rows).toHaveCount(total);
+  await filter.selectOption('ALL');
+  await expect(rows).toHaveCount(total);
+  // The overview says how the suite was designed — here, before coverage modes were recorded.
+  await page.goto('/');
+  await expect(page.getByTestId('overview-coverage-mode')).toContainText('Automatic');
+  await expect(page.getByTestId('overview-coverage-mode')).toContainText('not recorded');
+});
+
 test('bugs: list, detail, and explicit bug <-> case navigation', async ({ page }) => {
   await page.goto('/bugs');
   await expect(page.getByTestId('bug-row-BUG-001')).toContainText('Invalid-credentials error is generic');

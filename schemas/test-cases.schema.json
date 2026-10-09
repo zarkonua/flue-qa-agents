@@ -116,6 +116,12 @@
             "items": {
               "type": "string"
             }
+          },
+          "testLevel": {
+            "enum": [
+              "UI",
+              "API"
+            ]
           }
         },
         "additionalProperties": false

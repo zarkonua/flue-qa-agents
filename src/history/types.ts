@@ -1,6 +1,8 @@
 // Run history: the vocabulary. Every value stored in a closed column comes from
 // one of these lists — host code chooses them; no request can invent one.
 
+import type { CoverageMode } from '../lib/coverage-mode.ts';
+
 export const RUN_KINDS = ['PHASE1_MANUAL', 'DEPENDENCY_REFRESH', 'PHASE1_REVIEW', 'PHASE2_AUTOMATION'] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
@@ -37,6 +39,10 @@ export const ARTIFACT_FILES = {
   PHASE2_RUN_RECORD: 'phase2-run.json',
   REFRESH_RECORD: 'phase1-refresh.json',
   RUN_METADATA: 'run-metadata.json',
+  /** What the API documentation declared, as the host read it for this run. */
+  API_DISCOVERY: 'api-discovery.json',
+  /** The run's configuration: its coverage mode and API documentation URL. */
+  RUN_CONFIG: 'run-config.json',
   /** The run's structured event log (redacted), one JSON object per line. */
   EVENT_LOG: 'events.jsonl',
 } as const;
@@ -63,6 +69,10 @@ export interface RunRow {
   finishedAt: string | null;
   durationMs: number | null;
   authMode: string | null;
+  /** AUTOMATIC / UI_ONLY / API_ONLY; null for a run recorded before coverage modes. */
+  coverageMode: CoverageMode | null;
+  /** The API documentation the run was given — no credentials, no query. */
+  apiDocsUrl: string | null;
   archiveRelPath: string | null;
   errorCode: string | null;
   errorSummary: string | null;
@@ -129,6 +139,8 @@ export interface NewRun {
   /** Whether the owner holds the run lock under this id — used to tell a live run from a dead one. */
   holdsRunLock?: boolean;
   authMode?: string | null;
+  coverageMode?: CoverageMode | null;
+  apiDocsUrl?: string | null;
   langfuseTraceId?: string | null;
 }
 

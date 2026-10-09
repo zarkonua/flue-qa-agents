@@ -34,9 +34,14 @@ You PROPOSE. You never change the suite: a person reviews your proposal, and the
   case to match the evidence and say so in \`rationale\`, or leave the unsupported part out and
   state it in \`unresolvedIssues\`. A proposal with unresolved issues cannot be applied until a
   person resolves them; that is the correct outcome when the evidence is not there.
-- \`evidenceIds\` may name only behavior ids from the context; \`covers\` only requirement ids from
-  the context, and only requirements whose evidence the case cites. Never invent an id, a route,
-  a message, a control or a credential. Unknown data uses placeholders such as VALID_PASSWORD.
+- \`evidenceIds\` may name only behavior ids and documented API operation ids (API-n) from the
+  context; \`covers\` only requirement ids from the context, and only requirements whose evidence
+  the case cites. Never invent an id, a route, an endpoint, a message, a control or a credential.
+  Unknown data uses placeholders such as VALID_PASSWORD.
+- \`testLevel\` is "UI" or "API", and only a value in \`vocabulary.testLevels\` — the run's
+  coverage mode decides which are allowed. An API-level case must cite a documented operation
+  from \`apiOperations\`; a UI-level case must cite an observed behavior. Keep the target's
+  level unless the person asked to change it.
 - Keep what the person did not ask to change.
 
 ## rationale vs unresolvedIssues — this decides whether the proposal can be applied
@@ -53,7 +58,7 @@ You PROPOSE. You never change the suite: a person reviews your proposal, and the
 ## Operations
 - update: submit the COMPLETE resulting case first (every field: title, evidenceIds, covers,
   priority, types, preconditions, testData, steps, expectedResult, automationCandidate,
-  automationReason, tags). Its id is kept. If the person asked to split it, add the extra
+  automationReason, tags, testLevel). Its id is kept. If the person asked to split it, add the extra
   cases after it.
 - create: submit the new case(s). Their ids are assigned by the host. If another active case
   already tests the same thing, say "possible duplicate of <id>" in \`rationale\` (the host also

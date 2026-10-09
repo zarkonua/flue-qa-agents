@@ -33,7 +33,8 @@ export const metric = (metrics: Record<string, number>, name: string) => (name i
 
 export const METRIC_GROUPS: { title: string; metrics: [string, string][] }[] = [
   { title: 'Discovery', metrics: [['product_locations', 'Locations'], ['product_locations_explored', 'Locations explored'], ['product_states', 'States'], ['auxiliary_visits', 'Helper-origin visits'], ['observations_recorded', 'Observations'], ['discovered_behaviors', 'Behaviors'], ['discovery_finalization_rejections', 'Finalizations refused']] },
-  { title: 'Analysis and test design', metrics: [['acceptance_points', 'Acceptance points'], ['business_rules', 'Business rules'], ['open_questions', 'Open questions'], ['test_cases_total', 'Test cases']] },
+  { title: 'API documentation', metrics: [['api_endpoints', 'Operations'], ['api_schemas', 'Schemas']] },
+  { title: 'Analysis and test design', metrics: [['acceptance_points', 'Acceptance points'], ['business_rules', 'Business rules'], ['open_questions', 'Open questions'], ['test_cases_total', 'Test cases'], ['test_cases_ui', 'UI level'], ['test_cases_api', 'API level']] },
   { title: 'Automation', metrics: [['manual_cases', 'Manual'], ['automation_candidates', 'Automation'], ['automation_high', 'High'], ['automation_medium', 'Medium'], ['automation_low', 'Low']] },
   { title: 'Defects', metrics: [['defects_confirmed', 'Confirmed'], ['defects_potential', 'Potential'], ['defects_not_a_defect', 'Not a defect'], ['defects_insufficient_evidence', 'Insufficient evidence'], ['bug_reports_created', 'Bug reports']] },
   { title: 'AI review', metrics: [['review_issues', 'Issues'], ['review_suggested_changes', 'Suggested changes']] },
@@ -47,6 +48,7 @@ export const ARTIFACT_LABEL: Record<string, string> = {
   DEFECT_ANALYSIS: 'Defect analysis',
   TEST_CASE_REVIEW: 'AI review',
   DISCOVERY_EVIDENCE: 'Browser evidence',
+  API_DISCOVERY: 'API documentation',
   REPO_ANALYSIS: 'Repo analysis',
   AUTOMATION_PROJECT_CONTRACT: 'Automation contract',
   RUN_RECORD: 'Run record',

@@ -100,7 +100,22 @@ export function metricsFromArchive(dir: string): Record<string, number> {
   }
 
   const suite = readArchived(dir, ARTIFACT_FILES.TEST_CASES);
-  if (suite) put('test_cases_total', count(suite.testCases));
+  if (suite) {
+    put('test_cases_total', count(suite.testCases));
+    // Per level. A case that states none is UI — every suite from before levels was.
+    if (Array.isArray(suite.testCases)) {
+      const api = suite.testCases.filter((tc) => (tc as Json)?.testLevel === 'API').length;
+      put('test_cases_api', api);
+      put('test_cases_ui', suite.testCases.length - api);
+    }
+  }
+
+  // Only when the documentation was actually read: an absent or unavailable one records no count.
+  const apiDocs = readArchived(dir, ARTIFACT_FILES.API_DISCOVERY);
+  if (apiDocs && apiDocs.status === 'AVAILABLE') {
+    put('api_endpoints', count(apiDocs.endpoints));
+    put('api_schemas', count(apiDocs.schemas));
+  }
 
   const prioritization = readArchived(dir, ARTIFACT_FILES.AUTOMATION_PRIORITIZATION);
   if (prioritization && Array.isArray(prioritization.cases)) {

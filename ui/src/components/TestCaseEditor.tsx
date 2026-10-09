@@ -1,8 +1,10 @@
 import { useFieldArray, useForm } from 'react-hook-form';
-import type { TestCase } from '../api/client.ts';
+import type { TestCase, TestLevel } from '../api/client.ts';
+import { levelOf } from '../lib/coverage.ts';
 
 export interface EditorValues {
   title: string;
+  testLevel: TestLevel;
   priority: string;
   types: string;
   preconditions: string;
@@ -34,6 +36,8 @@ export function editsFrom(original: TestCase, v: EditorValues): Partial<TestCase
   for (const [k, value] of Object.entries(next) as [keyof TestCase, unknown][]) {
     if (JSON.stringify(value) !== JSON.stringify(original[k])) (out as Record<string, unknown>)[k] = value;
   }
+  // Compared as the level the case effectively has, so leaving a level-less case at UI is not an edit.
+  if (v.testLevel !== levelOf(original)) out.testLevel = v.testLevel;
   return out;
 }
 
@@ -47,6 +51,7 @@ export function TestCaseEditor({ testCase, busy, onSubmit, onCancel }: {
   const { register, control, handleSubmit } = useForm<EditorValues>({
     defaultValues: {
       title: testCase.title,
+      testLevel: levelOf(testCase),
       priority: testCase.priority,
       types: testCase.types.join(', '),
       preconditions: testCase.preconditions.join('\n'),
@@ -63,6 +68,7 @@ export function TestCaseEditor({ testCase, busy, onSubmit, onCancel }: {
     <form className="panel editor" onSubmit={handleSubmit((v) => onSubmit(editsFrom(testCase, v), v.comment))}>
       <h3>Edit {testCase.id} <span className="muted">(id is fixed)</span></h3>
       <label>Title<input {...register('title', { required: true })} /></label>
+      <label>Test level<select {...register('testLevel')} aria-label="Test level"><option value="UI">UI</option><option value="API">API</option></select></label>
       <label>Priority<select {...register('priority')}>{['P0', 'P1', 'P2', 'P3'].map((p) => <option key={p}>{p}</option>)}</select></label>
       <label>Types (comma-separated)<input {...register('types')} /></label>
       <label>Preconditions (one per line)<textarea {...register('preconditions')} /></label>

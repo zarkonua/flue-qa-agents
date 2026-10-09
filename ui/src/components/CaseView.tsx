@@ -1,5 +1,6 @@
 import type { TestCase } from '../api/client.ts';
 import { record, steps, strings, text } from '../lib/shape.ts';
+import { levelOf } from '../lib/coverage.ts';
 
 /** Renders any case-shaped value — including a malformed proposal — without trusting its shape. */
 export function CaseView({ testCase }: { testCase: Partial<TestCase> | Record<string, unknown> }) {
@@ -10,7 +11,7 @@ export function CaseView({ testCase }: { testCase: Partial<TestCase> | Record<st
   return (
     <div className="case-view">
       <p><b>{text(tc.title)}</b></p>
-      <p className="muted">{text(tc.priority)} · {strings(tc.types).join(', ')}{tags.length ? ` · tags: ${tags.join(', ')}` : ''}</p>
+      <p className="muted"><span className={`badge level-${levelOf(tc).toLowerCase()}`} data-testid="case-level">{levelOf(tc)}</span> {text(tc.priority)} · {strings(tc.types).join(', ')}{tags.length ? ` · tags: ${tags.join(', ')}` : ''}</p>
       {preconditions.length > 0 && <><h5>Preconditions</h5><ul>{preconditions.map((p, i) => <li key={i}>{p}</li>)}</ul></>}
       {Object.keys(data).length > 0 && <><h5>Test data</h5><pre>{JSON.stringify(data, null, 2)}</pre></>}
       <h5>Steps</h5>

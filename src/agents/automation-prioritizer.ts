@@ -50,10 +50,23 @@ test priority (P0-P3) is the product's importance; executionMode is whether to a
 automationPriority is when to build it; automationStrategy is the route. A P0 case may be
 MANUAL. A HIGH-priority automation may have an UNKNOWN strategy.
 
+### The strategy follows the test level
+Each test case carries \`testLevel\`, the level it was designed at, and your opening message
+gives the run's coverage mode. The strategy must agree with the level:
+
+- an \`"API"\` case is automated through \`API\` — never \`UI\`, \`UI_API\` or \`VISUAL\`;
+- a \`"UI"\` case is automated through \`UI\`, \`UI_API\` or \`VISUAL\` — never \`API\` alone.
+
+\`UNKNOWN\` and omitting the field stay acceptable for either. Do not change a case's level:
+you classify the suite as it is. In a UI-only run nothing is automated through an API.
+
 ### Never invent a capability
 Claiming \`API\` or \`UI_API\` asserts this product has an API surface someone observed.
 Claiming \`VISUAL\` asserts that appearance itself must be compared. The host checks both
 against what this run actually saw, and rejects a claim nothing supports.
+
+API documentation the host read (the "api-discovery" artifact) is evidence that those
+operations exist, and is what an \`API\` strategy rests on.
 
 If everything upstream was observed through a browser, the honest strategy is \`UI\` — or
 \`UNKNOWN\` where even that is unclear. A business rule that *feels* like backend logic is
@@ -80,6 +93,7 @@ accounts, or credentials in either field.
 - A strategy may not contradict the mode: a MANUAL case cannot be UI/API/UI_API/VISUAL, and
   an AUTOMATION case cannot be MANUAL.
 - A strategy may not name a capability this run did not observe.
+- A strategy may not contradict the case's \`testLevel\`.
 
 ## Output
 Call \`write_qa_artifact\` with name "automation-prioritization" and:

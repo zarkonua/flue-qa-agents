@@ -1,18 +1,20 @@
 // Read-only views of one run's archived output. Nothing here can change
 // anything: no buttons, no forms — the host API behind them is GET-only.
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.ts';
 import { CaseView } from '../components/CaseView.tsx';
 import { ARTIFACT_LABEL } from '../lib/runs.ts';
+import { levelCounts, matchesLevel, type LevelFilter } from '../lib/coverage.ts';
 import { SnapshotBanner } from './RunPage.tsx';
 
 export function RunTestCasesPage() {
   const { id = '' } = useParams();
   const { hash } = useLocation();
   const { data, error } = useQuery({ queryKey: ['run-test-cases', id], queryFn: () => api.runTestCases(id) });
+  const [level, setLevel] = useState<LevelFilter>('ALL');
   // Bug pages link to a case as #TC-1; bring it into view once the list is there.
   useEffect(() => {
     if (data && hash) document.getElementById(decodeURIComponent(hash.slice(1)))?.scrollIntoView();
@@ -24,7 +26,14 @@ export function RunTestCasesPage() {
       <p><Link to={`/runs/${id}`}>← Run</Link></p>
       <h1>Test Cases ({data.testCases.length}) <span className="muted">in this run</span></h1>
       <SnapshotBanner runId={id} />
-      {data.testCases.map((tc) => {
+      <div className="filters">
+        <select value={level} onChange={(e) => setLevel(e.target.value as LevelFilter)} aria-label="Test level" data-testid="level-filter">
+          <option value="ALL">All levels</option>
+          <option value="UI">UI ({levelCounts(data.testCases).UI})</option>
+          <option value="API">API ({levelCounts(data.testCases).API})</option>
+        </select>
+      </div>
+      {data.testCases.filter((tc) => matchesLevel(tc, level) || hash === `#${String(tc.id ?? '')}`).map((tc) => {
         const caseId = String(tc.id ?? '');
         const p = data.prioritization[caseId];
         return (

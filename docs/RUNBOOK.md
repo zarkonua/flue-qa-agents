@@ -130,6 +130,9 @@ npm run qa:manual -- --from defects          # re-run defect analysis only
 npm run qa:refresh                           # prioritization + defect analysis after a suite change (all or nothing)
 npm run qa:manual -- --attempts 2
 npm run qa:manual -- --fresh-browser         # restart the MCP server: a signed-out browser this run owns
+npm run qa:manual -- --coverage-mode ui      # automatic (default) | ui | api
+npm run qa:manual -- --coverage-mode api --api-docs http://localhost:4444/api/doc
+npm run qa:manual -- --api-docs https://example.test/openapi.yaml   # automatic, with API documentation
 npm run qa:approve -- --accept-findings      # approve despite semantic findings; recorded
 npm run qa:automation -- --gate-only         # check prerequisites, start no agent
 npm run qa:automation -- --from repo-analyzer
@@ -138,6 +141,36 @@ npm run qa:automation -- --from repo-analyzer
 A stage that fails all its attempts stops the run, keeps what succeeded, and prints the
 `--from` command to resume. Retries alternate: even attempts continue the same conversation
 with a correction naming what went wrong, odd attempts start fresh.
+
+### Test coverage modes and API documentation
+
+| | `--coverage-mode` / `QA_COVERAGE_MODE` | `--api-docs` / `QA_API_DOCS_URL` |
+|---|---|---|
+| Automatic (default) | `automatic` | optional |
+| UI only | `ui` | ignored — never fetched |
+| API only | `api` | required |
+
+The URL may be an OpenAPI 3 / Swagger 2 document (JSON or YAML) or a Swagger UI page. The host
+fetches it with one bounded GET (15 s, 5 MB; a Swagger UI page may lead to a few more, to the
+document it names or the conventional locations beside it) before the run lock's first stage, and
+prints what it found:
+
+```text
+Coverage mode   : Automatic
+API docs        : 9 operation(s), 6 schema(s), 1 auth scheme(s) — http://localhost:4444/api/doc
+```
+
+- **Missing or unreachable documentation is not an error in Automatic mode.** The run prints
+  `API docs : UNAVAILABLE — <reason>` and continues; every test case is then UI level, and the
+  agents are told why.
+- **In API-only mode it stops the run** — exit 1, error code `API_DOCS_UNAVAILABLE` in the run
+  history — before anything is archived or changed, because there is no documented operation a
+  test could rest on.
+- **`--from <stage>` keeps the suite's own mode.** A run that starts after discovery reads
+  `run-config.json` and `api-discovery.json` as the earlier run left them; give `--coverage-mode`
+  or `--api-docs` explicitly to change them (the documentation is then read again).
+- The URL is stored and shown without its query string. Put a key the documentation needs in the
+  URL only if you accept that it is sent to that host; it is never written to an artifact.
 
 ### The QA Review Workspace
 
@@ -255,6 +288,8 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, outside t
 | `phase1-approval.json` | `qa:approve` — host code only |
 | `discovery-surface.json` · `discovery-observations.json` | host, during discovery: the surface to account for, the completion-gate verdicts, the observation ledger |
 | `discovery-evidence.json` | host, after discovery: console and network facts per explored page |
+| `run-config.json` | host, when a run starts at discovery: its coverage mode and API documentation URL |
+| `api-discovery.json` | host, before the first stage: what the API documentation declares, or why it is unavailable |
 | `repo-analysis.json` | Phase 2 stage 1 |
 | `automation-project-contract.json` | host, derived from `repo-analysis.json` |
 | `phase1-run.json` · `phase2-run.json` | run logs: stages, attempts, timings |
@@ -271,12 +306,15 @@ npm run qa:ui  →  New Run  →  Start Phase 1  →  Live Run  (→ Cancel Run)
 - **What can be chosen** comes from the host: `GET /api/run-config` lists the targets
   (`TARGET_URL`, `QA_UI_TARGETS`), the models (`QA_MODEL`, `QA_UI_MODELS`; an `openrouter/*` model
   is offered only when `OPENROUTER_API_KEY` is set — its value is never shown), the fresh-browser
-  default (`QA_FRESH_BROWSER`), and the helper origins and Langfuse state, read-only. There is no authentication choice: there is no auth bootstrap on main, so
+  default (`QA_FRESH_BROWSER`), the coverage modes with their default (`QA_COVERAGE_MODE`), the
+  default API documentation URL (`QA_API_DOCS_URL`), and the helper origins and Langfuse state,
+  read-only. The API documentation URL is the one value a person may type; it is checked as an
+  http(s) URL without credentials and only ever fetched by host code. There is no authentication choice: there is no auth bootstrap on main, so
   discovery signs up or signs in through the product itself.
 - **Starting.** `POST /api/runs` → the RunController validates the choices, refuses if the run lock
   is held (by the workspace or a terminal run), and forks `scripts/qa-manual.mjs --run-id <id>
-  [--fresh-browser]` with only `TARGET_URL`, `QA_MODEL` and `QA_FRESH_BROWSER` set from the chosen
-  values. It is the same runner as `npm run qa:manual`: same lock, stages, history, archive, traces.
+  [--fresh-browser]` with only `TARGET_URL`, `QA_MODEL`, `QA_FRESH_BROWSER`, `QA_COVERAGE_MODE` and
+  `QA_API_DOCS_URL` set from the chosen values (API only without a URL is refused with 400). It is the same runner as `npm run qa:manual`: same lock, stages, history, archive, traces.
 - **Following.** The runner appends every event to `runs/<run-id>/events.jsonl` (redacted, at most
   5000 per run — past that only stages, artifacts, metrics and the end are kept). The Live Run page
   reads it over SSE (`GET /api/runs/<id>/events`), replaying at most 500 events on (re)connect and

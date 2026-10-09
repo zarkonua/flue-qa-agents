@@ -8,6 +8,7 @@
 
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { parseCoverageMode } from '../lib/coverage-mode.ts';
 import { indexArchive, metricsFromArchive, readArchived, stagesFromRecord, stagesFromRefresh } from './archive.ts';
 import type { RunHistoryStore } from './run-history-store.ts';
 import { ARTIFACT_FILES, RUN_ID, RUN_KINDS, type ArtifactRow, type RunKind, type RunStatus } from './types.ts';
@@ -101,6 +102,9 @@ export function importArchives(store: RunHistoryStore, artifactRoot: string, opt
           target: typeof meta?.target === 'string' ? meta.target : typeof record?.target === 'string' ? record.target : null,
           gitCommit: typeof meta?.gitCommit === 'string' ? meta.gitCommit : null,
           authMode: typeof meta?.authBootstrapMode === 'string' ? meta.authBootstrapMode : null,
+          // Archives made before coverage modes name none; they are imported with none.
+          coverageMode: parseCoverageMode(meta?.coverageMode ?? record?.coverageMode) ?? null,
+          apiDocsUrl: typeof meta?.apiDocsUrl === 'string' ? meta.apiDocsUrl : typeof record?.apiDocsUrl === 'string' ? record.apiDocsUrl : null,
           archiveRelPath: `runs/${id}`,
           errorCode: status === 'FAILED' ? (failedStage ? 'STAGE_FAILED' : 'RUN_FAILED') : null,
           errorSummary: status === 'FAILED' && failedStage ? `Stopped at ${options.stageLabels?.[failedStage] ?? failedStage}.` : null,

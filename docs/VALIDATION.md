@@ -209,6 +209,49 @@ from a total the model reports about itself. Alongside them the host records the
 because complete coverage made entirely of happy paths is not a good suite, and a percentage
 cannot say so.
 
+## Coverage modes and test levels
+
+A run is Automatic, UI only or API only (`src/lib/coverage-mode.ts`), and every test case states
+`testLevel`: `UI` or `API`. The mode is written by the host to `run-config.json` and the API
+documentation it read to `api-discovery.json`; every validation — an agent's write, a refresh, a
+proposal applied from the workspace, the approval — reads both from disk
+(`readCoverageContext`), so none of them depends on what a model was told. Tested in
+`test/coverage-modes.test.ts` and `test/api-discovery.test.ts`.
+
+**Documented operations are evidence, and the only API evidence.** `src/lib/api-discovery.ts`
+parses the document deterministically and gives each operation an id (`API-1` …). A requirement
+or a test case may cite one exactly as it cites a behavior, and its statement must say what that
+operation declares. Anything else is refused:
+
+- an `API-n` id the document does not contain, or any `API-n` id in UI-only mode or when there is
+  no documentation → `UNKNOWN_EVIDENCE_ID`;
+- a path the document does not declare, or a method it does not declare for that path
+  (`PUT /notes` where only `GET` and `POST` exist) → `UNSUPPORTED_FACT`. A concrete path under a
+  documented template (`/notes/42` for `/notes/{id}`) is supported.
+
+**A level must be allowed by the mode and supported by the case's own evidence.**
+
+| Rule | Code |
+|---|---|
+| UI only: no `API` case. API only: no `UI` case, and none without a level. | `TEST_LEVEL_OUT_OF_MODE` |
+| An `API` case must cite a documented operation, directly or through a requirement that cites one. | `UNSUPPORTED_TEST_LEVEL` |
+| A `UI` case may not rest only on documentation: something it cites must have been observed in the interface. | `UNSUPPORTED_TEST_LEVEL` |
+| Automatic: two cases at different levels with the same `covers` and the same `types` are one scenario written twice. | `DUPLICATE_ACROSS_LEVELS` |
+| An `API` case is not automated through `UI`, `UI_API` or `VISUAL`; a `UI` case not through `API` alone. | `CONTRADICTORY_STRATEGY` |
+
+**Scope.** In API-only mode a requirement owes a test case only if it cites a documented
+operation; one that rests on UI behavior alone is *out of scope* — reported as such in the
+coverage counts, not as uncovered and not as untestable. UI only and Automatic leave nothing out.
+
+**Unavailable documentation.** `api-discovery.json` then has status `UNAVAILABLE` with the
+reason, and no operation is citable: Automatic degrades to UI-level cases, and API only does not
+start.
+
+**Backward compatibility.** A case with no `testLevel` is `UI`; a workspace with no
+`run-config.json` is Automatic with no API documentation. A suite written before this feature
+therefore validates exactly as it did, and a strategy chosen for a case that states no level is
+never contradicted by a default it did not see.
+
 ## Automation strategy: only capabilities that were observed
 
 Prioritization records four separate judgements, and none may be copied from another: test
@@ -218,8 +261,9 @@ automation may have an `UNKNOWN` strategy.
 
 The strategy may not contradict the mode, and may not name a capability this run did not
 observe. The host derives what was observed from upstream facts only — a requirement typed
-`API`/`CONTRACT`/`VISUAL`, or browser evidence that recorded real HTTP requests. A test
-case's own wording is not evidence that an API exists.
+`API`/`CONTRACT`/`VISUAL`, browser evidence that recorded real HTTP requests, or API
+documentation the host itself read. A test case's own wording is not evidence that an API
+exists, and in a UI-only run nothing is automated through one.
 
 ## Defects: expected must be supported, actual must be observed
 
@@ -297,8 +341,9 @@ Enforced by input schemas and fixed roots, before any code that could write runs
 
 - **One artifact per agent.** `write_qa_artifact` is built per agent from a picklist
   (`writeQaArtifactToolFor`); any other name is rejected at the tool's input schema. Host-only
-  files — `discovery-evidence`, `phase1-approval.json`, `automation-project-contract`, review
-  workflow state — are in no agent's picklist.
+  files — `discovery-evidence`, `api-discovery`, `run-config`, `phase1-approval.json`,
+  `automation-project-contract`, review workflow state — are in no agent's picklist. `api-discovery`
+  is readable by the agents; `run-config` is not even that.
 - **No paths from a model.** Every root (`QA_ARTIFACT_ROOT`, `QA_TARGET_REPO_ROOT`,
   `QA_MCP_OUTPUT_ROOT`, test write/result roots) comes from host configuration, must be absolute
   and outside this project, and is checked at load time (`src/lib/trusted-roots.ts`). Repo tools
@@ -352,11 +397,16 @@ covered by a test. Errors never return a stack or a path.
 
 `src/run-control/` and `src/ui-server/run-control-api.ts` (tested in `test/run-control.test.ts`):
 
-- `POST /api/runs` takes a strict object — pipeline, target, model, fresh browser;
-  unknown keys (a command, an env, a path) are refused. Each value must be one the host configured;
-  the runner receives the host's value, not the browser's string.
+- `POST /api/runs` takes a strict object — pipeline, target, model, fresh browser, and optionally
+  coverage mode and API documentation URL; unknown keys (a command, an env, a path) are refused.
+  Each picked value must be one the host configured; the runner receives the host's value, not the
+  browser's string. The API documentation URL is the one typed value: it must be an http(s) URL
+  without embedded credentials, at most 500 characters, is dropped in UI-only mode, and is only
+  ever fetched by host code with GET. It is stored and shown without its query string.
 - The RunController forks one fixed script with fixed flags (`--run-id` must match the run-id
-  pattern, which the runner checks again) and sets exactly three environment keys.
+  pattern, which the runner checks again) and sets exactly five environment keys: `TARGET_URL`,
+  `QA_MODEL`, `QA_FRESH_BROWSER`, `QA_COVERAGE_MODE`, `QA_API_DOCS_URL` (always set — empty when
+  none was chosen — so the server's own environment cannot supply one).
 - Cancel takes a run id only. It reaches the process this controller started (IPC, then its own
   process group) and the browser server that run reported owning — never a pid from a request.
 - The run lock is the only concurrency control: a start is refused while any live process holds it.
@@ -404,6 +454,9 @@ flow reached twice is one location.
 | `COVERAGE_NOT_EVIDENCED` | A `covers` entry whose requirement's evidence the case never cites. |
 | `CONTRADICTORY_STRATEGY` | An automation strategy that contradicts the execution mode. |
 | `UNSUPPORTED_STRATEGY` | A strategy naming a capability (`API`, `UI_API`, `VISUAL`) this run did not observe. |
+| `TEST_LEVEL_OUT_OF_MODE` | A test case whose level the run's coverage mode does not allow. |
+| `UNSUPPORTED_TEST_LEVEL` | An `API` case citing no documented operation, or a `UI` case resting only on API documentation. |
+| `DUPLICATE_ACROSS_LEVELS` | The same scenario — same `covers`, same `types` — written at both UI and API level. |
 | `MISSING_UPSTREAM` / `UPSTREAM_INVALID` | An input artifact is absent, or no longer consistent with the current discovery. The agent is told it cannot fix this and must stop |
 | `UNOBSERVED_ACTUAL` | A defect whose cited behaviors include nothing OBSERVED |
 | `UNSUPPORTED_EXPECTED` | `CONFIRMED_DEFECT` whose expected basis is `INFERRED` or `NONE` |

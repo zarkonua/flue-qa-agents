@@ -43,6 +43,14 @@ export function OverviewPage() {
     <>
       <h1>Overview</h1>
       <p className="muted">Artifacts: <code>{data.artifactRoot}</code></p>
+      {data.coverageMode && (
+        <p className="muted" data-testid="overview-coverage-mode">
+          Test coverage: <b>{data.coverageMode.label}</b>{data.coverageMode.recorded ? '' : ' (not recorded — suite from before coverage modes)'}
+          {data.coverage?.testLevels ? ` · ${data.coverage.testLevels.UI ?? 0} UI, ${data.coverage.testLevels.API ?? 0} API test cases` : ''}
+          {data.coverageMode.api.status === 'AVAILABLE' ? ` · API documentation: ${data.coverageMode.api.endpoints} operation(s)${data.coverageMode.apiDocsUrl ? ` from ${data.coverageMode.apiDocsUrl}` : ''}`
+            : data.coverageMode.api.status === 'UNAVAILABLE' ? ` · API documentation unavailable: ${data.coverageMode.api.reason ?? 'unknown reason'}` : ''}
+        </p>
+      )}
 
       <h2>Phase 1</h2>
       <table className="list" data-testid="phase1-health">

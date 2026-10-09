@@ -22,6 +22,10 @@ before it is written.
   exploration is incomplete.
 - **Behavior analysis** — acceptance points and business rules, each citing observed behaviors.
 - **Test case generation** — a risk-based manual suite that covers every testable requirement.
+- **Test coverage modes** — Automatic, UI only or API only, chosen per run; every test case
+  states its level (`UI` / `API`) and the workspace filters by it.
+- **API discovery** — the host reads the product's OpenAPI / Swagger documentation (JSON, YAML or
+  a Swagger UI page); an API-level test may only use an operation that document declares.
 - **Automation prioritization** — AUTOMATION / MANUAL, priority and strategy for every case.
 - **Defect analysis** — evidence-grounded findings and one bug report per defect.
 - **Deterministic validation** — schema (Ajv, Draft 2020-12) and semantic checks: evidence
@@ -100,6 +104,39 @@ that attempt and re-validates from disk.
 | 5 | `defects` | Defect Analyzer | `defect-analysis.json`, `bugs/BUG-NNN.json` |
 
 Then the run stops. Review, refresh and approval are separate, human-started steps.
+
+### Test coverage modes and API discovery
+
+A run is started in one of three modes — from **New Run**, or with `--coverage-mode` /
+`QA_COVERAGE_MODE`:
+
+| Mode | Test cases | API documentation |
+|---|---|---|
+| **Automatic** (default) | each case at the level that fits it, `UI` or `API`; the same scenario is not written at both | optional — without it, or if it cannot be read, every case is `UI` |
+| **UI only** | all `UI` | not read |
+| **API only** | all `API`; only requirements the documentation supports owe a case | required — without it the run stops before anything is archived |
+
+The **API documentation URL** (`--api-docs` / `QA_API_DOCS_URL`, or the field on New Run) may
+point at an OpenAPI 3 or Swagger 2 document in JSON or YAML, or at a Swagger UI page — the host
+finds the document embedded in the page, named by it, or beside it. Host code fetches and parses
+it before any agent runs and writes `api-discovery.json`: operations (each with an id, `API-1`,
+`API-2` …), parameters, request and response fields, status codes, authentication. No model takes
+part, and no agent can write that file.
+
+The mode and the documentation then travel through every stage:
+
+- **Discovery** still explores the interface in every mode — it is what defect analysis is judged
+  against — and is told the run's mode.
+- **Behavior Analyst** may cite a documented operation as evidence, beside or instead of an
+  observed behavior.
+- **Test Designer** sets `testLevel` on every case. An `API` case must rest on a documented
+  operation; a `UI` case on something observed in the interface.
+- **Automation Prioritizer** picks a strategy that agrees with the level.
+
+All of it is checked by the host, not asked of the model — see
+[VALIDATION — Coverage modes](docs/VALIDATION.md#coverage-modes-and-test-levels). The chosen mode
+is written to `run-config.json` beside the artifacts, recorded in the run history and shown on the
+run; a workspace from before coverage modes behaves as Automatic with no API documentation.
 
 ## QA Review Workspace
 
@@ -237,8 +274,9 @@ instance (`LANGFUSE_BASE_URL`). Prompts and tool I/O are sent only with
 ## Run control
 
 **New Run** starts Phase 1 with choices the host offers — target (`TARGET_URL`, `QA_UI_TARGETS`),
-model (`QA_MODEL`, `QA_UI_MODELS`), fresh browser — and shows the helper origins and Langfuse state
-read-only. The browser sends a typed request; the **RunController** validates it, checks the run
+model (`QA_MODEL`, `QA_UI_MODELS`), test coverage (Automatic, UI only, API only), fresh browser —
+plus an optional API documentation URL for Automatic and API only, and shows the helper origins
+and Langfuse state read-only. The browser sends a typed request; the **RunController** validates it, checks the run
 lock, and forks **the same runner as `npm run qa:manual`** with argv and environment it builds
 itself. A second run is refused while one is active, from the workspace or the terminal.
 
@@ -287,6 +325,7 @@ this project).
 | Approval | `phase1-approval.json` — written by host code only |
 | Advisory | `test-cases-review.json` |
 | Host-written discovery evidence | `discovery-surface.json` · `discovery-observations.json` · `discovery-evidence.json` |
+| Host-written run configuration and API discovery | `run-config.json` (coverage mode, API documentation URL) · `api-discovery.json` (what the API documentation declares) |
 | **Review workflow state** — never hashed or approved | `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` · `reviews/bugs/BUG-NNN.json` |
 | Freshness | `phase1-dependencies.json` · `phase1-refresh.json` |
 | Phase 2 | `repo-analysis.json` · `automation-project-contract.json` |

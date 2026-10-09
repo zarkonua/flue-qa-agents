@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // A deterministic stand-in for scripts/qa-manual.mjs, for the RunController
 // tests and the browser tests. Same contract — `--run-id`, `--fresh-browser`,
-// TARGET_URL / QA_MODEL from the environment, cancel over IPC — and the same
+// TARGET_URL / QA_MODEL / QA_COVERAGE_MODE / QA_API_DOCS_URL from the environment,
+// cancel over IPC — and the same
 // shared host modules: the run lock, the run history recorder, the event log,
 // cancellation and the run archive. Only the model and the browser are
 // replaced: each stage copies a fixture artifact after a short delay.
@@ -22,6 +23,7 @@ import { STAGES } from '../../scripts/lib/phase1-stages.mjs';
 const qa = await import(resolve(ROOT, 'src/lib/qa-artifacts.ts'));
 const { EventLogWriter } = await import(resolve(ROOT, 'src/run-control/events.ts'));
 const { metricsFromArchive } = await import(resolve(ROOT, 'src/history/archive.ts'));
+const coverageLib = await import(resolve(ROOT, 'src/lib/coverage-mode.ts'));
 
 // The scenario comes from the model name — `ollama/fake-slow` — so tests drive it through the real config validation.
 const scenario = process.env.FAKE_RUN_SCENARIO ?? /fake-([a-z-]+)$/.exec(process.env.QA_MODEL ?? '')?.[1] ?? 'complete';
@@ -38,7 +40,10 @@ if (!lock.ok) {
   process.exit(EXIT.BAD_CONFIG);
 }
 const startedAt = new Date();
-const history = await startRunHistory({ kind: 'PHASE1_MANUAL', runId, model: process.env.QA_MODEL, target: process.env.TARGET_URL, startedAt, holdsRunLock: true, status: 'STARTING', log: () => {} });
+// The run's configuration, as the real runner takes it: fixed environment keys set by the controller.
+const coverageMode = coverageLib.parseCoverageMode(process.env.QA_COVERAGE_MODE) ?? coverageLib.DEFAULT_COVERAGE_MODE;
+const apiDocsUrl = coverageLib.usesApiDocs(coverageMode) ? coverageLib.displayApiDocsUrl(process.env.QA_API_DOCS_URL) : undefined;
+const history = await startRunHistory({ kind: 'PHASE1_MANUAL', runId, model: process.env.QA_MODEL, target: process.env.TARGET_URL, startedAt, holdsRunLock: true, status: 'STARTING', coverageMode, apiDocsUrl: apiDocsUrl ?? null, log: () => {} });
 const events = new EventLogWriter(join(qa.QA_ARTIFACT_ROOT, 'runs', runId, 'events.jsonl'), runId);
 const emit = (e) => events.emit(e);
 emit({ type: 'RUN_STARTED', status: 'STARTING', plan: STAGES.map((s) => ({ key: s.key, label: s.label })), message: 'Phase 1 started (fake runner)' });
@@ -52,11 +57,11 @@ const wait = (ms) => new Promise((done) => {
   const t = setTimeout(done, ms);
   cancellation.onRequest(() => { clearTimeout(t); done(); });
 });
-const files = () => ['discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json', 'automation-prioritization.json', 'defect-analysis.json', ...qa.listBugReportIds().map((b) => `bugs/${b}.json`)];
+const files = () => ['discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json', 'automation-prioritization.json', 'defect-analysis.json', 'run-config.json', ...qa.listBugReportIds().map((b) => `bugs/${b}.json`)];
 const TYPE = { 'discovered-behavior': 'DISCOVERED_BEHAVIOR', 'requirements-analysis': 'REQUIREMENTS_ANALYSIS', 'test-cases': 'TEST_CASES', 'automation-prioritization': 'AUTOMATION_PRIORITIZATION', 'defect-analysis': 'DEFECT_ANALYSIS' };
 
 async function end(status, stage) {
-  const archive = preserveRun({ artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId, model: process.env.QA_MODEL, target: process.env.TARGET_URL, startedAt, files: files(), outcome: status.toLowerCase() });
+  const archive = preserveRun({ artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId, model: process.env.QA_MODEL, target: process.env.TARGET_URL, startedAt, files: files(), outcome: status.toLowerCase(), extra: { coverageMode, apiDocsUrl: apiDocsUrl ?? null } });
   const summary = status === 'CANCELLED' ? `Stopped by the operator during ${stage.label}.` : status === 'FAILED' ? `${stage.label} did not produce a valid artifact: Model response could not be parsed.` : 'Phase 1 complete';
   emit({ type: `RUN_${status}`, status, stage: stage?.key, stageLabel: stage?.label, level: status === 'COMPLETED' ? 'info' : status === 'CANCELLED' ? 'warn' : 'error', message: summary });
   history.finish({ status, errorCode: status === 'COMPLETED' ? null : status === 'CANCELLED' ? 'CANCELLED' : 'STAGE_FAILED', errorSummary: status === 'COMPLETED' ? null : summary, archiveDir: archive.dir });
@@ -67,6 +72,7 @@ mkdirSync(qa.QA_ARTIFACT_ROOT, { recursive: true });
 // Like the real runner, a run starts from its own outputs: the previous ones are moved aside.
 for (const stage of STAGES) rmSync(qa.qaArtifactPath(stage.artifact), { force: true });
 rmSync(qa.BUGS_DIR, { recursive: true, force: true });
+qa.writeQaArtifact('run-config', { coverageMode, ...(apiDocsUrl ? { apiDocsUrl } : {}), runId, writtenAt: startedAt.toISOString() });
 for (const stage of STAGES) {
   if (cancellation.requested) await end('CANCELLED', stage);
   const h = history.stage(stage);

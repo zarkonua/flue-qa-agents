@@ -21,6 +21,7 @@ import {
   QA_ARTIFACT_ROOT,
   qaArtifactPath,
   readBugReport,
+  readCoverageContext,
   readQaArtifact,
   schemaErrorsFor,
   semanticErrorsFor,
@@ -171,10 +172,12 @@ export function inspectPhase1(): Phase1State {
 
   const all: Finding[] = [];
   if (discovery) all.push(...tag('discovered-behavior', validateDiscoveredBehavior(discovery)));
-  if (discovery && requirements) all.push(...tag('requirements-analysis', validateRequirementsAnalysis(discovery, requirements)));
-  if (requirements && testCases) all.push(...tag('test-cases', validateTestCases(discovery, requirements, testCases)));
+  // Judged by the mode the run was started in and the API documentation it read — see readCoverageContext().
+  const context = readCoverageContext();
+  if (discovery && requirements) all.push(...tag('requirements-analysis', validateRequirementsAnalysis(discovery, requirements, context)));
+  if (requirements && testCases) all.push(...tag('test-cases', validateTestCases(discovery, requirements, testCases, context)));
   if (testCases && prioritization) {
-    all.push(...tag('automation-prioritization', validateAutomationPrioritization(testCases, prioritization, discovery, requirements)));
+    all.push(...tag('automation-prioritization', validateAutomationPrioritization(testCases, prioritization, discovery, requirements, undefined, context)));
     state.counts = summarize(prioritization);
     state.prioritization = prioritization;
   }

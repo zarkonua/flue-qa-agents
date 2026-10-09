@@ -43,6 +43,9 @@ const READABLE_ARTIFACT_NAMES = [
   ...ARTIFACT_NAMES,
   'discovery-evidence',
   'automation-project-contract',
+  // What the API documentation declares, read by the host. Same asymmetry as
+  // the browser evidence: a model may cite an operation, never add one.
+  'api-discovery',
 ] as const satisfies readonly QaArtifactName[];
 
 // Note: `phase1-approval.json` is deliberately absent from both lists. Approval

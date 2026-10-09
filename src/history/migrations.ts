@@ -125,6 +125,14 @@ export const MIGRATIONS: readonly string[] = [
   DROP TABLE run_stages;
   ALTER TABLE run_stages_v2 RENAME TO run_stages;
   `,
+
+  // 3 — coverage modes: at which level a run designed its test cases, and the
+  // API documentation it was given. Both nullable: a run recorded before this
+  // has neither, and is shown as such rather than as a guess.
+  `
+  ALTER TABLE runs ADD COLUMN coverage_mode TEXT CHECK (coverage_mode IS NULL OR coverage_mode IN ('AUTOMATIC','UI_ONLY','API_ONLY'));
+  ALTER TABLE runs ADD COLUMN api_docs_url TEXT;
+  `,
 ];
 
 export class HistorySchemaError extends Error {

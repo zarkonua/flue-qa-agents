@@ -12,6 +12,7 @@
 import type Database from 'better-sqlite3';
 import { REDACTED, redactOpaqueSegment, redactText, SENSITIVE_PARAM_SOURCE } from '../lib/redaction.ts';
 import { redactSecrets } from '../observability/content-policy.ts';
+import { displayApiDocsUrl, parseCoverageMode, type CoverageMode } from '../lib/coverage-mode.ts';
 import {
   ACTIVE_STATUSES,
   ARTIFACT_TYPES,
@@ -154,12 +155,14 @@ interface RunDbRow {
   auth_mode: string | null; archive_rel_path: string | null; error_code: string | null; error_summary: string | null;
   current_stage: string | null; owner_pid: number | null; holds_run_lock: number; langfuse_trace_id: string | null;
   source: 'LIVE' | 'IMPORTED'; created_at: string; updated_at: string;
+  coverage_mode: CoverageMode | null; api_docs_url: string | null;
 }
 
 const toRun = (r: RunDbRow): RunRow & { holdsRunLock: boolean } => ({
   id: r.id, kind: r.run_kind, status: r.status, model: r.model, provider: r.provider, target: r.target,
   gitCommit: r.git_commit, gitDirty: r.git_dirty === null ? null : r.git_dirty === 1,
   startedAt: r.started_at, finishedAt: r.finished_at, durationMs: r.duration_ms, authMode: r.auth_mode,
+  coverageMode: r.coverage_mode ?? null, apiDocsUrl: r.api_docs_url ?? null,
   archiveRelPath: r.archive_rel_path, errorCode: r.error_code, errorSummary: r.error_summary,
   currentStage: r.current_stage, ownerPid: r.owner_pid, holdsRunLock: r.holds_run_lock === 1,
   langfuseTraceId: r.langfuse_trace_id, source: r.source, createdAt: r.created_at, updatedAt: r.updated_at,
@@ -198,10 +201,10 @@ export class SqliteRunHistoryStore implements RunHistoryStore {
       this.db.prepare(`
         INSERT INTO runs (id, run_kind, status, model, provider, target, git_commit, git_dirty, started_at, finished_at,
           duration_ms, auth_mode, archive_rel_path, error_code, error_summary, owner_pid, holds_run_lock,
-          langfuse_trace_id, source, created_at, updated_at)
+          langfuse_trace_id, source, created_at, updated_at, coverage_mode, api_docs_url)
         VALUES (@id, @kind, @status, @model, @provider, @target, @commit, @dirty, @startedAt, @finishedAt,
           @durationMs, @authMode, @archive, @errorCode, @errorSummary, @ownerPid, @holdsLock,
-          @traceId, @source, @now, @now)`).run({
+          @traceId, @source, @now, @now, @coverageMode, @apiDocsUrl)`).run({
         id: run.id, kind: run.kind, status: run.status ?? 'RUNNING', model, provider: sanitizeText(providerOf(model), 40),
         target: safeTarget(run.target), commit, dirty: dirty === null ? null : dirty ? 1 : 0,
         startedAt: run.startedAt, finishedAt: run.finishedAt ?? null, durationMs: run.durationMs ?? null,
@@ -209,6 +212,8 @@ export class SqliteRunHistoryStore implements RunHistoryStore {
         errorCode: sanitizeText(run.errorCode, 60), errorSummary: sanitizeText(run.errorSummary),
         ownerPid: Number.isInteger(run.ownerPid) ? run.ownerPid : null, holdsLock: run.holdsRunLock ? 1 : 0,
         traceId: traceIdOrNull(run.langfuseTraceId), source, now,
+        // A closed column and a URL: an unknown mode is stored as none, the URL without credentials or query.
+        coverageMode: parseCoverageMode(run.coverageMode) ?? null, apiDocsUrl: displayApiDocsUrl(run.apiDocsUrl) ?? null,
       });
     } catch (error) {
       if ((error as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY') throw new DuplicateRunError(`Run ${run.id} is already recorded.`);

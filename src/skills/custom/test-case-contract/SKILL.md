@@ -22,6 +22,18 @@ All manual/hybrid test cases must validate against:
 - automationCandidate
 - automationReason
 - tags
+- testLevel
+
+## Test level
+`testLevel` is `UI` or `API` — the level the case is exercised at. The run's coverage mode
+(stated in your opening message) decides which values are allowed.
+
+- `API`: steps are requests, expected results are responses. The case cites a documented API
+  operation (`API-n`), or a requirement that cites one, and uses only what that operation declares.
+- `UI`: steps act on the interface, expected results are what it shows. The case cites
+  something observed in the interface.
+
+Do not write the same scenario at both levels.
 
 ## Titles
 Describe observable behavior.

@@ -117,6 +117,51 @@ test('while a run is active: a second one cannot start; its artifacts are viewab
   await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
 });
 
+test('test coverage: three modes, Automatic by default; the API documentation field follows the mode', async ({ page }) => {
+  await page.goto('/runs/new');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
+  const modes = page.getByTestId('coverage-mode');
+  await expect(modes.getByRole('radio')).toHaveCount(3);
+  await expect(modes.getByRole('radio', { name: /Automatic/ })).toBeChecked();
+  // Automatic: the URL is offered and optional.
+  const docs = page.getByLabel('API documentation URL');
+  await expect(docs).toBeVisible();
+  await expect(docs).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
+  // UI only: no API documentation is read, so the field is gone.
+  await modes.getByRole('radio', { name: /UI only/ }).check();
+  await expect(docs).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
+  // API only: the field is back, and required.
+  await modes.getByRole('radio', { name: /API only/ }).check();
+  await expect(docs).toBeVisible();
+  await expect(page.getByTestId('api-docs-problem')).toContainText('needs the URL');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeDisabled();
+  await docs.fill('not a url');
+  await expect(page.getByTestId('api-docs-problem')).toContainText('http:// or https://');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeDisabled();
+  await docs.fill('http://localhost:4444/api/doc');
+  await expect(page.getByTestId('api-docs-problem')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
+});
+
+test('a run keeps the coverage mode it was started in: shown on the run and in the list', async ({ page }) => {
+  await page.goto('/runs/new');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
+  await page.getByTestId('coverage-mode').getByRole('radio', { name: /API only/ }).check();
+  await page.getByLabel('API documentation URL').fill('http://localhost:4444/api/doc?api_key=s3cr3t');
+  await page.getByRole('button', { name: 'Start Phase 1' }).click();
+  await expect(page).toHaveURL(/\/runs\/\d{4}-\d{2}-\d{2}T[\d-]+Z\/live$/);
+  const runId = /\/runs\/([^/]+)\/live$/.exec(page.url())![1];
+  await expect(page.getByTestId('live-status')).toHaveText('COMPLETED', { timeout: 30_000 });
+  await page.goto(`/runs/${runId}`);
+  await expect(page.getByTestId('run-coverage-mode')).toHaveText('API only');
+  // Stored and shown without its query — that is where a key would be.
+  await expect(page.getByTestId('run-api-docs')).toHaveText('http://localhost:4444/api/doc');
+  await page.goto('/runs');
+  await expect(page.getByTestId(`run-coverage-${runId}`)).toHaveText('API only');
+});
+
 test('a failed stage: FAILED, the stage and a sanitised reason, diagnostics on request', async ({ page }) => {
   await startRun(page, 'ollama/fake-fail');
   const failure = page.getByTestId('live-failure');

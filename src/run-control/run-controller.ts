@@ -30,6 +30,7 @@ import type { RunHistoryStore } from '../history/run-history-store.ts';
 import { RUN_ID } from '../history/types.ts';
 import { EventLogWriter, isFinal, readEventLog } from './events.ts';
 import { readRunConfig, validateStartRequest, type RunConfigView, type StartRequest, type ValidatedRun } from './run-config.ts';
+import { displayApiDocsUrl, type CoverageMode } from '../lib/coverage-mode.ts';
 
 export class RunConflictError extends Error {
   name = 'RunConflictError';
@@ -48,6 +49,9 @@ export interface ControllerRun {
   startedAt: string;
   model: string;
   target: string;
+  coverageMode: CoverageMode;
+  /** As it may be shown: without its query. */
+  apiDocsUrl?: string;
   cancelRequested: boolean;
   exitCode?: number | null;
   error?: string;
@@ -64,7 +68,7 @@ export interface RunControllerOptions {
   graceMs?: { cancel: number; term: number };
   log?: (line: string) => void;
   now?: () => Date;
-  /** The environment the runner starts from (then TARGET_URL, QA_MODEL, QA_FRESH_BROWSER are set). Default: this process's. */
+  /** The environment the runner starts from (then TARGET_URL, QA_MODEL, QA_FRESH_BROWSER, QA_COVERAGE_MODE, QA_API_DOCS_URL are set). Default: this process's. */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -78,7 +82,15 @@ export function runnerArgs(runId: string, run: ValidatedRun): string[] {
 
 /** The runner's environment: the server's own, with exactly these keys set from host values. */
 export function runnerEnv(run: ValidatedRun, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...base, TARGET_URL: run.target, QA_MODEL: run.model, QA_FRESH_BROWSER: run.freshBrowser ? 'true' : 'false' };
+  return {
+    ...base,
+    TARGET_URL: run.target,
+    QA_MODEL: run.model,
+    QA_FRESH_BROWSER: run.freshBrowser ? 'true' : 'false',
+    QA_COVERAGE_MODE: run.coverageMode,
+    // Always set, so a URL in the server's own environment never leaks into a run that chose none.
+    QA_API_DOCS_URL: run.apiDocsUrl ?? '',
+  };
 }
 
 function alive(pid: number | undefined): boolean {
@@ -167,7 +179,11 @@ export class RunController {
       // workspace must never break a run's stdout (a write to a closed pipe would crash it).
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
-    const run: ControllerRun = { runId, status: 'STARTING', startedAt: now.toISOString(), model: validated.model, target: validated.target, cancelRequested: false };
+    const shownDocs = displayApiDocsUrl(validated.apiDocsUrl);
+    const run: ControllerRun = {
+      runId, status: 'STARTING', startedAt: now.toISOString(), model: validated.model, target: validated.target,
+      coverageMode: validated.coverageMode, ...(shownDocs ? { apiDocsUrl: shownDocs } : {}), cancelRequested: false,
+    };
     this.recent.set(runId, run);
     while (this.recent.size > 20) this.recent.delete(this.recent.keys().next().value!);
     this.active = { run, child, timers: [] };
@@ -190,7 +206,7 @@ export class RunController {
       run.status = 'FAILED';
       run.error = `The runner could not be started: ${error.message.split('\n')[0]}`;
     });
-    this.log(`${tag} started from the workspace: ${validated.model} → ${validated.target}`);
+    this.log(`${tag} started from the workspace: ${validated.model} → ${validated.target} (coverage: ${validated.coverageMode})`);
     return run;
   }
 

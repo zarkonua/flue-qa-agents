@@ -20,6 +20,7 @@ import { ARTIFACT_FILES, BUG_ID, RUN_ID, RUN_KINDS, RUN_STATUSES, type RunKind, 
 import { listBugReportIds, qaArtifactPath, readBugReport, readQaArtifact, type QaArtifactName } from '../lib/qa-artifacts.ts';
 import { STAGES } from '../../scripts/lib/phase1-stages.mjs';
 import type { ControllerRun } from '../run-control/run-controller.ts';
+import { testLevelOf } from '../lib/coverage-mode.ts';
 
 /** What the run controller knows that the history may not yet: runs it started. */
 export interface RunControlView {
@@ -32,6 +33,7 @@ export interface RunControlView {
 const LIVE_ARTIFACTS: Partial<Record<SingleArtifactType, QaArtifactName>> = {
   DISCOVERED_BEHAVIOR: 'discovered-behavior', REQUIREMENTS_ANALYSIS: 'requirements-analysis', TEST_CASES: 'test-cases',
   AUTOMATION_PRIORITIZATION: 'automation-prioritization', DEFECT_ANALYSIS: 'defect-analysis', DISCOVERY_EVIDENCE: 'discovery-evidence',
+  API_DISCOVERY: 'api-discovery',
 };
 
 export class RunsApiError extends Error {
@@ -50,7 +52,7 @@ export type HistoryProvider = () => RunHistoryStore;
 /** Artifacts the viewer may open by type. Bug reports have their own routes; run bookkeeping is shown as data. */
 const VIEWABLE = new Set<SingleArtifactType>([
   'DISCOVERED_BEHAVIOR', 'REQUIREMENTS_ANALYSIS', 'TEST_CASES', 'AUTOMATION_PRIORITIZATION', 'DEFECT_ANALYSIS',
-  'TEST_CASE_REVIEW', 'REPO_ANALYSIS', 'AUTOMATION_PROJECT_CONTRACT', 'DISCOVERY_EVIDENCE', 'RUN_RECORD',
+  'TEST_CASE_REVIEW', 'REPO_ANALYSIS', 'AUTOMATION_PROJECT_CONTRACT', 'DISCOVERY_EVIDENCE', 'RUN_RECORD', 'API_DISCOVERY',
 ]);
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z?)?$/;
@@ -200,7 +202,7 @@ export function runRoutes(history: HistoryProvider, artifactRoot?: string, contr
         const c = control?.getRun(id);
         if (!c) throw new RunsApiError(404, 'No such run.');
         return [200, {
-          run: { id, kind: 'PHASE1_MANUAL', status: c.status, model: c.model, provider: c.model.split('/')[0], target: c.target, startedAt: c.startedAt, finishedAt: null, durationMs: null, errorCode: c.error ? 'NOT_STARTED' : null, errorSummary: c.error ?? null, currentStage: null, langfuseTraceId: null, source: 'LIVE' },
+          run: { id, kind: 'PHASE1_MANUAL', status: c.status, model: c.model, provider: c.model.split('/')[0], target: c.target, coverageMode: c.coverageMode ?? null, apiDocsUrl: c.apiDocsUrl ?? null, startedAt: c.startedAt, finishedAt: null, durationMs: null, errorCode: c.error ? 'NOT_STARTED' : null, errorSummary: c.error ?? null, currentStage: null, langfuseTraceId: null, source: 'LIVE' },
           stages: [], plannedStages: STAGES.map((st) => ({ key: st.key, label: st.label })), metrics: {}, artifacts: [], bugIds: [],
           live: c.status === 'STARTING', cancellable: control?.isCancellable(id) ?? false, langfuseUrl: null,
         }];
@@ -230,7 +232,8 @@ export function runRoutes(history: HistoryProvider, artifactRoot?: string, contr
       const hasPrio = available(s, id).types.has('AUTOMATION_PRIORITIZATION');
       const prio = hasPrio ? asList(asRecord(read(s, id, 'AUTOMATION_PRIORITIZATION')).cases) : [];
       return [200, {
-        testCases: asList(suite.testCases),
+        // Each case with its level stated, so a snapshot from before levels filters like any other.
+        testCases: asList(suite.testCases).map((tc) => ({ ...tc, testLevel: testLevelOf(tc) })),
         prioritization: Object.fromEntries(prio.filter((c) => typeof c.testCaseId === 'string').map((c) => [c.testCaseId as string, {
           executionMode: c.executionMode ?? null, automationPriority: c.automationPriority ?? null, automationStrategy: c.automationStrategy ?? null,
         }])),

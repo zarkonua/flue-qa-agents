@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { api, type RunFilters } from '../api/client.ts';
 import { formatDuration, formatWhen, KIND_LABEL, metric, STATUSES } from '../lib/runs.ts';
+import { coverageModeLabel } from '../lib/coverage.ts';
 
 const PAGE = 25;
 
@@ -71,7 +72,7 @@ export function RunsPage() {
       ) : (
         <>
           <table className="list runs">
-            <thead><tr><th>Started</th><th>Kind</th><th>Status</th><th>Model</th><th>Target</th><th>Duration</th><th>Behaviors</th><th>Test cases</th><th>Defects</th></tr></thead>
+            <thead><tr><th>Started</th><th>Kind</th><th>Status</th><th>Model</th><th>Target</th><th>Duration</th><th>Behaviors</th><th>Test cases</th><th>Defects</th><th>Coverage</th></tr></thead>
             <tbody>
               {data.runs.map((r) => {
                 const defects = 'defects_confirmed' in r.metrics || 'defects_potential' in r.metrics
@@ -91,6 +92,7 @@ export function RunsPage() {
                     <td>{metric(r.metrics, 'discovered_behaviors')}</td>
                     <td>{metric(r.metrics, 'test_cases_total')}</td>
                     <td>{defects}</td>
+                    <td data-testid={`run-coverage-${r.id}`}>{coverageModeLabel(r.coverageMode)}</td>
                   </tr>
                 );
               })}

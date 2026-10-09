@@ -28,7 +28,7 @@ const NOOP = { recorded: false, stage: () => NOOP_STAGE, setTraceId() {}, markRu
  * `holdsRunLock`: the caller took the run lock under this same id — lets
  * reconciliation tell this run from a dead one after a reused pid.
  */
-export async function startRunHistory({ kind, runId, model, target, startedAt, holdsRunLock = false, status = 'RUNNING', log = console.log }) {
+export async function startRunHistory({ kind, runId, model, target, startedAt, holdsRunLock = false, status = 'RUNNING', coverageMode = null, apiDocsUrl = null, log = console.log }) {
   let store;
   let svc;
   let archive;
@@ -40,7 +40,7 @@ export async function startRunHistory({ kind, runId, model, target, startedAt, h
     if (interrupted.length > 0) log(`Run history     : ${interrupted.length} earlier run(s) marked INTERRUPTED (their process is gone)`);
     store.startRun({
       id: runId, kind, status, model, target, startedAt: new Date(startedAt).toISOString(),
-      gitCommit: gitCommit(ROOT) ?? null, ownerPid: process.pid, holdsRunLock,
+      gitCommit: gitCommit(ROOT) ?? null, ownerPid: process.pid, holdsRunLock, coverageMode, apiDocsUrl,
     });
   } catch (error) {
     log(`WARNING         : run history is unavailable, so this run will not appear under Runs in the workspace ` +

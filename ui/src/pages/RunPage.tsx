@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.ts';
 import { ARTIFACT_LABEL, formatDuration, formatWhen, KIND_LABEL, metric, METRIC_GROUPS } from '../lib/runs.ts';
+import { coverageModeLabel } from '../lib/coverage.ts';
 
 export function SnapshotBanner({ runId }: { runId: string }) {
   const live = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId) }).data?.live;
@@ -46,6 +47,8 @@ export function RunPage() {
         <dt>Model</dt><dd className="mono">{run.model ?? '—'}</dd>
         <dt>Provider</dt><dd>{run.provider ?? '—'}</dd>
         <dt>Target</dt><dd className="mono">{run.target ?? '—'}</dd>
+        <dt>Test coverage</dt><dd data-testid="run-coverage-mode">{run.coverageMode ? coverageModeLabel(run.coverageMode) : <span className="muted">not recorded (before coverage modes)</span>}</dd>
+        {run.apiDocsUrl && <><dt>API documentation</dt><dd className="mono" data-testid="run-api-docs">{run.apiDocsUrl}</dd></>}
         <dt>Git commit</dt><dd className="mono">{run.gitCommit ? `${run.gitCommit}${run.gitDirty ? ' (uncommitted changes)' : ''}` : '—'}</dd>
         <dt>Started</dt><dd>{formatWhen(run.startedAt)}</dd>
         <dt>Finished</dt><dd>{formatWhen(run.finishedAt)}</dd>

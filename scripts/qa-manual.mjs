@@ -22,6 +22,12 @@
 //                    (earlier artifacts are kept — e.g. after hand-editing test
 //                    cases, `--from prioritization` re-prioritizes only)
 //   --attempts <n>   attempts per stage (default 4, or QA_STAGE_ATTEMPTS)
+//   --coverage-mode <automatic|ui|api>
+//                    at which level test cases are designed (default automatic, or
+//                    QA_COVERAGE_MODE): automatic picks UI or API per scenario
+//   --api-docs <url> the product's OpenAPI/Swagger document — JSON, YAML or a Swagger UI
+//                    page (or QA_API_DOCS_URL). Read by the host before any agent runs;
+//                    ignored in ui mode, required in api mode
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -45,6 +51,8 @@ const depLib = await import(resolve(ROOT, 'src/lib/phase1-dependencies.ts'));
 const { EventLogWriter } = await import(resolve(ROOT, 'src/run-control/events.ts'));
 const { metricsFromArchive } = await import(resolve(ROOT, 'src/history/archive.ts'));
 const { RUN_ID } = await import(resolve(ROOT, 'src/history/types.ts'));
+const coverageLib = await import(resolve(ROOT, 'src/lib/coverage-mode.ts'));
+const apiLib = await import(resolve(ROOT, 'src/lib/api-discovery.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
@@ -105,6 +113,51 @@ if (requestedRunId !== undefined && !RUN_ID.test(requestedRunId)) {
 }
 
 // ---------------------------------------------------------------------------
+// Coverage mode and API documentation
+// ---------------------------------------------------------------------------
+
+/** `--name value` or `--name=value`, keeping every `=` after the first — a URL has its own. */
+function rawOption(name) {
+  const i = process.argv.indexOf(`--${name}`);
+  if (i > 0) return process.argv[i + 1];
+  const eq = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return eq?.slice(name.length + 3);
+}
+
+// A run that starts at discovery is configured afresh. One that starts later
+// continues the suite already on disk, so it keeps that suite's mode and the
+// API documentation read for it — unless a flag on this command line says otherwise.
+const cliCoverageMode = rawOption('coverage-mode');
+const cliApiDocs = rawOption('api-docs');
+const configuresCoverage = startIndex === 0 || cliCoverageMode !== undefined || cliApiDocs !== undefined;
+const previousConfig = qa.readRunConfig();
+let coverageMode = previousConfig?.coverageMode ?? coverageLib.DEFAULT_COVERAGE_MODE;
+let apiDocsUrl;
+if (configuresCoverage) {
+  const rawMode = cliCoverageMode ?? (startIndex === 0 ? process.env.QA_COVERAGE_MODE?.trim() || undefined : undefined);
+  if (rawMode !== undefined) {
+    const parsed = coverageLib.parseCoverageMode(rawMode);
+    if (!parsed) {
+      console.error(`Unknown coverage mode "${String(rawMode).slice(0, 40)}". Use one of: automatic, ui, api.`);
+      process.exit(EXIT.BAD_CONFIG);
+    }
+    coverageMode = parsed;
+  } else if (startIndex === 0) {
+    coverageMode = coverageLib.DEFAULT_COVERAGE_MODE;
+  }
+  if (coverageLib.usesApiDocs(coverageMode)) {
+    const rawDocs = cliApiDocs ?? (startIndex === 0 ? process.env.QA_API_DOCS_URL?.trim() || undefined : undefined);
+    if (rawDocs !== undefined) {
+      apiDocsUrl = coverageLib.normalizeApiDocsUrl(rawDocs);
+      if (!apiDocsUrl) {
+        console.error('The API documentation URL must be an http(s) URL without embedded credentials.');
+        process.exit(EXIT.BAD_CONFIG);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Preconditions
 // ---------------------------------------------------------------------------
 
@@ -156,6 +209,7 @@ if (!lock.ok) {
 // part-way stays in the history. Never fatal: see scripts/lib/history.mjs.
 const history = await startRunHistory({
   kind: 'PHASE1_MANUAL', runId: stamp, model: envForLock.QA_MODEL, target, startedAt: runStarted, holdsRunLock: true, status: 'STARTING',
+  coverageMode, apiDocsUrl: apiDocsUrl ?? (configuresCoverage ? null : previousConfig?.apiDocsUrl ?? null),
 });
 
 // The run's structured event log — what the workspace's Live Run page shows.
@@ -201,7 +255,7 @@ async function endCancelled(stage) {
   if (browserStarted) record.mcpStoppedCleanly = await stopMcpAndWait();
   const cancelled = preserveRun({
     artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, model: env.QA_MODEL, target, startedAt: runStarted,
-    files: runFiles(), outcome: 'cancelled', onlyWrittenSince: runStarted, extra: { cancelledStage: stage?.key ?? null, auxiliaryOrigins: auxLib.auxiliaryOrigins() },
+    files: runFiles(), outcome: 'cancelled', onlyWrittenSince: runStarted, extra: { cancelledStage: stage?.key ?? null, auxiliaryOrigins: auxLib.auxiliaryOrigins(), coverageMode, apiDocsUrl: coverageRecord.apiDocsUrl },
   });
   const summary = `Stopped by the operator${stage ? ` during ${stage.label}` : ' before the first stage'}.`;
   // The final event is written before the archive is indexed, so the index hashes the complete log.
@@ -218,12 +272,63 @@ function archive(path) {
   renameSync(path, join(archiveDir, path.split('/').pop()));
 }
 
+// API discovery: host code reads the documentation before anything is archived
+// or any agent runs. It is optional and may be unreachable — that is recorded,
+// not fatal — except in API-only mode, where without it there is nothing a
+// test could rest on and the honest result is to stop here, with the previous
+// run's output still in place.
+let apiDiscovery = configuresCoverage ? undefined : qa.readCoverageContext().api;
+if (configuresCoverage) {
+  if (!coverageLib.usesApiDocs(coverageMode)) {
+    apiDiscovery = apiLib.notRequested('UI only: API documentation is not read in this mode');
+  } else {
+    if (apiDocsUrl) console.log(`\nAPI documentation: reading ${coverageLib.displayApiDocsUrl(apiDocsUrl)}`);
+    apiDiscovery = await apiLib.discoverApi(apiDocsUrl);
+  }
+  const summary = apiLib.apiDiscoverySummary(apiDiscovery);
+  if (summary.status === 'AVAILABLE') {
+    emit({ type: 'LOG', message: `API documentation read: ${summary.endpoints} operation(s), ${summary.schemas} schema(s), ${summary.authentication} authentication scheme(s)` });
+  } else if (summary.status === 'UNAVAILABLE') {
+    emit({ type: 'LOG', level: 'warn', message: `API documentation is unavailable: ${summary.reason}` });
+  }
+  if (coverageMode === 'API_ONLY' && !apiLib.hasApi(apiDiscovery)) {
+    const why = apiDocsUrl
+      ? `the API documentation is unavailable (${summary.reason ?? 'no operations found'})`
+      : 'no API documentation URL was given (--api-docs <url>, or QA_API_DOCS_URL)';
+    const message = `API-only coverage needs API documentation, and ${why}.`;
+    emit({ type: 'RUN_FAILED', status: 'FAILED', errorCode: 'API_DOCS_UNAVAILABLE', message });
+    history.finish({ status: 'FAILED', errorCode: 'API_DOCS_UNAVAILABLE', errorSummary: message });
+    console.error(`\nPhase 1 not started: ${message}\nNothing was archived or changed. Fix the URL, or start the run in automatic or ui mode.\n`);
+    process.exit(EXIT.FAILED);
+  }
+}
+const apiSummary = apiLib.apiDiscoverySummary(apiDiscovery);
+
 // Regenerating any stage invalidates the review and the approval of the old result.
 for (const stage of plan) archive(qa.qaArtifactPath(stage.artifact));
 // Bug reports belong to the defect analysis that produced them.
 if (plan.some((s) => s.key === 'defects')) archive(qa.BUGS_DIR);
 archive(qa.qaArtifactPath('test-cases-review'));
 archive(APPROVAL_PATH);
+// This run's own configuration and API discovery replace the previous run's.
+if (configuresCoverage) {
+  archive(qa.qaArtifactPath('api-discovery'));
+  archive(qa.qaArtifactPath('run-config'));
+  qa.writeQaArtifact('api-discovery', apiDiscovery);
+  qa.writeQaArtifact('run-config', {
+    coverageMode,
+    ...(apiDocsUrl ? { apiDocsUrl: coverageLib.displayApiDocsUrl(apiDocsUrl) } : {}),
+    runId: stamp,
+    writtenAt: runStarted.toISOString(),
+  });
+  if (apiSummary.status === 'AVAILABLE') emit({ type: 'ARTIFACT_CREATED', artifactType: 'API_DISCOVERY', count: apiSummary.endpoints, message: 'api-discovery.json created' });
+}
+/** The run's configuration, as its record and its archive state it. */
+const coverageRecord = {
+  coverageMode,
+  apiDocsUrl: (configuresCoverage ? coverageLib.displayApiDocsUrl(apiDocsUrl) : previousConfig?.apiDocsUrl) ?? null,
+  apiDiscovery: apiSummary,
+};
 
 // ---------------------------------------------------------------------------
 // Run
@@ -234,6 +339,12 @@ console.log(`Target          : ${target ?? '(not needed for this plan)'}`);
 console.log(`Artifacts       : ${qa.QA_ARTIFACT_ROOT}`);
 console.log(`Stages          : ${plan.map((s) => s.label).join(' -> ')} -> STOP`);
 console.log(`Attempts/stage  : ${attempts}`);
+console.log(`Coverage mode   : ${coverageLib.COVERAGE_MODE_LABEL[coverageMode]}${configuresCoverage ? '' : ' (kept from the suite on disk)'}`);
+console.log(`API docs        : ${apiSummary.status === 'AVAILABLE'
+  ? `${apiSummary.endpoints} operation(s), ${apiSummary.schemas} schema(s), ${apiSummary.authentication} auth scheme(s)${coverageRecord.apiDocsUrl ? ` — ${coverageRecord.apiDocsUrl}` : ''}`
+  : apiSummary.status === 'UNAVAILABLE'
+    ? `UNAVAILABLE — ${apiSummary.reason}. The run continues without API-level tests.`
+    : coverageMode === 'UI_ONLY' ? 'not read (UI only)' : 'none given — test cases will be UI level'}`);
 if (existsSync(archiveDir)) console.log(`Archived        : previous artifacts moved to ${archiveDir}`);
 
 /** The files a run's archive keeps — whichever of them exist when it ends. */
@@ -242,6 +353,7 @@ function runFiles() {
     'discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json',
     'automation-prioritization.json', 'discovery-surface.json', 'discovery-observations.json',
     'discovery-evidence.json', 'phase1-run.json', 'defect-analysis.json',
+    'api-discovery.json', 'run-config.json',
     ...qa.listBugReportIds().map((id) => `bugs/${id}.json`),
   ];
 }
@@ -274,6 +386,7 @@ const record = {
   startedAt: runStarted.toISOString(),
   from,
   attempts,
+  ...coverageRecord,
   stages: [],
 };
 const recordPath = join(qa.QA_ARTIFACT_ROOT, 'phase1-run.json');
@@ -328,8 +441,8 @@ observability.startRun({
   command: 'qa-manual',
   runId: stamp,
   model: env.QA_MODEL,
-  input: { target: target ?? null, from, stages: plan.map((s) => s.key), attemptsPerStage: attempts },
-  metadata: { from, attemptsPerStage: attempts, target: target ?? null, gitCommit: gitCommit(ROOT) ?? null },
+  input: { target: target ?? null, from, stages: plan.map((s) => s.key), attemptsPerStage: attempts, coverageMode },
+  metadata: { from, attemptsPerStage: attempts, target: target ?? null, gitCommit: gitCommit(ROOT) ?? null, coverageMode, apiEndpoints: apiSummary.endpoints },
 });
 history.setTraceId(observability.traceId?.());
 if (!cancellation.requested) {
@@ -353,7 +466,8 @@ for (const stage of plan) {
     if (surface) stage.message = stage.withSurface(surfaceLib.surfaceBriefing(surface), surface.locations.length);
   }
   const passed = await runStage({
-    stage,
+    // Every stage is told the run's coverage mode and what API documentation there is.
+    stage: { ...stage, message: apiLib.briefStage(stage.key, stage.message, coverageMode, apiDiscovery) },
     entry,
     attempts,
     idPrefix: 'p1',
@@ -469,7 +583,7 @@ for (const stage of plan) {
     // so its history entry has something to show.
     const failedArchive = preserveRun({
       artifactRoot: qa.QA_ARTIFACT_ROOT, projectRoot: ROOT, runId: stamp, model: env.QA_MODEL, target, startedAt: runStarted,
-      files: runFiles(), outcome: 'failed', onlyWrittenSince: runStarted, extra: { failedStage: stage.key, auxiliaryOrigins: auxLib.auxiliaryOrigins() },
+      files: runFiles(), outcome: 'failed', onlyWrittenSince: runStarted, extra: { failedStage: stage.key, auxiliaryOrigins: auxLib.auxiliaryOrigins(), coverageMode, apiDocsUrl: coverageRecord.apiDocsUrl },
     });
     emit({ type: 'RUN_FAILED', status: 'FAILED', stage: stage.key, stageLabel: stage.label, errorCode: 'STAGE_FAILED', message: `Stopped at ${stage.label}: no valid ${stage.artifact}.json after ${attempts} attempt(s).` });
     history.finish({
@@ -536,7 +650,7 @@ if (discovery?.locations) {
 
 const requirements = qa.readQaArtifact('requirements-analysis');
 const suite = qa.readQaArtifact('test-cases');
-const coverage = requirements && suite ? coverageSummary(requirements, suite) : undefined;
+const coverage = requirements && suite ? coverageSummary(requirements, suite, qa.readCoverageContext()) : undefined;
 if (coverage) record.coverage = coverage;
 // Analysis coverage: how discovery's behaviors fared on their way into
 // requirements. Host-derived from the two artifacts, like every other total.
@@ -583,6 +697,8 @@ if (coverage) {
   if (scenarios.length > 0) {
     console.log(`Scenario types  : ${scenarios.map(([k, n]) => `${n} ${k}`).join(', ')}`);
   }
+  console.log(`Test levels     : ${coverage.testLevels.UI ?? 0} UI, ${coverage.testLevels.API ?? 0} API` +
+    `${coverage.outOfScope > 0 ? ` (${coverage.outOfScope} requirement(s) out of scope for ${coverageLib.COVERAGE_MODE_LABEL[coverageMode]})` : ''}`);
   if (coverage.uncovered > 0) console.log(`WARNING         : uncovered: ${coverage.uncoveredIds.join(', ')}`);
   // Coverage can be 100% while the suite classifies itself into two kinds.
   // A diagnostic, not a gate — see scenarioDiversityDiagnostic().
@@ -612,7 +728,7 @@ const preserved = preserveRun({
   startedAt: runStarted,
   files: runFiles(),
   outcome: 'completed',
-  extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins(), ...defects },
+  extra: { auxiliaryOrigins: auxLib.auxiliaryOrigins(), ...defects, coverageMode, apiDocsUrl: coverageRecord.apiDocsUrl },
 });
 console.log(`Run preserved   : ${preserved.dir}`);
 publishMetrics();

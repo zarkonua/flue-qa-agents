@@ -1,0 +1,389 @@
+// Run control: the RunController, the run event log, and the SSE stream.
+//
+//   npm test
+//
+// The real controller forks a real runner process — test/fixtures/fake-phase1-runner.mjs,
+// which follows the same contract as scripts/qa-manual.mjs and uses the same
+// run lock, history recorder, event log and cancellation — over a temporary
+// artifact root. The real host server serves the API and the stream.
+
+import { after, before, describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import type { AddressInfo } from 'node:net';
+import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = mkdtempSync(join(tmpdir(), 'qa-run-control-'));
+Object.assign(process.env, {
+  QA_ARTIFACT_ROOT: ROOT,
+  QA_ENV_FILE: '/nonexistent',
+  LANGFUSE_ENABLED: 'false',
+  TARGET_URL: 'http://localhost:4444/',
+  QA_UI_TARGETS: 'http://localhost:5555/',
+  QA_MODEL: 'ollama/fake-complete',
+  QA_UI_MODELS: 'ollama/fake-fail,ollama/fake-slow,ollama/fake-ignore-cancel,ollama/fake-crash,openrouter/vendor/model',
+  FAKE_STAGE_MS: '150',
+});
+delete process.env.OPENROUTER_API_KEY;
+delete process.env.FAKE_RUN_SCENARIO;
+delete process.env.QA_DISCOVERY_AUX_ORIGINS;
+const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+const { RunController, RunConflictError, runnerArgs, runnerEnv, PHASE1_RUNNER } = await import('../src/run-control/run-controller.ts');
+const { readRunConfig, validateStartRequest, RunConfigError } = await import('../src/run-control/run-config.ts');
+const { EventLogWriter, readEventLog, normalizeEvent, MAX_EVENTS_PER_RUN } = await import('../src/run-control/events.ts');
+const service = await import('../src/history/service.ts');
+const { createUiServer } = await import('../src/ui-server/server.ts');
+const { FileReviewStore } = await import('../src/review/review-store.ts');
+const { artifactWorkspace, REVIEWS_DIR } = await import('../src/review/workspace.ts');
+const { REPLAY_LIMIT } = await import('../src/ui-server/run-control-api.ts');
+
+const history = () => service.runHistory();
+const controller = new RunController({
+  artifactRoot: ROOT, projectRoot: PROJECT, history, runnerScript: 'test/fixtures/fake-phase1-runner.mjs',
+  graceMs: { cancel: 1500, term: 1500 }, log: () => {},
+});
+const start = (model = 'ollama/fake-complete', extra: Record<string, unknown> = {}) =>
+  controller.start({ pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444/', model, freshBrowser: false, ...extra } as never);
+const events = (runId: string) => readEventLog(join(ROOT, 'runs', runId, 'events.jsonl'));
+async function until<T>(fn: () => T | undefined, ms = 15_000): Promise<T> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+let server: Server;
+let base = '';
+before(async () => {
+  server = await createUiServer({
+    store: new FileReviewStore(REVIEWS_DIR), workspace: artifactWorkspace, runReviewAgent: async () => {},
+    refresh: { start: async () => {}, status: () => ({ status: 'IDLE' as const }) },
+    history, runController: controller,
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+});
+after(async () => {
+  server.closeAllConnections?.();
+  await new Promise<void>((done) => server.close(() => done()));
+  service.closeRunHistory();
+  rmSync(ROOT, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('run configuration', () => {
+  it('offers host-configured choices only, and never a secret', () => {
+    process.env.OPENROUTER_API_KEY = 'sk-or-v1-supersecretvalue0000000000000000';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-lf-secret';
+    const view = readRunConfig();
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.LANGFUSE_SECRET_KEY;
+    assert.deepEqual(view.targets.map((t) => t.url), ['http://localhost:4444/', 'http://localhost:5555/']);
+    assert.equal(view.models[0].id, 'ollama/fake-complete');
+    assert.equal(view.models.find((m) => m.id === 'openrouter/vendor/model')!.available, true);
+    const json = JSON.stringify(view);
+    assert.doesNotMatch(json, /supersecret|sk-lf-secret|sk-or-v1/);
+    assert.ok(!('authModes' in view), 'there is no auth bootstrap to choose');
+  });
+
+  it('refuses a target, model or pipeline the host did not configure', () => {
+    const config = readRunConfig();
+    const ok = { pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444', model: 'ollama/fake-complete', freshBrowser: true } as const;
+    assert.equal(validateStartRequest(ok, config).target, 'http://localhost:4444/', 'the host value, not the browser string');
+    for (const bad of [
+      { ...ok, target: 'http://evil.example/' },
+      { ...ok, target: 'file:///etc/passwd' },
+      { ...ok, model: 'ollama/not-configured' },
+      { ...ok, model: 'openrouter/vendor/model' }, // configured, but no key
+      { ...ok, pipeline: 'PHASE2_AUTOMATION' },
+    ]) assert.throws(() => validateStartRequest(bad as never, config), RunConfigError, JSON.stringify(bad));
+  });
+
+  it('builds the runner command from fixed flags and fixed environment keys — the same runner as the CLI', () => {
+    assert.equal(PHASE1_RUNNER, 'scripts/qa-manual.mjs');
+    const run = { pipeline: 'PHASE1_MANUAL' as const, target: 'http://localhost:4444/', model: 'ollama/x' as const, freshBrowser: true };
+    assert.deepEqual(runnerArgs('2026-09-27T18-07-17-457Z', run), ['--run-id', '2026-09-27T18-07-17-457Z', '--fresh-browser']);
+    assert.throws(() => runnerArgs('--help; rm -rf /', run));
+    const env = runnerEnv(run, { PATH: '/bin', QA_MODEL: 'other' });
+    assert.deepEqual(env, { PATH: '/bin', QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true' });
+    // The real runner implements the same contract: it validates --run-id before doing anything else.
+    const r = spawnSync(process.execPath, [join(PROJECT, 'scripts', 'qa-manual.mjs'), '--run-id', 'not-an-id', '--from', 'defects'], { cwd: PROJECT, encoding: 'utf8', env: process.env });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /--run-id must look like/);
+  });
+});
+
+describe('the event log', () => {
+  it('normalises, orders and redacts; refuses unknown types', () => {
+    const path = join(ROOT, 'unit-events', 'events.jsonl');
+    const w = new EventLogWriter(path, '2026-01-01T00-00-00-000Z');
+    w.emit({ type: 'STAGE_STARTED', stage: 'design', stageLabel: 'Test Designer', message: 'Test Designer started' });
+    w.emit({ type: 'TOOL_STARTED', tool: 'mcp__playwright__browser_click', message: 'browser_click started' });
+    w.emit({ type: 'LOG', message: 'typed password: hunter2 at http://x/confirm?code=123456\n    at stack (/secret.js:1)', ...({ raw: { cookie: 'a=b' } } as object) } as never);
+    const [a, b, c] = readEventLog(path);
+    assert.deepEqual([a.id, b.id, c.id], [1, 2, 3]);
+    assert.equal(a.category, 'STAGE');
+    assert.equal(b.tool, 'browser_click');
+    assert.equal(b.category, 'BROWSER');
+    assert.doesNotMatch(c.message, /hunter2|123456|secret\.js/);
+    assert.ok(!('raw' in c), 'unknown fields never pass through');
+    assert.throws(() => normalizeEvent('x', 1, { type: 'SHELL_EXEC' as never, message: 'x' }));
+    // A second writer continues the numbering.
+    new EventLogWriter(path, '2026-01-01T00-00-00-000Z').emit({ type: 'LOG', message: 'again' });
+    assert.equal(readEventLog(path).at(-1)!.id, 4);
+  });
+
+  it('is bounded: past the ceiling, only the run outline is kept', () => {
+    const path = join(ROOT, 'big-events', 'events.jsonl');
+    const w = new EventLogWriter(path, '2026-01-01T00-00-01-000Z');
+    for (let i = 0; i < MAX_EVENTS_PER_RUN + 50; i += 1) w.emit({ type: 'TOOL_STARTED', tool: 'browser_snapshot', message: 'x' });
+    w.emit({ type: 'RUN_COMPLETED', message: 'done' });
+    const all = readEventLog(path);
+    assert.equal(all.length, MAX_EVENTS_PER_RUN + 2);
+    assert.equal(all.at(-2)!.type, 'LOG');
+    assert.equal(all.at(-1)!.type, 'RUN_COMPLETED');
+  });
+});
+
+describe('RunController', () => {
+  it('runs to COMPLETED: history, stages, metrics, archive, ordered redacted events, lock released', async () => {
+    const run = start();
+    assert.equal(run.status, 'STARTING');
+    await controller.waitForExit(run.runId);
+    const row = history().getRun(run.runId)!;
+    assert.equal(row.status, 'COMPLETED');
+    assert.equal(row.model, 'ollama/fake-complete');
+    assert.deepEqual(history().getStages(run.runId).map((s) => s.status), Array(5).fill('COMPLETED'));
+    assert.ok(history().getMetrics(run.runId).test_cases_total > 0);
+    assert.ok(history().getArtifacts(run.runId).some((a) => a.artifactType === 'EVENT_LOG'));
+    const e = events(run.runId);
+    assert.deepEqual(e.map((x) => x.id), e.map((_, i) => i + 1));
+    assert.equal(e[0].type, 'RUN_STARTED');
+    assert.equal(e.at(-1)!.type, 'RUN_COMPLETED');
+    assert.ok(e.some((x) => x.type === 'ARTIFACT_CREATED' && x.artifactType === 'TEST_CASES'));
+    assert.ok(e.some((x) => x.type === 'METRIC_UPDATED' && x.metrics?.test_cases_total));
+    const text = readFileSync(join(ROOT, 'runs', run.runId, 'events.jsonl'), 'utf8');
+    assert.doesNotMatch(text, /987654|sk-or-v1-0123/);
+    assert.equal(existsSync(join(ROOT, 'run.lock')), false);
+    assert.equal(controller.activeRun(), undefined);
+  });
+
+  it('refuses a second run while one is active, and a run while another process holds the lock', async () => {
+    const run = start('ollama/fake-slow');
+    await until(() => history().getStages(run.runId).find((s) => s.stageName === 'design' && s.status === 'RUNNING'));
+    assert.throws(() => start(), RunConflictError);
+    const res = await fetch(`${base}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444/', model: 'ollama/fake-complete', freshBrowser: false }) });
+    assert.equal(res.status, 409);
+    assert.match(((await res.json()) as any).error, new RegExp(run.runId));
+    // Changing the workspace's artifacts is refused while a run regenerates them.
+    const approve = await fetch(`${base}/api/phase1/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(approve.status, 409);
+    controller.cancel(run.runId);
+    await controller.waitForExit(run.runId);
+
+    writeFileSync(join(ROOT, 'run.lock'), JSON.stringify({ pid: process.ppid, runId: '2026-01-01T00-00-00-000Z', command: 'qa:manual', model: 'ollama/other' }));
+    assert.throws(() => start(), (e: InstanceType<typeof RunConflictError>) => e instanceof RunConflictError && e.holder?.model === 'ollama/other');
+    rmSync(join(ROOT, 'run.lock'));
+  });
+
+  it('records a failed stage as FAILED, with a sanitised reason', async () => {
+    const run = start('ollama/fake-fail');
+    await controller.waitForExit(run.runId);
+    assert.equal(history().getRun(run.runId)!.status, 'FAILED');
+    const design = history().getStages(run.runId).find((s) => s.stageName === 'design')!;
+    assert.deepEqual([design.status, design.attemptCount], ['FAILED', 4]);
+    const failed = events(run.runId).find((e) => e.type === 'STAGE_FAILED')!;
+    assert.match(failed.message, /Model response could not be parsed/);
+    assert.doesNotMatch(failed.message, /abc123secret/);
+    assert.equal(events(run.runId).at(-1)!.type, 'RUN_FAILED');
+  });
+
+  it('cancels gracefully: CANCELLED (not FAILED), stage CANCELLED, archive kept, lock released, next run starts', async () => {
+    const run = start('ollama/fake-slow');
+    await until(() => history().getStages(run.runId).find((s) => s.stageName === 'design' && s.status === 'RUNNING'));
+    assert.equal(controller.cancel(run.runId), true);
+    await controller.waitForExit(run.runId);
+    const row = history().getRun(run.runId)!;
+    assert.equal(row.status, 'CANCELLED');
+    assert.equal(row.errorCode, 'CANCELLED');
+    assert.equal(history().getStages(run.runId).find((s) => s.stageName === 'design')!.status, 'CANCELLED');
+    assert.ok(history().getArtifacts(run.runId).some((a) => a.artifactType === 'DISCOVERED_BEHAVIOR'), 'completed artifacts are kept');
+    assert.equal(events(run.runId).at(-1)!.type, 'RUN_CANCELLED');
+    assert.equal(existsSync(join(ROOT, 'run.lock')), false);
+    const next = start();
+    await controller.waitForExit(next.runId);
+    assert.equal(history().getRun(next.runId)!.status, 'COMPLETED');
+  });
+
+  it('escalates when the runner ignores the cancel: TERM, and the run is still CANCELLED with its lock gone', async () => {
+    const run = start('ollama/fake-ignore-cancel');
+    await until(() => history().getStages(run.runId).find((s) => s.stageName === 'design' && s.status === 'RUNNING'));
+    controller.cancel(run.runId);
+    await controller.waitForExit(run.runId);
+    assert.equal(history().getRun(run.runId)!.status, 'CANCELLED');
+    assert.equal(existsSync(join(ROOT, 'run.lock')), false);
+    assert.equal(events(run.runId).at(-1)!.type, 'RUN_CANCELLED');
+  });
+
+  it('cleans up after a runner that died outright: history FAILED, final event, owned browser stopped, lock removed', async () => {
+    const run = start('ollama/fake-crash');
+    await controller.waitForExit(run.runId);
+    const row = history().getRun(run.runId)!;
+    assert.equal(row.status, 'FAILED');
+    assert.equal(row.errorCode, 'PROCESS_EXIT');
+    assert.equal(events(run.runId).at(-1)!.type, 'RUN_FAILED');
+    assert.equal(existsSync(join(ROOT, 'run.lock')), false);
+    const browserPid = Number(readFileSync(join(ROOT, 'fake-browser.pid'), 'utf8'));
+    await until(() => !alive(browserPid) || undefined, 8000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/** Read an SSE stream until it ends (or `stopAfter` events), returning the events and the raw text. */
+async function readSse(path: string, headers: Record<string, string> = {}, stopAfter?: number) {
+  const controllerAbort = new AbortController();
+  const res = await fetch(base + path, { headers, signal: controllerAbort.signal });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type')!, /text\/event-stream/);
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const out: any[] = [];
+  let ended = false;
+  const reader = res.body!.getReader();
+  while (!ended) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let i;
+    while ((i = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, i);
+      buffer = buffer.slice(i + 2);
+      if (/^event: end/m.test(block)) ended = true;
+      const data = /^data: (.*)$/m.exec(block)?.[1];
+      if (data && !/^event:/m.test(block)) out.push(JSON.parse(data));
+      if (stopAfter && out.length >= stopAfter) {
+        controllerAbort.abort();
+        return out;
+      }
+    }
+  }
+  return out;
+}
+
+describe('Server-Sent Events', () => {
+  it('streams a run in order — stages, artifacts, metrics — and ends after the final event', async () => {
+    const res = await fetch(`${base}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444/', model: 'ollama/fake-complete', freshBrowser: true }) });
+    assert.equal(res.status, 202);
+    const { runId } = (await res.json()) as { runId: string };
+    await until(() => existsSync(join(ROOT, 'runs', runId, 'events.jsonl')) || undefined);
+    const streamed = await readSse(`/api/runs/${runId}/events`);
+    assert.deepEqual(streamed.map((e) => e.id), streamed.map((_, i) => i + 1));
+    const types = streamed.map((e) => e.type);
+    assert.equal(types[0], 'RUN_STARTED');
+    assert.equal(types.at(-1), 'RUN_COMPLETED');
+    assert.ok(types.indexOf('STAGE_STARTED') < types.indexOf('STAGE_COMPLETED'));
+    assert.ok(types.includes('ARTIFACT_CREATED') && types.includes('METRIC_UPDATED') && types.includes('TOOL_STARTED'));
+    assert.ok(streamed.some((e) => e.message.includes('fresh browser')));
+    assert.doesNotMatch(JSON.stringify(streamed), /987654|sk-or-v1-0123/);
+    await controller.waitForExit(runId);
+  });
+
+  it('resumes after Last-Event-ID, replaying only what came later', async () => {
+    const runId = history().listRuns({ status: 'COMPLETED', limit: 1 }).runs[0].id;
+    const all = events(runId);
+    const later = await readSse(`/api/runs/${runId}/events`, { 'last-event-id': String(all.length - 3) });
+    assert.deepEqual(later.map((e) => e.id), [all.length - 2, all.length - 1, all.length]);
+  });
+
+  it('replays a bounded window to a fresh client', async () => {
+    const id = '2026-01-02T00-00-00-000Z';
+    history().startRun({ id, kind: 'PHASE1_MANUAL', startedAt: '2026-01-02T00:00:00.000Z' });
+    history().finishRun(id, { status: 'COMPLETED', finishedAt: '2026-01-02T00:01:00.000Z' });
+    const w = new EventLogWriter(join(ROOT, 'runs', id, 'events.jsonl'), id);
+    for (let i = 0; i < REPLAY_LIMIT + 200; i += 1) w.emit({ type: 'TOOL_STARTED', tool: 'browser_snapshot', message: 'x' });
+    w.emit({ type: 'RUN_COMPLETED', message: 'done' });
+    const got = await readSse(`/api/runs/${id}/events`);
+    assert.equal(got.length, REPLAY_LIMIT);
+    assert.equal(got.at(-1).type, 'RUN_COMPLETED');
+  });
+
+  it('a client leaving does not stop the run', async () => {
+    const run = start('ollama/fake-slow');
+    await until(() => existsSync(join(ROOT, 'runs', run.runId, 'events.jsonl')) || undefined);
+    await readSse(`/api/runs/${run.runId}/events`, {}, 2); // read two events, then disconnect
+    await new Promise((r) => setTimeout(r, 600));
+    assert.ok(['STARTING', 'RUNNING'].includes(history().getRun(run.runId)!.status));
+    assert.equal(controller.activeRun()?.runId, run.runId);
+    controller.cancel(run.runId);
+    await controller.waitForExit(run.runId);
+  });
+
+  it('validates what it is asked for', async () => {
+    assert.equal((await fetch(`${base}/api/runs/${encodeURIComponent('../../etc')}/events`)).status, 400);
+    assert.equal((await fetch(`${base}/api/runs/2030-01-01T00-00-00-000Z/events`)).status, 404);
+    const known = history().listRuns({ limit: 1 }).runs[0].id;
+    assert.equal((await fetch(`${base}/api/runs/${known}/events`, { headers: { 'last-event-id': '1; DROP' } })).status, 400);
+  });
+});
+
+describe('the run-control API is privileged and narrow', () => {
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const good = { pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444/', model: 'ollama/fake-complete', freshBrowser: false };
+
+  it('refuses extra fields, commands, env and cross-origin requests', async () => {
+    for (const body of [
+      { ...good, env: { QA_MODEL: 'x' } },
+      { ...good, command: 'npm run qa:manual -- --from defects' },
+      { ...good, path: '/etc/passwd' },
+      { ...good, freshBrowser: 'yes' },
+      { ...good, pipeline: 'PHASE2_AUTOMATION' },
+      { ...good, authMode: 'storage_state' },
+    ]) assert.equal((await post('/api/runs', body)).status, 400, JSON.stringify(body));
+    assert.equal((await post('/api/runs', good, { origin: 'http://evil.example' })).status, 403);
+    assert.equal((await post('/api/runs/2030-01-01T00-00-00-000Z/cancel', {})).status, 404);
+    assert.equal((await post(`/api/runs/${encodeURIComponent('1; kill -9 1')}/cancel`, {})).status, 400);
+    assert.equal((await post('/api/runs/2030-01-01T00-00-00-000Z/cancel', { pid: 1 })).status, 400);
+  });
+
+  it('GET /api/run-config exposes choices and the lock holder — no pid, no secret', async () => {
+    const body = (await (await fetch(`${base}/api/run-config`)).json()) as any;
+    assert.ok(body.config.models.length > 0);
+    assert.doesNotMatch(JSON.stringify(body), /"pid"|sk-or|OPENROUTER_API_KEY=/);
+  });
+
+  it('GET /api/runs/:id tells the page the plan, whether it is live, and whether it can cancel', async () => {
+    // A file left by an earlier run is not this run's artifact, however it is named.
+    writeFileSync(join(ROOT, 'discovery-evidence.json'), JSON.stringify({ stale: true }));
+    await new Promise((r) => setTimeout(r, 20));
+    const run = start('ollama/fake-slow');
+    await until(() => history().getStages(run.runId).length > 0 || undefined);
+    const view = (await (await fetch(`${base}/api/runs/${run.runId}`)).json()) as any;
+    assert.equal(view.live, true);
+    assert.equal(view.cancellable, true);
+    assert.deepEqual(view.plannedStages.map((s: any) => s.key), ['discovery', 'analysis', 'design', 'prioritization', 'defects']);
+    // Artifacts already written can be read while the run goes on — read-only.
+    await until(() => history().getStages(run.runId).find((s) => s.stageName === 'design' && s.status === 'RUNNING'));
+    const live = await fetch(`${base}/api/runs/${run.runId}/artifacts/DISCOVERED_BEHAVIOR`);
+    assert.equal(live.status, 200);
+    assert.equal((await fetch(`${base}/api/runs/${run.runId}/artifacts/TEST_CASES`)).status, 404, 'not written yet');
+    assert.equal((await fetch(`${base}/api/runs/${run.runId}/artifacts/DISCOVERY_EVIDENCE`)).status, 404, 'left over from before this run');
+    const during = (await (await fetch(`${base}/api/runs/${run.runId}`)).json()) as any;
+    assert.ok(during.artifacts.includes('DISCOVERED_BEHAVIOR') && !during.artifacts.includes('DISCOVERY_EVIDENCE'));
+    assert.equal((await post(`/api/runs/${run.runId}/cancel`, {})).status, 202);
+    await controller.waitForExit(run.runId);
+    const done = (await (await fetch(`${base}/api/runs/${run.runId}`)).json()) as any;
+    assert.deepEqual([done.run.status, done.live, done.cancellable], ['CANCELLED', false, false]);
+  });
+});

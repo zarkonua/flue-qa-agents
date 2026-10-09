@@ -1,0 +1,54 @@
+# Publishes the architecture view to GitHub Pages.
+#
+# The page is a single self-contained HTML file (Mermaid comes from jsDelivr at
+# runtime), so there is nothing to build: the job copies it into the site root as
+# index.html and deploys that. Enable this once under
+# Settings -> Pages -> Build and deployment -> Source: GitHub Actions.
+name: Deploy architecture view to Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/architecture/architecture-view.html
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one in flight: a cancelled
+# deploy can leave the live site on the previous version.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/architecture
+          cp docs/architecture/architecture-view.html _site/index.html
+          # Keep the repo-shaped path working too, so links copied from the
+          # repository tree resolve on the published site.
+          cp docs/architecture/architecture-view.html _site/architecture/architecture-view.html
+          # Pages would otherwise run the page through Jekyll.
+          touch _site/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

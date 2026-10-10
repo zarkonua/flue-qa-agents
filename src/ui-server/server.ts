@@ -38,7 +38,7 @@ import { buildReviewModel } from '../lib/review-view.ts';
 import { runRoutes, RunsApiError, type HistoryProvider } from './runs-api.ts';
 import { COVERAGE_MODE_LABEL, TEST_LEVELS, testLevelOf } from '../lib/coverage-mode.ts';
 import { apiDiscoverySummary, describeEndpoint, type ApiDiscovery } from '../lib/api-discovery.ts';
-import { apiEvidenceBehaviors, apiValidationSummary, type ApiValidation } from '../lib/api-validation.ts';
+import { apiEvidenceBehaviors, apiValidationSummary, evidenceClassOf, strongestEvidence, type ApiValidation } from '../lib/api-validation.ts';
 import { apiEvidenceOf, apiOperations, citedOperations } from '../lib/semantic-validate.ts';
 import { readCoverageContext, readRunConfig } from '../lib/qa-artifacts.ts';
 import { runControlRoutes, serveRunEvents } from './run-control-api.ts';
@@ -279,6 +279,8 @@ function coverageView() {
     api: { status: api.status, endpoints: api.endpoints, reason: api.reason ?? null },
     // Whether the API was actually called, and what came of it — numbers only.
     live: apiValidationSummary(context.validation ?? read<ApiValidation>('api-validation')),
+    // UI, API or both — and how each workflow ended. Null for a suite from before the two were independent.
+    discovery: config?.discovery ?? null,
   };
 }
 
@@ -297,6 +299,7 @@ function apiView(ws: Workspace) {
   const probes = new Map((validation?.probes ?? []).map((p) => [p.id, p]));
   const findings = new Map((validation?.findings ?? []).map((f) => [f.id, f]));
   // Which test cases rest on each operation — the seed of a coverage matrix.
+  const operations = apiOperations(context);
   const casesByOperation = new Map<string, { id: string; title: string; testLevel: string }[]>();
   for (const tc of ws.readTestCases()?.testCases ?? []) {
     for (const id of citedOperations(tc, requirements, context)) {
@@ -306,6 +309,19 @@ function apiView(ws: Workspace) {
   return {
     coverageMode: context.mode,
     apiDocsUrl: config?.apiDocsUrl ?? null,
+    discovery: config?.discovery ?? null,
+    // Each requirement with where its evidence comes from: the interface, the API, or both.
+    requirements: [...(requirements?.acceptancePoints ?? []), ...(requirements?.businessRules ?? [])].map((r) => {
+      const ops = (r.evidenceIds ?? []).filter((id) => operations.has(id));
+      const ui = (r.evidenceIds ?? []).filter((id) => !operations.has(id));
+      return {
+        id: r.id, statement: r.statement, operations: ops, uiEvidence: ui,
+        source: ops.length > 0 && ui.length > 0 ? 'UI_AND_API' : ops.length > 0 ? 'API' : 'UI',
+        // DOCUMENTED until the host really called an operation it rests on.
+        apiEvidence: ops.length > 0 ? strongestEvidence(ops.map((id) => evidenceClassOf(context.validation, id))) ?? null : null,
+        testCases: (ws.readTestCases()?.testCases ?? []).filter((tc) => (tc.covers ?? []).includes(r.id)).map((tc) => tc.id),
+      };
+    }).filter((r) => r.source !== 'UI'),
     documentation: discovery
       ? { status: discovery.status, reason: discovery.reason ?? null, title: discovery.title ?? null, version: discovery.version ?? null, format: discovery.source?.format ?? null, authentication: discovery.authentication }
       : null,

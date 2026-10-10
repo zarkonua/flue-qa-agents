@@ -603,7 +603,10 @@ export function buildBugReports(
         expectedBasis: expectedBasisOf(f, ctx),
         evidence: derivedEvidence(f, ctx),
         // A defect seen only in the API's own responses was not seen in a browser.
-        environment: { target: env.target, browser: f.sourceBehaviorIds.every((id) => API_SOURCE.test(id)) ? API_ENVIRONMENT : env.browser ?? PHASE1_BROWSER },
+        environment: f.sourceBehaviorIds.every((id) => API_SOURCE.test(id))
+          // ...and what it was seen at is the API itself, which may be all the run has.
+          ? { target: ctx.coverage?.validation?.baseUrl ?? env.target, browser: API_ENVIRONMENT }
+          : { target: env.target, browser: env.browser ?? PHASE1_BROWSER },
         review: { decision: 'PENDING' },
       };
       return bug;

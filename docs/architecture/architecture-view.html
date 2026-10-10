@@ -242,13 +242,13 @@ flowchart TD
 
   <section id="phase1-flow">
     <h2>Phase 1</h2>
-    <p class="lede">A stage passes only if its artifact was written during that attempt and re-validates from disk. The run stops after stage 5; review and approval are separate, human-started steps. The coverage mode chosen for the run — Automatic, UI only, API only — and what the host learnt about the API reach every stage; in API only there is no browser stage, and the host records that nothing was explored.</p>
+    <p class="lede">A stage passes only if its artifact was written during that attempt and re-validates from disk. The run stops after stage 5; review and approval are separate, human-started steps. The coverage mode chosen for the run — Automatic, UI only, API only — and what the host learnt about the API reach every stage. UI discovery and API discovery are independent: each starts only when its own source exists and completes by its own criteria. A run with no interface to explore — API only, or no application URL that answers — starts no browser and needs no TARGET_URL; the host records that nothing was explored.</p>
     <div class="board"><pre class="mermaid">
 %% Phase 1 (npm run qa:manual). Stage list: scripts/lib/phase1-stages.mjs.
 flowchart TD
     start([&quot;npm run qa:manual&quot;])
     pre[&quot;Preflight&lt;br/&gt;check TARGET_URL · run lock · archive previous run&lt;br/&gt;start confined MCP · build discovery surface&quot;]
-    apipre[&quot;API discovery + live validation&lt;br/&gt;host code · skipped in UI only&lt;br/&gt;read documentation · call the API within policy&quot;]
+    apipre[&quot;API Discovery&lt;br/&gt;host code · own completion criteria · no browser&lt;br/&gt;read documentation · call the API within policy&lt;br/&gt;skipped in UI only&quot;]
     cfg[(&quot;run-config.json&lt;br/&gt;api-discovery.json · api-validation.json&lt;br/&gt;host-written&quot;)]
 
     s1[&quot;1 · Product Discovery&lt;br/&gt;browser&quot;]
@@ -273,7 +273,7 @@ flowchart TD
     pre --&gt; apipre --&gt; cfg
     cfg -. &quot;mode · documented operations · real responses&quot; .-&gt; s2
     cfg -.-&gt; s3 &amp; s4 &amp; s5
-    pre -. &quot;API only: no browser stage&quot; .-&gt; s2
+    apipre -. &quot;no interface to explore: stage 1 skipped&quot; .-&gt; s2
     s1 --&gt; a1
     a1 -. host replays EXPLORED pages .-&gt; ev
     a1 --&gt; s2 --&gt; a2

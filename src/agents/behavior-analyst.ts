@@ -69,8 +69,15 @@ required authentication.
   requirement as what is documented, and never as observed behavior. A mismatch the host
   recorded (APF-n) is not a requirement — where it leaves the expectation unclear, raise an
   openQuestion.
-- In an API-only run the "discovered-behavior" artifact is empty by design: nothing was
-  explored in a browser, so every requirement rests on documented operations.
+- When "discovered-behavior" is empty and its product line says the interface was not
+  explored, that is by design — an API-only run, or one with no application UI. Do not ask
+  for UI evidence, routes, pages or controls: every requirement rests on documented
+  operations and, where the host called them, their real responses.
+- Derive from the documentation both kinds of requirement: **acceptance points** — what an
+  operation does (it exists, the status it answers with, what it returns) — and **business
+  rules** — the constraints it declares: a required field, a length or range limit, an
+  allowed value, a uniqueness or state rule its responses name (a documented 409 or 422),
+  who may call it (its security requirement, a documented 403).
 
 The statement must say what the cited behavior says, phrased as expected behavior. It may
 not describe a different capability. If a behavior is about an error message, an acceptance

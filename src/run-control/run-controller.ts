@@ -48,7 +48,8 @@ export interface ControllerRun {
   status: 'STARTING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
   startedAt: string;
   model: string;
-  target: string;
+  /** Absent for a run with no interface to explore. */
+  target?: string;
   coverageMode: CoverageMode;
   /** As it may be shown: without its query. */
   apiDocsUrl?: string;
@@ -84,7 +85,8 @@ export function runnerArgs(runId: string, run: ValidatedRun): string[] {
 export function runnerEnv(run: ValidatedRun, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return {
     ...base,
-    TARGET_URL: run.target,
+    // Empty for a run with no interface: the server's own TARGET_URL must not put a browser back into it.
+    TARGET_URL: run.target ?? '',
     QA_MODEL: run.model,
     QA_FRESH_BROWSER: run.freshBrowser ? 'true' : 'false',
     QA_COVERAGE_MODE: run.coverageMode,
@@ -185,7 +187,7 @@ export class RunController {
     });
     const shownDocs = displayApiDocsUrl(validated.apiDocsUrl);
     const run: ControllerRun = {
-      runId, status: 'STARTING', startedAt: now.toISOString(), model: validated.model, target: validated.target,
+      runId, status: 'STARTING', startedAt: now.toISOString(), model: validated.model, ...(validated.target ? { target: validated.target } : {}),
       coverageMode: validated.coverageMode, ...(shownDocs ? { apiDocsUrl: shownDocs } : {}), cancelRequested: false,
     };
     this.recent.set(runId, run);
@@ -210,7 +212,7 @@ export class RunController {
       run.status = 'FAILED';
       run.error = `The runner could not be started: ${error.message.split('\n')[0]}`;
     });
-    this.log(`${tag} started from the workspace: ${validated.model} → ${validated.target} (coverage: ${validated.coverageMode})`);
+    this.log(`${tag} started from the workspace: ${validated.model} → ${validated.target ?? 'no application URL (API)'} (coverage: ${validated.coverageMode})`);
     return run;
   }
 

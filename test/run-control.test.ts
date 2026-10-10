@@ -136,6 +136,28 @@ describe('run configuration', () => {
     assert.equal(validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: '' }, withDefault).apiDocsUrl, undefined, 'cleared in the form means none');
   });
 
+  it('lets a run start without an application URL when it has API documentation — and never a UI-only one', () => {
+    const config = readRunConfig();
+    const base = { pipeline: 'PHASE1_MANUAL', model: 'ollama/fake-complete', freshBrowser: false } as const;
+    const apiOnly = validateStartRequest({ ...base, coverageMode: 'API_ONLY', apiDocsUrl: 'http://127.0.0.1:9/openapi.json' }, config);
+    assert.ok(!('target' in apiOnly), 'no target is part of the run');
+    assert.equal(apiOnly.coverageMode, 'API_ONLY');
+    assert.ok(!('target' in validateStartRequest({ ...base, target: '', coverageMode: 'AUTOMATIC', apiDocsUrl: 'http://127.0.0.1:9/openapi.json' }, config)));
+    assert.throws(() => validateStartRequest({ ...base, coverageMode: 'UI_ONLY' }, config), /UI only needs a target/);
+    assert.throws(() => validateStartRequest({ ...base, coverageMode: 'AUTOMATIC' }, config), /needs an API documentation URL: there would be nothing to discover/);
+    assert.throws(() => validateStartRequest({ ...base, target: 'http://evil.example/', coverageMode: 'API_ONLY', apiDocsUrl: 'http://127.0.0.1:9/openapi.json' }, config), /not configured for this workspace/, 'a target that is given is still checked');
+    // A workspace with no application URL configured at all can still offer API runs.
+    const { TARGET_URL: _t, ...noTarget } = process.env;
+    const extra = process.env.QA_UI_TARGETS;
+    delete process.env.QA_UI_TARGETS; // read from the process itself, not the argument
+    const bare = readRunConfig(noTarget);
+    process.env.QA_UI_TARGETS = extra;
+    assert.deepEqual(bare.targets, []);
+    assert.equal(validateStartRequest({ ...base, coverageMode: 'API_ONLY', apiDocsUrl: 'http://127.0.0.1:9/openapi.json' }, bare).coverageMode, 'API_ONLY');
+    // The runner is told there is no interface — the server's own TARGET_URL does not put a browser back.
+    assert.equal(runnerEnv({ ...apiOnly } as never, { TARGET_URL: 'http://localhost:4444/' }).TARGET_URL, '');
+  });
+
   it('validates live API validation: the switch, the base URL, and each approved operation', () => {
     const config = readRunConfig();
     const ok = { pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444/', model: 'ollama/fake-complete', freshBrowser: false, coverageMode: 'AUTOMATIC', apiDocsUrl: 'http://localhost:4444/api/doc' } as const;
@@ -297,6 +319,47 @@ describe('RunController', () => {
     await controller.waitForExit(ui.runId);
     assert.equal(history().getRun(ui.runId)!.coverageMode, 'UI_ONLY');
     assert.equal(history().getRun(ui.runId)!.apiDocsUrl, null);
+  });
+
+  it('runs API only with no application URL: API Discovery is its own stage, no browser stage or event, and it completes', async () => {
+    const { startFakeApi } = await import('./fixtures/fake-api-server.mjs');
+    const fake = await startFakeApi();
+    try {
+      const run = controller.start({ pipeline: 'PHASE1_MANUAL', model: 'ollama/fake-complete', freshBrowser: false, coverageMode: 'API_ONLY', apiDocsUrl: fake.docsUrl } as never);
+      assert.equal(run.target, undefined);
+      await controller.waitForExit(run.runId);
+      const row = history().getRun(run.runId)!;
+      assert.equal(row.status, 'COMPLETED');
+      assert.equal(row.target, null, 'no application URL is recorded, because there was none');
+      assert.equal(row.coverageMode, 'API_ONLY');
+      assert.deepEqual(history().getStages(run.runId).map((s) => `${s.stageName}:${s.status}`), ['api-discovery:COMPLETED', 'analysis:COMPLETED', 'design:COMPLETED', 'prioritization:COMPLETED', 'defects:COMPLETED']);
+      const e = events(run.runId);
+      assert.deepEqual(e[0].plan!.map((s) => s.key), ['api-discovery', 'analysis', 'design', 'prioritization', 'defects']);
+      assert.ok(!e.some((x) => x.category === 'BROWSER' || x.stage === 'discovery'), 'nothing browser-related happened');
+      assert.equal(e.at(-1)!.type, 'RUN_COMPLETED');
+      // What the workspace shows for it: the plan it really had, and how it discovered the product.
+      const view = (await (await fetch(`${base}/api/runs/${run.runId}`)).json()) as any;
+      assert.deepEqual(view.plannedStages.map((s: any) => s.key), ['api-discovery', 'analysis', 'design', 'prioritization', 'defects']);
+      assert.deepEqual(view.discovery.methods, ['API']);
+      assert.equal(view.discovery.ui.status, 'SKIPPED');
+      assert.deepEqual([view.discovery.api.status, view.discovery.api.evidence], ['COMPLETE', 'LIVE']);
+      const config = JSON.parse(readFileSync(join(ROOT, 'run-config.json'), 'utf8'));
+      assert.deepEqual(config.discovery.methods, ['API']);
+      assert.deepEqual(JSON.parse(readFileSync(join(ROOT, 'discovered-behavior.json'), 'utf8')).behaviors, []);
+      assert.ok(fake.apiRequests().every((r: { method: string }) => r.method === 'GET'), 'read-only requests only');
+      // The API page and the overview say how the product was discovered.
+      const apiPage = (await (await fetch(`${base}/api/api-validation`)).json()) as any;
+      assert.deepEqual(apiPage.discovery.methods, ['API']);
+      assert.equal(apiPage.endpoints.length, 8);
+      const overview = (await (await fetch(`${base}/api/overview`)).json()) as any;
+      assert.deepEqual(overview.coverageMode.discovery.methods, ['API']);
+    } finally {
+      await fake.close();
+    }
+    // Starting without a target is refused over the API when the run would have nothing to discover.
+    const refused = await fetch(`${base}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pipeline: 'PHASE1_MANUAL', model: 'ollama/fake-complete', freshBrowser: false, coverageMode: 'UI_ONLY' }) });
+    assert.equal(refused.status, 400);
+    assert.match(((await refused.json()) as any).error, /UI only needs a target/);
   });
 
   it('refuses a second run while one is active, and a run while another process holds the lock', async () => {

@@ -528,7 +528,7 @@ function writeDefectAnalysis(data: DefectAnalysis): DefectAnalysis {
   const semantic = validateDefectAnalysis(normalised, ctx);
   if (semantic.length > 0) throw new SemanticValidationError('defect-analysis', semantic);
 
-  const bugs = buildBugReports(normalised, ctx, { target: process.env.TARGET_URL ?? '', runId: process.env.QA_RUN_ID || undefined }).map(scrub);
+  const bugs = buildBugReports(normalised, ctx, { target: process.env.TARGET_URL?.trim() || ctx.coverage?.validation?.baseUrl || '', runId: process.env.QA_RUN_ID || undefined }).map(scrub);
   const problems: SemanticError[] = [];
   for (const bug of bugs) {
     const { schema, semantic: errors } = bugReportErrors(bug);

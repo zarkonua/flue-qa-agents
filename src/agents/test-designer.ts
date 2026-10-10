@@ -238,7 +238,9 @@ supports — each one only where the document declares what it needs:
   (\`security-functional\`);
 - **authorization** — only where the documentation declares a forbidden response (403) or
   distinct permissions (\`permission\`);
-- **schema** — the documented response shape: required fields and their types.
+- **schema** — the documented response shape: required fields and their types;
+- **business rule** — each business rule the analysis derived from the documentation: the
+  request that satisfies it and, where a rejection is documented, the one that breaks it.
 
 Do not write a scenario the documentation gives no basis for: no status code, limit or role it
 does not declare.

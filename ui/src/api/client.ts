@@ -26,6 +26,15 @@ export type CoverageMode = 'AUTOMATIC' | 'UI_ONLY' | 'API_ONLY';
 export type TestLevel = 'UI' | 'API';
 export type EvidenceClass = 'DOCUMENTED' | 'OBSERVED' | 'VALIDATED';
 export type OperationSafety = 'SAFE' | 'UNSAFE_GET' | 'STATE_CHANGING' | 'DESTRUCTIVE';
+/** How a run discovered the product: through the interface, its API, or both — each with its own outcome. */
+export interface DiscoveryView {
+  methods: ('UI' | 'API')[];
+  ui?: { status: 'PLANNED' | 'SKIPPED'; reason?: string };
+  api?: { status: 'COMPLETE' | 'BLOCKED' | 'NOT_REQUESTED'; reason?: string; evidence: 'LIVE' | 'DOCUMENTATION_ONLY' | 'NONE'; criteria: { name: string; met: boolean; required: boolean; detail: string }[] };
+}
+export interface ApiRequirementView {
+  id: string; statement: string; operations: string[]; uiEvidence: string[]; source: 'API' | 'UI_AND_API'; apiEvidence: EvidenceClass | null; testCases: string[];
+}
 export interface ApiCheckView { name: string; outcome: 'PASS' | 'FAIL' | 'NOT_CHECKED'; detail?: string }
 export interface ApiProbeView {
   id: string; endpointId: string; kind: string;
@@ -46,6 +55,7 @@ export interface ApiEndpointView {
 }
 export interface ApiValidationView {
   coverageMode: CoverageMode; apiDocsUrl: string | null;
+  discovery: DiscoveryView | null; requirements: ApiRequirementView[];
   documentation: { status: string; reason: string | null; title: string | null; version: string | null; format: string | null } | null;
   validation: {
     status: 'COMPLETED' | 'PARTIAL' | 'UNAVAILABLE' | 'NOT_REQUESTED'; reason: string | null; baseUrl: string | null; baseUrlSource: string | null;
@@ -70,6 +80,7 @@ export interface CoverageModeView {
   mode: CoverageMode; label: string; recorded: boolean; apiDocsUrl: string | null;
   api: { status: 'AVAILABLE' | 'UNAVAILABLE' | 'NOT_REQUESTED'; endpoints: number; reason: string | null };
   live?: { status: string; reason?: string; validated: number; observed: number; documented: number; contractViolations: number; potentialIssues: number; requests: number };
+  discovery?: DiscoveryView | null;
 }
 
 export interface Step { action: string; expected: string }
@@ -186,6 +197,7 @@ export interface RunList {
 export interface RunDetail {
   run: Run; stages: RunStage[]; plannedStages: { key: string; label: string }[]; metrics: Record<string, number>;
   artifacts: string[]; bugIds: string[]; live: boolean; cancellable: boolean; langfuseUrl: string | null;
+  discovery?: DiscoveryView | null;
 }
 
 export interface RunConfig {
@@ -205,7 +217,8 @@ export interface RunConfigResponse {
   lockHolder: { runId: string | null; model: string | null; command: string | null; startedAt: string | null } | null;
 }
 export interface StartRunRequest {
-  pipeline: 'PHASE1_MANUAL'; target: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string;
+  /** Omitted for a run that does not explore the interface. */
+  pipeline: 'PHASE1_MANUAL'; target?: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string;
   liveValidation?: boolean; apiBaseUrl?: string; approvedOperations?: string[];
 }
 

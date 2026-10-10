@@ -33,7 +33,8 @@ type ReadBody = <T>(req: IncomingMessage, schema: v.GenericSchema<unknown, T>) =
 
 const StartBody = v.strictObject({
   pipeline: v.picklist(PIPELINES),
-  target: v.pipe(v.string(), v.maxLength(300)),
+  // Optional: a run that does not explore the interface names none.
+  target: v.optional(v.pipe(v.string(), v.maxLength(300))),
   model: v.pipe(v.string(), v.maxLength(200)),
   freshBrowser: v.boolean(),
   // Optional, so a client from before coverage modes still starts an AUTOMATIC run.

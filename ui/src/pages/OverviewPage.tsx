@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type DependencyState, type Reconciliation } from '../api/client.ts';
 import { Phase1Notice } from '../components/Phase1Status.tsx';
+import { discoveryLabel } from '../lib/api-validation.ts';
 
 function State({ state }: { state: string }) {
   return <span className={`badge ${state === 'CURRENT' || state === 'APPROVED' ? 'approved' : state === 'MISSING' || state === 'NONE' ? 'none' : 'stale'}`}>{state}</span>;
@@ -45,7 +46,7 @@ export function OverviewPage() {
       <p className="muted">Artifacts: <code>{data.artifactRoot}</code></p>
       {data.coverageMode && (
         <p className="muted" data-testid="overview-coverage-mode">
-          Test coverage: <b>{data.coverageMode.label}</b>{data.coverageMode.recorded ? '' : ' (not recorded — suite from before coverage modes)'}
+          Discovery: <b data-testid="overview-discovery">{discoveryLabel(data.coverageMode.discovery)}</b> · Test coverage: <b>{data.coverageMode.label}</b>{data.coverageMode.recorded ? '' : ' (not recorded — suite from before coverage modes)'}
           {data.coverage?.testLevels ? ` · ${data.coverage.testLevels.UI ?? 0} UI, ${data.coverage.testLevels.API ?? 0} API test cases` : ''}
           {data.coverageMode.api.status === 'AVAILABLE' ? ` · API documentation: ${data.coverageMode.api.endpoints} operation(s)${data.coverageMode.apiDocsUrl ? ` from ${data.coverageMode.apiDocsUrl}` : ''}`
             : data.coverageMode.api.status === 'UNAVAILABLE' ? ` · API documentation unavailable: ${data.coverageMode.api.reason ?? 'unknown reason'}` : ''}

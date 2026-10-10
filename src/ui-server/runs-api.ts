@@ -33,7 +33,7 @@ export interface RunControlView {
 const LIVE_ARTIFACTS: Partial<Record<SingleArtifactType, QaArtifactName>> = {
   DISCOVERED_BEHAVIOR: 'discovered-behavior', REQUIREMENTS_ANALYSIS: 'requirements-analysis', TEST_CASES: 'test-cases',
   AUTOMATION_PRIORITIZATION: 'automation-prioritization', DEFECT_ANALYSIS: 'defect-analysis', DISCOVERY_EVIDENCE: 'discovery-evidence',
-  API_DISCOVERY: 'api-discovery', API_VALIDATION: 'api-validation',
+  API_DISCOVERY: 'api-discovery', API_VALIDATION: 'api-validation', RUN_CONFIG: 'run-config',
 };
 
 export class RunsApiError extends Error {
@@ -127,11 +127,32 @@ function writtenBy(run: RunRow, name: QaArtifactName): boolean {
 /** Is this run still being produced? Only while it is open AND its owner holds the lock under its id. */
 const isLive = (run: RunRow | undefined, artifactRoot?: string) => !!run && (run.status === 'STARTING' || run.status === 'RUNNING') && ownerAlive(run, artifactRoot);
 
-/** The stages a Phase 1 run executes: from the first one it recorded, to the end. */
+/** The host's own API discovery step: recorded like a stage, run by no agent. */
+const API_STAGE = { key: 'api-discovery', label: 'API Discovery' };
+
+/**
+ * The stages a Phase 1 run executes: API discovery when it recorded one, then the agent stages
+ * from the first one it recorded to the end — without Product Discovery when the run never
+ * explored the interface (it recorded later stages and no browser stage).
+ */
 function plannedStages(run: RunRow, recorded: string[]) {
   if (run.kind !== 'PHASE1_MANUAL') return [];
-  const first = STAGES.findIndex((s) => s.key === recorded[0]);
-  return STAGES.slice(Math.max(0, first)).map((s) => ({ key: s.key, label: s.label }));
+  const agentStages = recorded.filter((k) => k !== API_STAGE.key);
+  const first = STAGES.findIndex((s) => s.key === agentStages[0]);
+  // API only never has a browser stage; so does any run that started past it.
+  const browserless = run.coverageMode === 'API_ONLY' || first > 0;
+  const stages = STAGES.slice(Math.max(0, first)).filter((s) => !(browserless && (s as { browser?: boolean }).browser));
+  return [...(recorded.includes(API_STAGE.key) ? [API_STAGE] : []), ...stages].map((s) => ({ key: s.key, label: s.label }));
+}
+
+/** The `discovery` block of a run's run-config.json, or null for a run that has none. Never throws. */
+function discoveryOf(s: RunHistoryStore, id: string, types: Set<string>, read: (s: RunHistoryStore, id: string, type: SingleArtifactType) => unknown): unknown {
+  if (!types.has('RUN_CONFIG')) return null;
+  try {
+    return asRecord(read(s, id, 'RUN_CONFIG')).discovery ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function runRoutes(history: HistoryProvider, artifactRoot?: string, control?: RunControlView): Handler[] {
@@ -202,7 +223,7 @@ export function runRoutes(history: HistoryProvider, artifactRoot?: string, contr
         const c = control?.getRun(id);
         if (!c) throw new RunsApiError(404, 'No such run.');
         return [200, {
-          run: { id, kind: 'PHASE1_MANUAL', status: c.status, model: c.model, provider: c.model.split('/')[0], target: c.target, coverageMode: c.coverageMode ?? null, apiDocsUrl: c.apiDocsUrl ?? null, startedAt: c.startedAt, finishedAt: null, durationMs: null, errorCode: c.error ? 'NOT_STARTED' : null, errorSummary: c.error ?? null, currentStage: null, langfuseTraceId: null, source: 'LIVE' },
+          run: { id, kind: 'PHASE1_MANUAL', status: c.status, model: c.model, provider: c.model.split('/')[0], target: c.target ?? null, coverageMode: c.coverageMode ?? null, apiDocsUrl: c.apiDocsUrl ?? null, startedAt: c.startedAt, finishedAt: null, durationMs: null, errorCode: c.error ? 'NOT_STARTED' : null, errorSummary: c.error ?? null, currentStage: null, langfuseTraceId: null, source: 'LIVE' },
           stages: [], plannedStages: STAGES.map((st) => ({ key: st.key, label: st.label })), metrics: {}, artifacts: [], bugIds: [],
           live: c.status === 'STARTING', cancellable: control?.isCancellable(id) ?? false, langfuseUrl: null,
         }];
@@ -212,6 +233,8 @@ export function runRoutes(history: HistoryProvider, artifactRoot?: string, contr
       const base = control?.langfuseBaseUrl();
       return [200, {
         run: row,
+        // How the run discovered the product — UI, API or both — from its own configuration, when it recorded one.
+        discovery: discoveryOf(s, id, a.types, read),
         stages,
         plannedStages: plannedStages(row, stages.map((st) => st.stageName)),
         metrics: s.getMetrics(id),

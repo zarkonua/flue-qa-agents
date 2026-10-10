@@ -207,8 +207,35 @@ if (configuresCoverage && coverageLib.usesApiDocs(coverageMode)) {
   }
 }
 
-// API only tests the API on its own: there is no browser stage in its plan.
-if (coverageMode === 'API_ONLY') plan = plan.filter((s) => !s.browser);
+// UI discovery and API discovery are separate workflows, each started only when its own
+// source exists and judged by its own criteria. Which of them this run has:
+//
+//   API only    never the interface — no browser, no Playwright MCP, no TARGET_URL needed
+//   UI only     never the API
+//   Automatic   the interface when there is an application URL that answers, the API when
+//               there is documentation; either can be missing, not both
+/** Why the interface is not explored in this run, when it is not. */
+let uiSkipped;
+const applicationUrl = process.env.TARGET_URL?.trim() || undefined;
+if (coverageMode === 'API_ONLY') {
+  uiSkipped = 'API only: the interface is not explored';
+} else if (coverageMode === 'AUTOMATIC' && plan.some((s) => s.browser) && apiDocsUrl) {
+  if (!applicationUrl) {
+    uiSkipped = 'no application URL (TARGET_URL) was given';
+  } else {
+    // A frontend that is down must not take API discovery with it. One plain request, by the
+    // host, to the configured URL: any answer at all means the interface is there to explore.
+    try {
+      await fetch(applicationUrl, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(8000) });
+    } catch (error) {
+      uiSkipped = `the application at ${applicationUrl} did not answer (${error?.cause?.code ?? error?.name ?? 'no response'})`;
+    }
+  }
+}
+if (uiSkipped) plan = plan.filter((s) => !s.browser);
+/** The host's own discovery step, shown beside the agent stages. Present whenever the API is this run's to discover. */
+const API_STAGE = { key: 'api-discovery', label: 'API Discovery' };
+const apiDiscoveryPlanned = configuresCoverage && coverageLib.usesApiDocs(coverageMode) && (apiDocsUrl !== undefined || coverageMode === 'API_ONLY');
 
 // ---------------------------------------------------------------------------
 // Preconditions
@@ -216,7 +243,8 @@ if (coverageMode === 'API_ONLY') plan = plan.filter((s) => !s.browser);
 
 const artifactProblem = makeArtifactProblem(qa);
 
-const target = plan.some((s) => s.browser) ? requireTarget() : process.env.TARGET_URL;
+// Only a run that explores the interface needs an application URL.
+const target = plan.some((s) => s.browser) ? requireTarget() : applicationUrl;
 
 // Langfuse tracing, when LANGFUSE_ENABLED=true; a no-op otherwise. Validated
 // here, before the lock, the archive or any browser work.
@@ -270,8 +298,8 @@ const history = await startRunHistory({
 const events = new EventLogWriter(join(qa.QA_ARTIFACT_ROOT, 'runs', stamp, 'events.jsonl'), stamp);
 const emit = (event) => events.emit(event);
 emit({
-  type: 'RUN_STARTED', status: 'STARTING', plan: plan.map((s) => ({ key: s.key, label: s.label })),
-  message: `Phase 1 started: ${plan.map((s) => s.label).join(' → ')}`,
+  type: 'RUN_STARTED', status: 'STARTING', plan: [...(apiDiscoveryPlanned ? [API_STAGE] : []), ...plan].map((s) => ({ key: s.key, label: s.label })),
+  message: `Phase 1 started: ${[...(apiDiscoveryPlanned ? [API_STAGE] : []), ...plan].map((s) => s.label).join(' → ')}`,
 });
 
 /** Artifact types, as the history and the workspace name them. */
@@ -332,6 +360,10 @@ function archive(path) {
 // run's output still in place.
 let apiDiscovery = configuresCoverage ? undefined : qa.readCoverageContext().api;
 let apiValidation = configuresCoverage ? undefined : qa.readCoverageContext().validation;
+// API discovery is a stage of its own in the run's history and live view — the host's, not an agent's.
+const apiStageHistory = apiDiscoveryPlanned ? history.stage(API_STAGE) : undefined;
+const apiStageStarted = Date.now();
+if (apiDiscoveryPlanned) emit({ type: 'STAGE_STARTED', stage: API_STAGE.key, stageLabel: API_STAGE.label, message: 'API Discovery started: reading the documentation' });
 if (configuresCoverage) {
   let apiSpec;
   if (!coverageLib.usesApiDocs(coverageMode)) {
@@ -346,14 +378,21 @@ if (configuresCoverage) {
   } else if (summary.status === 'UNAVAILABLE') {
     emit({ type: 'LOG', level: 'warn', message: `API documentation is unavailable: ${summary.reason}` });
   }
-  if (coverageMode === 'API_ONLY' && !apiLib.hasApi(apiDiscovery)) {
+  // A run with no interface to explore has only the API. Without its documentation there is no
+  // discovery source left — and the answer to that is a clear configuration error, never a
+  // quiet fall back to a browser.
+  if (uiSkipped && !apiLib.hasApi(apiDiscovery)) {
     const why = apiDocsUrl
       ? `the API documentation is unavailable (${summary.reason ?? 'no operations found'})`
       : 'no API documentation URL was given (--api-docs <url>, or QA_API_DOCS_URL)';
-    const message = `API-only coverage needs API documentation, and ${why}.`;
-    emit({ type: 'RUN_FAILED', status: 'FAILED', errorCode: 'API_DOCS_UNAVAILABLE', message });
+    const message = coverageMode === 'API_ONLY'
+      ? `API-only coverage needs API documentation, and ${why}.`
+      : `Nothing can be discovered: the interface is not available (${uiSkipped}) and ${why}.`;
+    apiStageHistory?.fail(1, 'API_DOCS_UNAVAILABLE', message);
+    emit({ type: 'STAGE_FAILED', stage: API_STAGE.key, stageLabel: API_STAGE.label, errorCode: 'API_DOCS_UNAVAILABLE', message });
+    emit({ type: 'RUN_FAILED', status: 'FAILED', stage: API_STAGE.key, stageLabel: API_STAGE.label, errorCode: 'API_DOCS_UNAVAILABLE', message });
     history.finish({ status: 'FAILED', errorCode: 'API_DOCS_UNAVAILABLE', errorSummary: message });
-    console.error(`\nPhase 1 not started: ${message}\nNothing was archived or changed. Fix the URL, or start the run in automatic or ui mode.\n`);
+    console.error(`\nPhase 1 not started: ${message}\nNothing was archived or changed, and no browser was started. Fix the API documentation URL${coverageMode === 'API_ONLY' ? ', or start the run in automatic or ui mode' : ''}.\n`);
     process.exit(EXIT.FAILED);
   }
 
@@ -385,6 +424,30 @@ if (configuresCoverage) {
 }
 const apiSummary = apiLib.apiDiscoverySummary(apiDiscovery);
 const liveSummary = liveLib.apiValidationSummary(apiValidation);
+// API discovery's own completion criteria. None of them is about a browser.
+const apiCompletion = liveLib.apiDiscoveryCompletion(apiDiscovery, apiValidation);
+if (apiDiscoveryPlanned) {
+  const seconds = Math.round((Date.now() - apiStageStarted) / 1000);
+  if (apiCompletion.status === 'COMPLETE') {
+    apiStageHistory?.complete(1);
+    emit({ type: 'STAGE_COMPLETED', stage: API_STAGE.key, stageLabel: API_STAGE.label, attempt: 1, message: `API Discovery completed in ${seconds}s: ${apiSummary.endpoints} operation(s), ${apiCompletion.evidence === 'LIVE' ? 'observed live' : 'documentation only'}` });
+  } else {
+    // Automatic with an interface to explore: the API part found nothing usable, and the run goes on.
+    // The stage ended, so it is recorded as ended — its outcome (BLOCKED) is in run-config.json and here.
+    apiStageHistory?.complete(1);
+    emit({ type: 'STAGE_COMPLETED', stage: API_STAGE.key, stageLabel: API_STAGE.label, attempt: 1, level: 'warn', message: `API Discovery found nothing usable (${apiCompletion.reason}). The run continues with the interface alone.` });
+  }
+}
+/** How this run discovers the product — what its record, its configuration and the workspace show. */
+const discoveryRecord = configuresCoverage || !previousConfig?.discovery
+  ? {
+    methods: [...(plan.some((s) => s.browser) || (startIndex > 0 && !uiSkipped) ? ['UI'] : []), ...(apiLib.hasApi(apiDiscovery) && coverageLib.usesApiDocs(coverageMode) ? ['API'] : [])],
+    ui: uiSkipped ? { status: 'SKIPPED', reason: uiSkipped } : { status: 'PLANNED' },
+    api: coverageLib.usesApiDocs(coverageMode) && apiSummary.status !== 'NOT_REQUESTED'
+      ? apiCompletion
+      : { status: 'NOT_REQUESTED', evidence: 'NONE', criteria: [], reason: coverageMode === 'UI_ONLY' ? 'UI only: the API is not discovered' : 'no API documentation was given' },
+  }
+  : previousConfig.discovery;
 
 // Regenerating any stage invalidates the review and the approval of the old result.
 for (const stage of plan) archive(qa.qaArtifactPath(stage.artifact));
@@ -411,6 +474,7 @@ if (configuresCoverage) {
       // What a person approved AND the documentation declares — the list the prober actually honoured.
       approvedOperations: apiValidation?.policy?.approvedOperations ?? [],
     },
+    discovery: discoveryRecord,
   });
   if (apiSummary.status === 'AVAILABLE') emit({ type: 'ARTIFACT_CREATED', artifactType: 'API_DISCOVERY', count: apiSummary.endpoints, message: 'api-discovery.json created' });
   if (liveSummary.status !== 'NOT_REQUESTED') emit({ type: 'ARTIFACT_CREATED', artifactType: 'API_VALIDATION', count: liveSummary.requests, message: 'api-validation.json created' });
@@ -419,13 +483,13 @@ if (configuresCoverage) {
 // API only: no browser stage runs. What the interface would have shown is recorded as what it
 // is — nothing — by host code, so every later stage has the artifact it reads and nobody has to
 // guess. The previous run's browser evidence is moved aside with the rest: it is not this run's.
-if (coverageMode === 'API_ONLY' && startIndex === 0) {
+if (uiSkipped && startIndex === 0) {
   for (const path of [qa.qaArtifactPath('discovered-behavior'), qa.qaArtifactPath('discovery-evidence'), surfaceLib.surfacePath(), ledgerLib.ledgerPath()]) archive(path);
   qa.writeQaArtifact('discovered-behavior', {
-    product: `${apiDiscovery?.title ?? 'API'} (API only: the interface was not explored)`,
+    product: `${apiDiscovery?.title ?? 'API'} (${coverageMode === 'API_ONLY' ? 'API only: the interface was not explored' : `the interface was not explored: ${uiSkipped}`})`,
     locations: [], areas: [], behaviors: [], openQuestions: [], conflicts: [],
   });
-  emit({ type: 'LOG', message: 'Product Discovery skipped: API only runs without a browser' });
+  emit({ type: 'LOG', level: coverageMode === 'API_ONLY' ? 'info' : 'warn', message: `Product Discovery skipped — no browser is started: ${uiSkipped}` });
 }
 /** The run's configuration, as its record and its archive state it. */
 const coverageRecord = {
@@ -433,6 +497,7 @@ const coverageRecord = {
   apiDocsUrl: (configuresCoverage ? coverageLib.displayApiDocsUrl(apiDocsUrl) : previousConfig?.apiDocsUrl) ?? null,
   apiDiscovery: apiSummary,
   apiValidation: liveSummary,
+  discovery: discoveryRecord,
 };
 
 // ---------------------------------------------------------------------------
@@ -445,6 +510,8 @@ console.log(`Artifacts       : ${qa.QA_ARTIFACT_ROOT}`);
 console.log(`Stages          : ${plan.map((s) => s.label).join(' -> ')} -> STOP`);
 console.log(`Attempts/stage  : ${attempts}`);
 console.log(`Coverage mode   : ${coverageLib.COVERAGE_MODE_LABEL[coverageMode]}${configuresCoverage ? '' : ' (kept from the suite on disk)'}`);
+console.log(`Discovery       : ${discoveryRecord.methods.length ? discoveryRecord.methods.map((m) => (m === 'UI' ? 'UI (browser)' : `API (${discoveryRecord.api?.evidence === 'LIVE' ? 'documentation + live requests' : 'documentation only'})`)).join(' + ') : 'none'}` +
+  `${discoveryRecord.ui?.status === 'SKIPPED' ? ` — no browser: ${discoveryRecord.ui.reason}` : ''}`);
 console.log(`API docs        : ${apiSummary.status === 'AVAILABLE'
   ? `${apiSummary.endpoints} operation(s), ${apiSummary.schemas} schema(s), ${apiSummary.authentication} auth scheme(s)${coverageRecord.apiDocsUrl ? ` — ${coverageRecord.apiDocsUrl}` : ''}`
   : apiSummary.status === 'UNAVAILABLE'

@@ -129,9 +129,14 @@ part, and no agent can write that file.
 
 The mode and the documentation then travel through every stage:
 
-- **Discovery** explores the interface in Automatic and UI only. In API only there is no browser
-  stage at all: the host writes an empty `discovered-behavior.json` that says so, and the run
-  starts at the Behavior Analyst.
+- **Discovery** is two independent workflows, each started only when its own source exists and
+  finished by its own criteria. **UI discovery** (the Product Discovery agent, a browser, the
+  completion gate) needs an application URL. **API discovery** (host code: read the documentation,
+  optionally call the API) needs API documentation and nothing else — no browser, no Playwright
+  MCP, no `TARGET_URL`. API only runs the second alone; UI only the first alone; Automatic runs
+  whichever has a source, and neither falls back to the other. When the interface is not explored
+  the host writes an empty `discovered-behavior.json` that says so, and the run starts at the
+  Behavior Analyst.
 - **Behavior Analyst** may cite a documented operation as evidence, beside or instead of an
   observed behavior.
 - **Test Designer** sets `testLevel` on every case. An `API` case must rest on a documented
@@ -181,6 +186,10 @@ potential issue a confirmed defect.
   origin and never written to an artifact, an event or the page.
 - **Bounded** — a request budget, a pause between requests, a timeout each; a `429` or a dead
   connection stops the probing.
+
+API discovery is **complete** when the documentation was read, declares at least one operation,
+and every operation is accounted for — called, or skipped with a recorded reason. A live response
+is not required: without one the run is *documentation only*, and every stage is told so.
 
 Whatever cannot be called is skipped with a reason and stays `DOCUMENTED`; an unreachable API or
 a disallowed host means the run continues on the documentation alone. Results are on the
@@ -325,6 +334,7 @@ instance (`LANGFUSE_BASE_URL`). Prompts and tool I/O are sent only with
 
 **New Run** starts Phase 1 with choices the host offers — target (`TARGET_URL`, `QA_UI_TARGETS`),
 model (`QA_MODEL`, `QA_UI_MODELS`), test coverage (Automatic, UI only, API only), fresh browser —
+— or no target at all, for a run that has API documentation and no interface to explore —
 plus, for Automatic and API only, an optional API documentation URL, the live-validation switch,
 an optional API base URL, and per-operation approval of state-changing requests after a preview of
 the documentation. It shows the helper origins and Langfuse state read-only, and whether API

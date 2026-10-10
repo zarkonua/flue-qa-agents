@@ -153,10 +153,31 @@ with a correction naming what went wrong, odd attempts start fresh.
 | UI only | `ui` | ignored — never fetched |
 | API only | `api` | required |
 
-**API only runs without a browser.** Product Discovery is not in its plan, no Playwright MCP
-server is started, and the host writes an empty `discovered-behavior.json` saying the interface
-was not explored. The run starts at the Behavior Analyst, on the documentation and whatever live
-validation observed.
+**API only runs without a browser, and without `TARGET_URL`.** Product Discovery is not in its
+plan, no Playwright MCP server is started, and the host writes an empty `discovered-behavior.json`
+saying the interface was not explored. The run starts with the host's own **API Discovery** stage
+and then the Behavior Analyst, on the documentation and whatever live validation observed:
+
+```bash
+unset TARGET_URL
+npm run qa:manual -- --coverage-mode api --api-docs https://api.example.test/openapi.json
+```
+
+```text
+Stages          : Behavior Analyst -> Test Designer -> Automation Prioritizer -> Defect Analyzer -> STOP
+Discovery       : API (documentation + live requests) — no browser: API only: the interface is not explored
+```
+
+**Automatic uses whichever discovery source exists.** With an application URL and API
+documentation it runs both, independently. With documentation and no `TARGET_URL` — or a
+`TARGET_URL` that does not answer — it discovers the API alone and starts no browser. With an
+application URL and documentation that cannot be read, it explores the interface alone. With
+neither, the run stops with a configuration error before anything is archived; a failed API
+discovery never falls back to a browser.
+
+**API discovery completes by its own criteria**, recorded in `run-config.json` under `discovery`:
+the documentation was read, it declares at least one operation, and every operation was called or
+skipped with a reason. A live response is optional — without one the run is *documentation only*.
 
 The URL may be an OpenAPI 3 / Swagger 2 document (JSON or YAML) or a Swagger UI page. The host
 fetches it with one bounded GET (15 s, 5 MB; a Swagger UI page may lead to a few more, to the

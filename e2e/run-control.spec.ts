@@ -265,6 +265,51 @@ test('live API validation off, or unavailable: the API page says why, and nothin
   await expect(page.getByTestId('api-preview-unavailable')).toContainText('could not be used');
 });
 
+test('API only without an application URL: no target, no browser stage, and the run completes', async ({ page }) => {
+  await page.goto('/runs/new');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
+  // Without a target a run needs its other discovery source.
+  await page.getByLabel('Target').selectOption('');
+  await expect(page.getByTestId('target-problem')).toContainText('give an API documentation URL');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeDisabled();
+  await page.getByTestId('coverage-mode').getByRole('radio', { name: /UI only/ }).check();
+  await expect(page.getByTestId('target-problem')).toContainText('UI only needs a target');
+  await page.getByTestId('coverage-mode').getByRole('radio', { name: /API only/ }).check();
+  await page.getByLabel('API documentation URL').fill(`${FAKE_API}/docs`);
+  await expect(page.getByTestId('target-problem')).toHaveCount(0);
+  await expect(page.getByTestId('target-hint')).toContainText('no browser is started');
+  await page.getByRole('button', { name: 'Start Phase 1' }).click();
+  await expect(page).toHaveURL(/\/runs\/\d{4}-\d{2}-\d{2}T[\d-]+Z\/live$/);
+  const runId = /\/runs\/([^/]+)\/live$/.exec(page.url())![1];
+
+  // The pipeline it shows is the one it has: API Discovery first, and no Product Discovery at all.
+  await expect(stage(page, 'api-discovery')).toHaveAttribute('data-state', 'COMPLETED', { timeout: 20_000 });
+  await expect(stage(page, 'discovery')).toHaveCount(0);
+  await expect(page.getByTestId('live-status')).toHaveText('COMPLETED', { timeout: 30_000 });
+  for (const key of ['analysis', 'design', 'prioritization', 'defects']) await expect(stage(page, key)).toHaveAttribute('data-state', 'COMPLETED');
+  await expect(page.getByTestId('event-log')).not.toContainText('Playwright MCP');
+  await expect(page.getByTestId('event-log')).toContainText('no browser is started');
+
+  // Run history: how it discovered the product, and that it had no application URL.
+  await page.goto(`/runs/${runId}`);
+  await expect(page.getByTestId('run-discovery')).toContainText('API (documentation + live requests)');
+  await expect(page.getByTestId('run-discovery')).toContainText('No browser was started');
+  await expect(page.getByTestId('run-coverage-mode')).toHaveText('API only');
+  await expect(page.locator('dl.run-meta')).toContainText('none — no application UI');
+  await expect(page.getByTestId('stage-api-discovery')).toContainText('COMPLETED');
+  await expect(page.getByTestId('stage-discovery')).toHaveCount(0);
+
+  // The workspace: discovery method and its own completion criteria; review and approval reachable as ever.
+  await page.getByRole('link', { name: 'API', exact: true }).click();
+  await expect(page.getByTestId('discovery-method')).toContainText('API (documentation + live requests)');
+  await page.getByTestId('discovery-criteria').locator('summary').click();
+  await expect(page.getByTestId('discovery-criteria')).toContainText('operations accounted for');
+  await expect(page.getByTestId('discovery-criteria')).toContainText('live observation (optional)');
+  await page.getByRole('link', { name: 'Overview' }).click();
+  await expect(page.getByTestId('overview-discovery')).toHaveText('API (documentation + live requests)');
+  await expect(page.getByTestId('phase1-health')).toBeVisible();
+});
+
 test('a failed stage: FAILED, the stage and a sanitised reason, diagnostics on request', async ({ page }) => {
   await startRun(page, 'ollama/fake-fail');
   const failure = page.getByTestId('live-failure');

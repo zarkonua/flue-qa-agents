@@ -301,6 +301,15 @@ requests for the base URL's origin, and are replaced in the stored request. Resp
 truncated and stored with the value of every secret-named field, and anything shaped like a JWT,
 replaced; a cookie is recorded only as present.
 
+**API discovery is independent of UI discovery.** It is host code with its own completion
+criteria (`apiDiscoveryCompletion`): documentation read, at least one operation, every operation
+called or skipped with a reason; a live observation is optional. None of them reads the discovery
+surface, the observation ledger or the UI completion gate, and the UI gate reads nothing of the
+API's. A run with no interface to explore — API only, or Automatic with no application URL that
+answers — never starts a browser or Playwright MCP, needs no `TARGET_URL`, and gets a host-written,
+empty `discovered-behavior.json`. A finding whose actual result is only a documented operation
+has observed nothing (`UNOBSERVED_ACTUAL`): a documentation assumption is never a confirmed defect.
+
 **Unavailable is a state.** A disallowed host, an unreachable API, a failed sign-in or missing
 parameters never fail the run: the artifact says `UNAVAILABLE` / `PARTIAL` or names the skip
 reason per operation, and everything not called stays `DOCUMENTED`.
@@ -453,7 +462,9 @@ covered by a test. Errors never return a stack or a path.
 
 - `POST /api/runs` takes a strict object — pipeline, target, model, fresh browser, and optionally
   coverage mode, API documentation URL, the live-validation switch, an API base URL and a list of
-  approved operations; unknown keys (a command, an env, a path) are refused. An approval must match
+  approved operations; unknown keys (a command, an env, a path) are refused. `target` may be
+  omitted only when the run has API documentation and is not UI only; the runner is then given an
+  empty `TARGET_URL`, so the server's own cannot put a browser back into the run. An approval must match
   `METHOD /path`, is refused in a production environment, and is honoured by the runner only if the
   documentation declares that operation. API credentials are never part of a request: they exist
   only in the host's environment, and the page is told whether they are configured.

@@ -5,6 +5,7 @@ import { api, type CoverageMode } from '../api/client.ts';
 import { apiDocsProblem, COVERAGE_MODES, showsApiDocs } from '../lib/coverage.ts';
 import { formatWhen } from '../lib/runs.ts';
 import { ApiValidationOptions, type LiveChoice } from '../components/ApiValidationOptions.tsx';
+import { mayOmitTarget } from '../lib/api-validation.ts';
 
 /**
  * Start a Phase 1 run. Every choice comes from the host (GET /api/run-config);
@@ -35,7 +36,8 @@ export function NewRunPage() {
   const start = useMutation({
     // The URL is sent only for the modes that read it; an empty one says "none", not "use the host default".
     mutationFn: () => api.startRun({
-      pipeline: 'PHASE1_MANUAL', target, model, freshBrowser, coverageMode,
+      // No target: the run has no interface to explore, and starts no browser.
+      pipeline: 'PHASE1_MANUAL', ...(target ? { target } : {}), model, freshBrowser, coverageMode,
       ...(showsApiDocs(coverageMode) ? { apiDocsUrl: apiDocsUrl.trim() } : {}),
       // Live validation exists only beside documentation; approvals only beside live validation.
       ...(liveOffered ? { liveValidation: live.enabled, apiBaseUrl: live.enabled ? live.baseUrl.trim() : '', approvedOperations: live.enabled ? live.approved : [] } : {}),
@@ -51,6 +53,9 @@ export function NewRunPage() {
   const offered = COVERAGE_MODES.filter((m) => config.coverageModes.some((c) => c.id === m.id));
   const docsProblem = apiDocsProblem(coverageMode, apiDocsUrl);
   const liveOffered = showsApiDocs(coverageMode) && apiDocsUrl.trim() !== '' && !docsProblem;
+  // Without an application URL a run needs the other discovery source: API documentation.
+  const targetProblem = target || mayOmitTarget(coverageMode, apiDocsUrl) ? undefined
+    : coverageMode === 'UI_ONLY' ? 'UI only needs a target: the application to explore.' : 'Without a target, give an API documentation URL — otherwise there is nothing to discover.';
 
   return (
     <>
@@ -72,7 +77,14 @@ export function NewRunPage() {
         <label>Target
           <select aria-label="Target" value={target} onChange={(e) => touch(setTarget)(e.target.value)}>
             {config.targets.map((t) => <option key={t.url} value={t.url}>{t.url}{t.default ? ' (default)' : ''}</option>)}
+            <option value="">None — no application UI (API documentation only)</option>
           </select>
+          <span className="muted small" data-testid="target-hint">
+            {coverageMode === 'API_ONLY'
+              ? 'Not used in API only: the interface is not explored and no browser is started. It only adds its host to the ones the API may be called on.'
+              : target ? 'The application UI the browser explores.' : 'No application UI: the run discovers the API alone and starts no browser.'}
+          </span>
+          {targetProblem && <span className="notice bad small" data-testid="target-problem">{targetProblem}</span>}
         </label>
         <label>Model
           <select aria-label="Model" value={model} onChange={(e) => touch(setModel)(e.target.value)}>
@@ -110,7 +122,7 @@ export function NewRunPage() {
         <div className="muted">Langfuse tracing: {config.langfuse.enabled ? `on (${config.langfuse.baseUrl})` : 'off'}</div>
         {start.error && <p className="notice bad" data-testid="start-error">{(start.error as Error).message}</p>}
         <div className="buttons">
-          <button className="primary" type="submit" disabled={!!busy || start.isPending || !target || !model || !!docsProblem}>Start Phase 1</button>
+          <button className="primary" type="submit" disabled={!!busy || start.isPending || !!targetProblem || !model || !!docsProblem}>Start Phase 1</button>
         </div>
       </form>
     </>

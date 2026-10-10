@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "coverageMode"
+  ],
+  "properties": {
+    "coverageMode": {
+      "enum": [
+        "AUTOMATIC",
+        "UI_ONLY",
+        "API_ONLY"
+      ]
+    },
+    "apiDocsUrl": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "runId": {
+      "type": "string"
+    },
+    "writtenAt": {
+      "type": "string"
+    },
+    "apiValidation": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "baseUrl": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "environment": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "approvedOperations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 320
+          },
+          "maxItems": 200
+        }
+      },
+      "additionalProperties": false
+    },
+    "discovery": {
+      "type": "object",
+      "required": [
+        "methods"
+      ],
+      "properties": {
+        "methods": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "UI",
+              "API"
+            ]
+          }
+        },
+        "ui": {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "PLANNED",
+                "SKIPPED"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "api": {
+          "type": "object",
+          "required": [
+            "status",
+            "evidence",
+            "criteria"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "COMPLETE",
+                "BLOCKED",
+                "NOT_REQUESTED"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            },
+            "evidence": {
+              "enum": [
+                "LIVE",
+                "DOCUMENTATION_ONLY",
+                "NONE"
+              ]
+            },
+            "criteria": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "met",
+                  "required",
+                  "detail"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "met": {
+                    "type": "boolean"
+                  },
+                  "required": {
+                    "type": "boolean"
+                  },
+                  "detail": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,457 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "status",
+    "authentication",
+    "policy",
+    "summary",
+    "endpoints",
+    "probes",
+    "findings"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "COMPLETED",
+        "PARTIAL",
+        "UNAVAILABLE",
+        "NOT_REQUESTED"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "baseUrl": {
+      "type": "string"
+    },
+    "baseUrlSource": {
+      "enum": [
+        "OVERRIDE",
+        "SPEC_SERVER",
+        "DOCS_ORIGIN"
+      ]
+    },
+    "environment": {
+      "type": "string"
+    },
+    "startedAt": {
+      "type": "string"
+    },
+    "finishedAt": {
+      "type": "string"
+    },
+    "authentication": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "NOT_CONFIGURED",
+            "READY",
+            "FAILED"
+          ]
+        },
+        "method": {
+          "enum": [
+            "TOKEN",
+            "BASIC",
+            "LOGIN"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "allowedHosts",
+        "approvedOperations",
+        "maxRequests",
+        "requestsSent"
+      ],
+      "properties": {
+        "allowedHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approvedOperations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "maxRequests": {
+          "type": "integer"
+        },
+        "requestsSent": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "endpoints",
+        "documented",
+        "observed",
+        "validated",
+        "skipped",
+        "requests",
+        "contractViolations",
+        "potentialIssues"
+      ],
+      "properties": {
+        "endpoints": {
+          "type": "integer"
+        },
+        "documented": {
+          "type": "integer"
+        },
+        "observed": {
+          "type": "integer"
+        },
+        "validated": {
+          "type": "integer"
+        },
+        "skipped": {
+          "type": "integer"
+        },
+        "requests": {
+          "type": "integer"
+        },
+        "contractViolations": {
+          "type": "integer"
+        },
+        "potentialIssues": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "method",
+          "path",
+          "safety",
+          "evidence",
+          "execution",
+          "validated",
+          "observed",
+          "probes",
+          "findings"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^API-[0-9]+$"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "safety": {
+            "enum": [
+              "SAFE",
+              "UNSAFE_GET",
+              "STATE_CHANGING",
+              "DESTRUCTIVE"
+            ]
+          },
+          "evidence": {
+            "enum": [
+              "DOCUMENTED",
+              "OBSERVED",
+              "VALIDATED"
+            ]
+          },
+          "execution": {
+            "enum": [
+              "EXECUTED",
+              "SKIPPED"
+            ]
+          },
+          "skipReason": {
+            "enum": [
+              "APPROVAL_REQUIRED",
+              "ENVIRONMENT_PROTECTED",
+              "MISSING_PARAMETERS",
+              "MISSING_TEST_DATA",
+              "UNSUPPORTED_BODY",
+              "UNSUPPORTED_METHOD",
+              "REQUEST_BUDGET",
+              "RATE_LIMITED",
+              "UNREACHABLE",
+              "NOT_ATTEMPTED"
+            ]
+          },
+          "skipDetail": {
+            "type": "string"
+          },
+          "validated": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "ANONYMOUS",
+                "UNAUTHENTICATED",
+                "AUTHENTICATED",
+                "NOT_FOUND",
+                "INVALID_BODY",
+                "VALID_BODY"
+              ]
+            }
+          },
+          "observed": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "ANONYMOUS",
+                "UNAUTHENTICATED",
+                "AUTHENTICATED",
+                "NOT_FOUND",
+                "INVALID_BODY",
+                "VALID_BODY"
+              ]
+            }
+          },
+          "probes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^PRB-[0-9]+$"
+            }
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^APF-[0-9]+$"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "probes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "endpointId",
+          "kind",
+          "request",
+          "checks"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^PRB-[0-9]+$"
+          },
+          "endpointId": {
+            "type": "string",
+            "pattern": "^API-[0-9]+$"
+          },
+          "kind": {
+            "enum": [
+              "ANONYMOUS",
+              "UNAUTHENTICATED",
+              "AUTHENTICATED",
+              "NOT_FOUND",
+              "INVALID_BODY",
+              "VALID_BODY"
+            ]
+          },
+          "request": {
+            "type": "object",
+            "required": [
+              "method",
+              "url",
+              "headers"
+            ],
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "body": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "response": {
+            "type": "object",
+            "required": [
+              "status",
+              "headers",
+              "durationMs"
+            ],
+            "properties": {
+              "status": {
+                "type": "integer"
+              },
+              "contentType": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "bodySample": {
+                "type": "string"
+              },
+              "bodyTruncated": {
+                "type": "boolean"
+              },
+              "durationMs": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "enum": [
+                  "TIMEOUT",
+                  "CONNECTION",
+                  "BLOCKED",
+                  "TOO_LARGE"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "outcome"
+              ],
+              "properties": {
+                "name": {
+                  "enum": [
+                    "STATUS",
+                    "EXPECTATION",
+                    "CONTENT_TYPE",
+                    "SCHEMA",
+                    "HEADERS"
+                  ]
+                },
+                "outcome": {
+                  "enum": [
+                    "PASS",
+                    "FAIL",
+                    "NOT_CHECKED"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "evidence": {
+            "enum": [
+              "OBSERVED",
+              "VALIDATED"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "endpointId",
+          "probeId",
+          "classification",
+          "type",
+          "severity",
+          "title",
+          "expected",
+          "actual"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^APF-[0-9]+$"
+          },
+          "endpointId": {
+            "type": "string"
+          },
+          "probeId": {
+            "type": "string"
+          },
+          "classification": {
+            "enum": [
+              "CONTRACT_VIOLATION",
+              "POTENTIAL_ISSUE"
+            ]
+          },
+          "type": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "HIGH",
+              "MEDIUM",
+              "LOW"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "expected": {
+            "type": "string"
+          },
+          "actual": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

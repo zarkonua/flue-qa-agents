@@ -67,7 +67,8 @@ export interface RunConfigView {
 // product's own UI, so a run has nothing like an auth mode to choose.
 // `coverageMode` and `apiDocsUrl` are optional: a client from before coverage modes sends neither and gets AUTOMATIC.
 export interface StartRequest {
-  pipeline: Pipeline; target: string; model: string; freshBrowser: boolean; coverageMode?: CoverageMode; apiDocsUrl?: string;
+  /** The application's UI. Optional for a run that does not explore it: API only, or Automatic with API documentation. */
+  pipeline: Pipeline; target?: string; model: string; freshBrowser: boolean; coverageMode?: CoverageMode; apiDocsUrl?: string;
   /** Call the documented API and compare its responses with the documentation. Default: the host's. */
   liveValidation?: boolean;
   apiBaseUrl?: string;
@@ -76,7 +77,8 @@ export interface StartRequest {
 }
 /** What the controller hands the runner: host-configured values, and checked ones — never a raw string from the browser. */
 export interface ValidatedRun {
-  pipeline: Pipeline; target: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string;
+  /** Absent: the run has no interface to explore, and starts no browser. */
+  pipeline: Pipeline; target?: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string;
   liveValidation?: boolean; apiBaseUrl?: string; approvedOperations?: string[];
 }
 
@@ -134,8 +136,10 @@ export function readRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfigVi
 /** Check a start request against the configuration. Returns the host's own values for what was chosen. */
 export function validateStartRequest(request: StartRequest, config: RunConfigView): ValidatedRun {
   if (!PIPELINES.includes(request.pipeline)) throw new RunConfigError('Only Phase 1 can be started from the workspace.');
-  const target = config.targets.find((t) => t.url === safeTarget(request.target));
-  if (!target) throw new RunConfigError('That target is not configured for this workspace (TARGET_URL / QA_UI_TARGETS).');
+  // No target at all is a choice — "this run has no interface" — and is judged once the mode is known.
+  const wantsTarget = typeof request.target === 'string' && request.target.trim() !== '';
+  const target = wantsTarget ? config.targets.find((t) => t.url === safeTarget(request.target)) : undefined;
+  if (wantsTarget && !target) throw new RunConfigError('That target is not configured for this workspace (TARGET_URL / QA_UI_TARGETS).');
   const model = config.models.find((m) => m.id === request.model);
   if (!model) throw new RunConfigError('That model is not configured for this workspace (QA_MODEL / QA_UI_MODELS).');
   if (!model.available) throw new RunConfigError(`That model cannot run: ${model.reason}.`);
@@ -161,6 +165,13 @@ export function validateStartRequest(request: StartRequest, config: RunConfigVie
       throw new RunConfigError('API only needs an API documentation URL: without one there is no documented operation to test.');
     }
   }
+  // The interface is explored only when there is an application URL. A run without one must have
+  // the other discovery source — API documentation — and may never be UI only.
+  if (!target) {
+    if (coverageMode === 'UI_ONLY') throw new RunConfigError('UI only needs a target: the application URL to explore (TARGET_URL / QA_UI_TARGETS).');
+    if (!apiDocsUrl) throw new RunConfigError('A run without a target needs an API documentation URL: there would be nothing to discover.');
+  }
+
   // Live validation only exists beside documentation to validate against.
   const live: Pick<ValidatedRun, 'liveValidation' | 'apiBaseUrl' | 'approvedOperations'> = {};
   if (apiDocsUrl) {
@@ -183,5 +194,5 @@ export function validateStartRequest(request: StartRequest, config: RunConfigVie
     }
     live.approvedOperations = [...new Set(approvals)];
   }
-  return { pipeline: request.pipeline, target: target.url, model: model.id, freshBrowser: request.freshBrowser, coverageMode, ...(apiDocsUrl ? { apiDocsUrl } : {}), ...live };
+  return { pipeline: request.pipeline, ...(target ? { target: target.url } : {}), model: model.id, freshBrowser: request.freshBrowser, coverageMode, ...(apiDocsUrl ? { apiDocsUrl } : {}), ...live };
 }

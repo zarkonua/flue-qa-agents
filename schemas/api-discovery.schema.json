@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["status", "endpoints", "schemas", "authentication"],
+  "properties": {
+    "status": { "enum": ["AVAILABLE", "UNAVAILABLE", "NOT_REQUESTED"] },
+    "reason": { "type": "string" },
+    "source": {
+      "type": "object",
+      "required": ["url", "format"],
+      "properties": {
+        "url": { "type": "string" },
+        "specUrl": { "type": "string" },
+        "format": { "enum": ["OPENAPI_JSON", "OPENAPI_YAML", "SWAGGER_UI"] },
+        "specVersion": { "type": "string" },
+        "fetchedAt": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "title": { "type": "string" },
+    "version": { "type": "string" },
+    "servers": { "type": "array", "items": { "type": "string" } },
+    "authentication": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string" },
+          "scheme": { "type": "string" },
+          "bearerFormat": { "type": "string" },
+          "in": { "type": "string" },
+          "name": { "type": "string" },
+          "flows": { "type": "array", "items": { "type": "string" } },
+          "description": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "method", "path", "parameters", "responses", "security"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^API-[0-9]+$" },
+          "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"] },
+          "path": { "type": "string" },
+          "operationId": { "type": "string" },
+          "summary": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "deprecated": { "type": "boolean" },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "in", "required"],
+              "properties": {
+                "name": { "type": "string" },
+                "in": { "type": "string" },
+                "required": { "type": "boolean" },
+                "type": { "type": "string" },
+                "description": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "requestBody": {
+            "type": "object",
+            "required": ["required", "contentTypes", "fields"],
+            "properties": {
+              "required": { "type": "boolean" },
+              "contentTypes": { "type": "array", "items": { "type": "string" } },
+              "schema": { "type": "string" },
+              "fields": { "$ref": "#/$defs/fields" }
+            },
+            "additionalProperties": false
+          },
+          "responses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["status"],
+              "properties": {
+                "status": { "type": "string" },
+                "description": { "type": "string" },
+                "schema": { "type": "string" },
+                "fields": { "$ref": "#/$defs/fields" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "security": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "schemas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "fields"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "description": { "type": "string" },
+          "fields": { "$ref": "#/$defs/fields" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "truncated": {
+      "type": "object",
+      "properties": {
+        "endpoints": { "type": "integer" },
+        "schemas": { "type": "integer" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "type", "required"],
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string" },
+          "required": { "type": "boolean" },
+          "constraints": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

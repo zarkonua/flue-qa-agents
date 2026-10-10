@@ -48,8 +48,9 @@ const apiDocsUrl = coverageLib.usesApiDocs(coverageMode) ? coverageLib.displayAp
 const history = await startRunHistory({ kind: 'PHASE1_MANUAL', runId, model: process.env.QA_MODEL, target: process.env.TARGET_URL, startedAt, holdsRunLock: true, status: 'STARTING', coverageMode, apiDocsUrl: apiDocsUrl ?? null, log: () => {} });
 const events = new EventLogWriter(join(qa.QA_ARTIFACT_ROOT, 'runs', runId, 'events.jsonl'), runId);
 const emit = (e) => events.emit(e);
-emit({ type: 'RUN_STARTED', status: 'STARTING', plan: STAGES.map((s) => ({ key: s.key, label: s.label })), message: 'Phase 1 started (fake runner)' });
-emit({ type: 'LOG', category: 'BROWSER', message: `Playwright MCP ready${process.argv.includes('--fresh-browser') ? ' (fresh browser)' : ''}` });
+const browserless = /^API_ONLY$/.test(process.env.QA_COVERAGE_MODE ?? '') || !process.env.TARGET_URL?.trim();
+emit({ type: 'RUN_STARTED', status: 'STARTING', plan: [...(process.env.QA_API_DOCS_URL?.trim() ? [{ key: 'api-discovery', label: 'API Discovery' }] : []), ...STAGES.filter((s) => !(browserless && s.browser))].map((s) => ({ key: s.key, label: s.label })), message: 'Phase 1 started (fake runner)' });
+if (!browserless) emit({ type: 'LOG', category: 'BROWSER', message: `Playwright MCP ready${process.argv.includes('--fresh-browser') ? ' (fresh browser)' : ''}` });
 // A secret that must never reach the log: the event layer redacts it.
 emit({ type: 'LOG', message: `Visited http://localhost:4444/confirm?confirm_code=987654 with key sk-or-v1-0123456789abcdef0123456789abcdef` });
 history.markRunning();
@@ -96,11 +97,31 @@ if (coverageLib.usesApiDocs(coverageMode) && process.env.QA_API_DOCS_URL?.trim()
   rmSync(qa.qaArtifactPath('api-discovery'), { force: true });
   rmSync(qa.qaArtifactPath('api-validation'), { force: true });
 }
+// Like the real runner: no interface to explore means no browser stage, and the host says so.
+const uiSkipped = coverageMode === 'API_ONLY' ? 'API only: the interface is not explored' : !process.env.TARGET_URL?.trim() ? 'no application URL (TARGET_URL) was given' : undefined;
+const apiContext = qa.readCoverageContext();
+const discoveryRecord = {
+  methods: [...(uiSkipped ? [] : ['UI']), ...(apiValidationWritten && apiLib.hasApi(apiContext.api) ? ['API'] : [])],
+  ui: uiSkipped ? { status: 'SKIPPED', reason: uiSkipped } : { status: 'PLANNED' },
+  api: apiValidationWritten ? liveLib.apiDiscoveryCompletion(apiContext.api, qa.readQaArtifact('api-validation')) : { status: 'NOT_REQUESTED', evidence: 'NONE', criteria: [] },
+};
+if (apiValidationWritten) {
+  const h = history.stage({ key: 'api-discovery', label: 'API Discovery' });
+  emit({ type: 'STAGE_STARTED', stage: 'api-discovery', stageLabel: 'API Discovery', message: 'API Discovery started' });
+  h.complete(1);
+  emit({ type: 'STAGE_COMPLETED', stage: 'api-discovery', stageLabel: 'API Discovery', attempt: 1, message: 'API Discovery completed' });
+}
+const PLAN = STAGES.filter((s) => !(uiSkipped && s.browser));
 qa.writeQaArtifact('run-config', {
   coverageMode, ...(apiDocsUrl ? { apiDocsUrl } : {}), runId, writtenAt: startedAt.toISOString(),
+  discovery: discoveryRecord,
   ...(apiValidationWritten ? { apiValidation: { enabled: liveChoice.enabled, ...(liveChoice.baseUrl ? { baseUrl: liveChoice.baseUrl } : {}), environment: process.env.QA_API_ENVIRONMENT?.trim() || 'test', approvedOperations: liveChoice.approvedOperations } } : {}),
 });
-for (const stage of STAGES) {
+if (uiSkipped) {
+  qa.writeQaArtifact('discovered-behavior', { product: 'API (the interface was not explored)', locations: [], areas: [], behaviors: [], openQuestions: [], conflicts: [] });
+  emit({ type: 'LOG', message: `Product Discovery skipped — no browser is started: ${uiSkipped}` });
+}
+for (const stage of PLAN) {
   if (cancellation.requested) await end('CANCELLED', stage);
   const h = history.stage(stage);
   emit({ type: 'STAGE_STARTED', stage: stage.key, stageLabel: stage.label, message: `${stage.label} started` });

@@ -26,6 +26,10 @@ before it is written.
   states its level (`UI` / `API`) and the workspace filters by it.
 - **API discovery** — the host reads the product's OpenAPI / Swagger documentation (JSON, YAML or
   a Swagger UI page); an API-level test may only use an operation that document declares.
+- **Live API validation** — the host then calls the documented API with real HTTP requests and
+  compares status, content type, headers and response schema with the documentation. Read-only by
+  default; anything state-changing runs only when a person approves that operation. Every operation
+  is marked `DOCUMENTED`, `OBSERVED` or `VALIDATED`, and mismatches feed defect analysis.
 - **Automation prioritization** — AUTOMATION / MANUAL, priority and strategy for every case.
 - **Defect analysis** — evidence-grounded findings and one bug report per defect.
 - **Deterministic validation** — schema (Ajv, Draft 2020-12) and semantic checks: evidence
@@ -114,7 +118,7 @@ A run is started in one of three modes — from **New Run**, or with `--coverage
 |---|---|---|
 | **Automatic** (default) | each case at the level that fits it, `UI` or `API`; the same scenario is not written at both | optional — without it, or if it cannot be read, every case is `UI` |
 | **UI only** | all `UI` | not read |
-| **API only** | all `API`; only requirements the documentation supports owe a case | required — without it the run stops before anything is archived |
+| **API only** | all `API`; only requirements the documentation supports owe a case. **No browser**: Product Discovery is skipped | required — without it the run stops before anything is archived |
 
 The **API documentation URL** (`--api-docs` / `QA_API_DOCS_URL`, or the field on New Run) may
 point at an OpenAPI 3 or Swagger 2 document in JSON or YAML, or at a Swagger UI page — the host
@@ -125,18 +129,64 @@ part, and no agent can write that file.
 
 The mode and the documentation then travel through every stage:
 
-- **Discovery** still explores the interface in every mode — it is what defect analysis is judged
-  against — and is told the run's mode.
+- **Discovery** explores the interface in Automatic and UI only. In API only there is no browser
+  stage at all: the host writes an empty `discovered-behavior.json` that says so, and the run
+  starts at the Behavior Analyst.
 - **Behavior Analyst** may cite a documented operation as evidence, beside or instead of an
   observed behavior.
 - **Test Designer** sets `testLevel` on every case. An `API` case must rest on a documented
   operation; a `UI` case on something observed in the interface.
 - **Automation Prioritizer** picks a strategy that agrees with the level.
 
+- **Defect Analyzer** may rest a finding on a real API response, against the documented contract.
+
 All of it is checked by the host, not asked of the model — see
 [VALIDATION — Coverage modes](docs/VALIDATION.md#coverage-modes-and-test-levels). The chosen mode
 is written to `run-config.json` beside the artifacts, recorded in the run history and shown on the
 run; a workspace from before coverage modes behaves as Automatic with no API documentation.
+
+### Live API validation
+
+With API documentation in hand, host code calls the API itself (`src/lib/api-validation.ts`) before
+any agent runs, and writes `api-validation.json`: every real request and response (secrets
+redacted), each check, and each mismatch. It is on by default in Automatic and API only
+(`--api-live off`, or the switch on New Run, turns it off) and is skipped in UI only.
+
+| Evidence | Means |
+|---|---|
+| `DOCUMENTED` | declared by the documentation; never called, so nothing is known about what it actually does |
+| `OBSERVED` | called: a real response was captured, but it contradicted the documentation or could not be checked against it |
+| `VALIDATED` | called **and** checked: a real response matched the documented status, content type, schema and required headers — and no response of that operation contradicted the documentation |
+
+A mismatch is a **contract violation** when the response contradicts something the documentation
+states (an undeclared success status, a body that breaks its schema, an undeclared content type, a
+secured operation answering without credentials, a body without its required fields accepted) and a
+**potential issue** when a person has to look (a 5xx, a refusal the documentation merely does not
+list, a timeout). The Defect Analyzer must account for every contract violation, and cannot call a
+potential issue a confirmed defect.
+
+**What may be sent** is decided by policy, not by a model:
+
+- **Read-only by default** — `GET`, `HEAD`, `OPTIONS`. A `GET` whose path or operation id names an
+  action (`/logout`, `resetPassword`) is not treated as safe.
+- **State-changing only when approved** — `POST`, `PUT`, `PATCH`, `DELETE` and action-named `GET`s
+  run only for the operations a person approved for that run (New Run → *Preview API and
+  approvals*, or `--api-approve "POST /notes"`). `PUT`, `PATCH` and `DELETE` only ever touch a
+  resource the run itself created through an approved `POST`.
+- **Only allowed hosts** — the documentation's host, the target's, and `QA_API_ALLOWED_HOSTS`.
+  Link-local and cloud-metadata addresses are refused always; redirects are never followed.
+- **Never in production** — with `QA_API_ENVIRONMENT=production` nothing state-changing is sent,
+  approved or not.
+- **Credentials from host configuration only** (`QA_API_AUTH_*`), sent only to the API's own
+  origin and never written to an artifact, an event or the page.
+- **Bounded** — a request budget, a pause between requests, a timeout each; a `429` or a dead
+  connection stops the probing.
+
+Whatever cannot be called is skipped with a reason and stays `DOCUMENTED`; an unreachable API or
+a disallowed host means the run continues on the documentation alone. Results are on the
+workspace's **API** page and in each run's archive. Details:
+[RUNBOOK — Live API validation](docs/RUNBOOK.md#live-api-validation) ·
+[VALIDATION — Live API validation](docs/VALIDATION.md#live-api-validation-executed-and-checked-or-not-validated).
 
 ## QA Review Workspace
 
@@ -275,8 +325,10 @@ instance (`LANGFUSE_BASE_URL`). Prompts and tool I/O are sent only with
 
 **New Run** starts Phase 1 with choices the host offers — target (`TARGET_URL`, `QA_UI_TARGETS`),
 model (`QA_MODEL`, `QA_UI_MODELS`), test coverage (Automatic, UI only, API only), fresh browser —
-plus an optional API documentation URL for Automatic and API only, and shows the helper origins
-and Langfuse state read-only. The browser sends a typed request; the **RunController** validates it, checks the run
+plus, for Automatic and API only, an optional API documentation URL, the live-validation switch,
+an optional API base URL, and per-operation approval of state-changing requests after a preview of
+the documentation. It shows the helper origins and Langfuse state read-only, and whether API
+credentials are configured — never what they are. The browser sends a typed request; the **RunController** validates it, checks the run
 lock, and forks **the same runner as `npm run qa:manual`** with argv and environment it builds
 itself. A second run is refused while one is active, from the workspace or the terminal.
 
@@ -325,7 +377,7 @@ this project).
 | Approval | `phase1-approval.json` — written by host code only |
 | Advisory | `test-cases-review.json` |
 | Host-written discovery evidence | `discovery-surface.json` · `discovery-observations.json` · `discovery-evidence.json` |
-| Host-written run configuration and API discovery | `run-config.json` (coverage mode, API documentation URL) · `api-discovery.json` (what the API documentation declares) |
+| Host-written run configuration and API evidence | `run-config.json` (coverage mode, API documentation URL, live-validation choices) · `api-discovery.json` (what the API documentation declares) · `api-validation.json` (what the API really answered, and how that compares) |
 | **Review workflow state** — never hashed or approved | `reviews/requests/REQ-NNNN.json` · `reviews/proposals/PRP-NNNN.json` · `reviews/bugs/BUG-NNN.json` |
 | Freshness | `phase1-dependencies.json` · `phase1-refresh.json` |
 | Phase 2 | `repo-analysis.json` · `automation-project-contract.json` |

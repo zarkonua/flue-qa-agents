@@ -80,6 +80,19 @@ pre.artifact { background: var(--panel); border: 1px solid var(--line); border-r
 .badge.level-api { color: var(--accent); border-color: var(--accent); }
 .badge.level-ui { color: var(--muted); }
 
+/* API evidence */
+.badge.evidence-validated { color: var(--ok); border-color: var(--ok); }
+.badge.evidence-observed { color: var(--warn); border-color: var(--warn); }
+.badge.evidence-documented { color: var(--muted); border-style: dashed; }
+td .badge + .badge { margin-left: 4px; }
+.probe { border-left: 3px solid var(--line); padding: 2px 10px; margin: 8px 0; }
+.probe p { margin: 4px 0; }
+.checks { list-style: none; padding: 0; margin: 4px 0; font-size: 13px; }
+.checks .check-pass { color: var(--ok); } .checks .check-fail { color: var(--bad); } .checks .check-not_checked { color: var(--muted); }
+tr.endpoint-detail td { background: var(--bg); }
+.api-plan { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; display: grid; gap: 6px; }
+.api-plan table { font-size: 13px; }
+
 /* Run control */
 .new-run { display: grid; gap: 12px; max-width: 640px; }
 .new-run fieldset.coverage-mode { display: grid; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 0; }

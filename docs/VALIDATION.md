@@ -252,6 +252,59 @@ start.
 therefore validates exactly as it did, and a strategy chosen for a case that states no level is
 never contradicted by a default it did not see.
 
+## Live API validation: executed and checked, or not validated
+
+`src/lib/api-validation.ts`, host code with no model in it, calls the documented API and writes
+`api-validation.json`. Tested in `test/api-validation.test.ts` against a real HTTP server.
+
+**Evidence classes are assigned by the host.** `DOCUMENTED` — declared, never called. `OBSERVED` —
+a real response was captured. `VALIDATED` — a real response was captured, its status is one the
+documentation declares, it is the kind of response the probe set out to check, and no check
+failed; and no response of that operation contradicted the documentation. Nothing becomes
+`VALIDATED` without a request that was actually sent. Each API-level test case carries
+`apiEvidence`, set by the host on every write from the operations it rests on — a model's own
+value is overwritten, so a documentation-only scenario is marked as one whether or not anyone
+says so.
+
+**Checks per response:** the status against the documented responses (exact code, `2XX` range,
+`default`); the content type against the documented media types; a JSON body against the documented
+schema (Ajv, with `$ref`s inlined and `nullable` / OpenAPI 3.0 bounds translated); response headers
+the documentation marks required.
+
+**Findings are classified by the host, and a model cannot upgrade them.**
+
+| Finding | Classification |
+|---|---|
+| success status the documentation does not declare · body that breaks its schema or is not valid JSON · undeclared content type · missing required header · a secured operation answering without credentials · a body without its required fields accepted | `CONTRACT_VIOLATION` |
+| any 5xx · a refusal the documentation does not list (typically an undocumented 401) · an unexpected rejection of a generated request · a timeout | `POTENTIAL_ISSUE` |
+
+In defect analysis a documented operation is a `CONFIRMED` behavior, an executed probe an
+`OBSERVED` one. Every probe with a contract violation must appear in a finding
+(`UNANALYZED_SUSPECTED_ISSUE`), and a finding resting only on probes the host called potential
+issues may not be `CONFIRMED_DEFECT` (`UNSUPPORTED_EXPECTED`). What a probe really returned may be
+stated by a requirement or a test case citing that operation; an operation that was not called
+has only its documentation.
+
+**What may be sent** is policy, enforced before a request is built:
+
+- only to the resolved base URL, whose host is the documentation's, the target's, or one in
+  `QA_API_ALLOWED_HOSTS`; never to a link-local, metadata or unspecified address, including a
+  name that resolves to one; redirects are recorded as the response and never followed;
+- `GET` / `HEAD` / `OPTIONS` by default — but not one whose path or operation id names an action;
+- anything else only when that exact operation (`METHOD /path`) was approved for the run and the
+  documentation declares it; `PUT`, `PATCH` and `DELETE` only against a resource the run itself
+  created; nothing state-changing at all in a production environment;
+- within a request budget, with a timeout each, stopping on a `429` or repeated connection failures.
+
+**Nothing sensitive is stored.** Credentials come from host configuration, are attached only to
+requests for the base URL's origin, and are replaced in the stored request. Response bodies are
+truncated and stored with the value of every secret-named field, and anything shaped like a JWT,
+replaced; a cookie is recorded only as present.
+
+**Unavailable is a state.** A disallowed host, an unreachable API, a failed sign-in or missing
+parameters never fail the run: the artifact says `UNAVAILABLE` / `PARTIAL` or names the skip
+reason per operation, and everything not called stays `DOCUMENTED`.
+
 ## Automation strategy: only capabilities that were observed
 
 Prioritization records four separate judgements, and none may be copied from another: test
@@ -341,9 +394,10 @@ Enforced by input schemas and fixed roots, before any code that could write runs
 
 - **One artifact per agent.** `write_qa_artifact` is built per agent from a picklist
   (`writeQaArtifactToolFor`); any other name is rejected at the tool's input schema. Host-only
-  files — `discovery-evidence`, `api-discovery`, `run-config`, `phase1-approval.json`,
-  `automation-project-contract`, review workflow state — are in no agent's picklist. `api-discovery`
-  is readable by the agents; `run-config` is not even that.
+  files — `discovery-evidence`, `api-discovery`, `api-validation`, `run-config`,
+  `phase1-approval.json`, `automation-project-contract`, review workflow state — are in no agent's
+  picklist. `api-discovery` and `api-validation` are readable by the agents; `run-config` is not
+  even that. In API-only mode `discovered-behavior` is written by the host, empty.
 - **No paths from a model.** Every root (`QA_ARTIFACT_ROOT`, `QA_TARGET_REPO_ROOT`,
   `QA_MCP_OUTPUT_ROOT`, test write/result roots) comes from host configuration, must be absolute
   and outside this project, and is checked at load time (`src/lib/trusted-roots.ts`). Repo tools
@@ -398,15 +452,20 @@ covered by a test. Errors never return a stack or a path.
 `src/run-control/` and `src/ui-server/run-control-api.ts` (tested in `test/run-control.test.ts`):
 
 - `POST /api/runs` takes a strict object — pipeline, target, model, fresh browser, and optionally
-  coverage mode and API documentation URL; unknown keys (a command, an env, a path) are refused.
+  coverage mode, API documentation URL, the live-validation switch, an API base URL and a list of
+  approved operations; unknown keys (a command, an env, a path) are refused. An approval must match
+  `METHOD /path`, is refused in a production environment, and is honoured by the runner only if the
+  documentation declares that operation. API credentials are never part of a request: they exist
+  only in the host's environment, and the page is told whether they are configured.
   Each picked value must be one the host configured; the runner receives the host's value, not the
   browser's string. The API documentation URL is the one typed value: it must be an http(s) URL
   without embedded credentials, at most 500 characters, is dropped in UI-only mode, and is only
   ever fetched by host code with GET. It is stored and shown without its query string.
 - The RunController forks one fixed script with fixed flags (`--run-id` must match the run-id
-  pattern, which the runner checks again) and sets exactly five environment keys: `TARGET_URL`,
-  `QA_MODEL`, `QA_FRESH_BROWSER`, `QA_COVERAGE_MODE`, `QA_API_DOCS_URL` (always set — empty when
-  none was chosen — so the server's own environment cannot supply one).
+  pattern, which the runner checks again) and sets exactly eight environment keys: `TARGET_URL`,
+  `QA_MODEL`, `QA_FRESH_BROWSER`, `QA_COVERAGE_MODE`, `QA_API_DOCS_URL`, `QA_API_LIVE_VALIDATION`,
+  `QA_API_BASE_URL`, `QA_API_APPROVED_OPERATIONS` (always set — empty when nothing was chosen — so
+  the server's own environment can never supply a documentation URL or an approval).
 - Cancel takes a run id only. It reaches the process this controller started (IPC, then its own
   process group) and the browser server that run reported owning — never a pid from a request.
 - The run lock is the only concurrency control: a start is refused while any live process holds it.

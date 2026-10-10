@@ -40,6 +40,7 @@ import {
   validateTestCases,
   validateAutomationPrioritization,
   observedCapabilities,
+  stampApiEvidence,
   validateTestCasesReview,
   validateRepoAnalysis,
   type AutomationPrioritization,
@@ -52,7 +53,8 @@ import {
   type TestCases,
 } from './semantic-validate.ts';
 import type { ApiDiscovery } from './api-discovery.ts';
-import { DEFAULT_COVERAGE_MODE, parseCoverageMode, type RunConfigRecord } from './coverage-mode.ts';
+import { apiEvidenceBehaviors, type ApiValidation } from './api-validation.ts';
+import { DEFAULT_COVERAGE_MODE, parseCoverageMode, usesApiDocs, type RunConfigRecord } from './coverage-mode.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCHEMAS_DIR = resolve(here, '..', '..', 'schemas');
@@ -131,6 +133,9 @@ export type QaArtifactName =
   // Host-written only. What the product's API documentation declares, read by
   // `src/lib/api-discovery.ts`. Readable by the agents, writable by none.
   | 'api-discovery'
+  // Host-written only. What the API actually did when the host called it, and
+  // how that compares with the documentation. See `src/lib/api-validation.ts`.
+  | 'api-validation'
   // Host-written only, and not readable by agents either: the run's coverage
   // mode. See `src/lib/coverage-mode.ts`.
   | 'run-config';
@@ -153,6 +158,7 @@ const ARTIFACTS: Record<QaArtifactName, ArtifactDef> = {
   'discovery-evidence': { fileName: 'discovery-evidence.json', schemaFile: 'discovery-evidence.schema.json' },
   'automation-project-contract': { fileName: 'automation-project-contract.json', schemaFile: 'automation-project-contract.schema.json' },
   'api-discovery': { fileName: 'api-discovery.json', schemaFile: 'api-discovery.schema.json' },
+  'api-validation': { fileName: 'api-validation.json', schemaFile: 'api-validation.schema.json' },
   'run-config': { fileName: 'run-config.json', schemaFile: 'run-config.schema.json' },
 };
 
@@ -255,7 +261,17 @@ export function readCoverageContext(): CoverageContext {
   } catch {
     api = undefined;
   }
-  return { mode, api };
+  // Live results only count beside the documentation they were checked against.
+  let validation: ApiValidation | undefined;
+  if (api !== undefined && usesApiDocs(mode)) {
+    try {
+      const raw = readQaArtifact('api-validation');
+      if (raw !== undefined && schemaLines(ARTIFACTS['api-validation'].schemaFile, raw).length === 0) validation = raw as ApiValidation;
+    } catch {
+      validation = undefined;
+    }
+  }
+  return { mode, api, ...(validation ? { validation } : {}) };
 }
 
 /** Thrown when an artifact is schema-valid but unsupported by upstream evidence. */
@@ -478,12 +494,22 @@ function defectContext(): DefectContext | string {
   if (discovery === undefined || requirements === undefined) {
     return 'discovered-behavior and requirements-analysis must exist before defect analysis. Stop and report this.';
   }
+  // The API's documentation and what the host saw when it called it join what
+  // the browser observed, in the one shape the defect rules judge: a documented
+  // operation is a CONFIRMED behavior, an executed probe an OBSERVED one.
+  const coverage = readCoverageContext();
+  const apiEvidence = apiEvidenceBehaviors(usesApiDocs(coverage.mode) ? coverage.api : undefined, coverage.validation);
   return {
-    discovery,
+    discovery: apiEvidence.behaviors.length === 0 ? discovery : {
+      ...discovery,
+      areas: [...discovery.areas, ...(apiEvidence.area ? [apiEvidence.area] : [])],
+      behaviors: [...discovery.behaviors, ...apiEvidence.behaviors],
+    },
     requirements,
     testCases: readQaArtifact('test-cases') as TestCases | undefined,
     // The origins this run was allowed to treat as test infrastructure.
     auxiliaryOrigins: readSurface()?.auxiliaryOrigins ?? auxiliaryOrigins(),
+    coverage,
   };
 }
 
@@ -515,6 +541,17 @@ function writeDefectAnalysis(data: DefectAnalysis): DefectAnalysis {
   const keep = new Set(bugs.map((b) => b.id));
   for (const id of listBugReportIds()) if (!keep.has(id)) rmSync(bugReportPath(id));
   return normalised;
+}
+
+/** `apiEvidence` on every case, recomputed from the requirements and the live results on disk. */
+function withApiEvidence(suite: TestCases): TestCases {
+  let requirements: RequirementsAnalysis | undefined;
+  try {
+    requirements = readQaArtifact('requirements-analysis') as RequirementsAnalysis | undefined;
+  } catch {
+    requirements = undefined;
+  }
+  return stampApiEvidence(suite, requirements, readCoverageContext());
 }
 
 /** Redaction applied to everything persisted: one-time URL values and opaque ids. */
@@ -569,7 +606,7 @@ function gateDiscoveryFinalization(data: unknown): DiscoveryCompletionResult | u
  * approval gate still lists it. Every other finding refuses the write.
  */
 export function replaceTestCases(candidate: TestCases, { allowCodes = [] }: { allowCodes?: string[] } = {}): void {
-  const data = scrub(candidate);
+  const data = withApiEvidence(scrub(candidate));
   const schema = schemaLines(ARTIFACTS['test-cases'].schemaFile, data);
   if (schema.length > 0) throw new Error(`"test-cases" does not match test-cases.schema.json:\n${schema.map((e) => `  - ${e}`).join('\n')}`);
   const semantic = semanticErrorsFor('test-cases', data).filter((e) => !allowCodes.includes(e.code));
@@ -594,6 +631,9 @@ export function writeQaArtifact(name: QaArtifactName, rawData: unknown): WriteRe
   let data = scrub(rawData);
 
   const errors = schemaLines(def.schemaFile, data);
+  // Host-owned: which API-level cases rest on a response the host actually saw. Set after the
+  // schema check, so a malformed suite is reported as the model wrote it.
+  if (name === 'test-cases' && errors.length === 0) data = withApiEvidence(data as TestCases);
   if (errors.length > 0) {
     throw new Error(`"${name}" does not match ${def.schemaFile}:\n${errors.map((e) => `  - ${e}`).join('\n')}`);
   }

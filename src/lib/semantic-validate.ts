@@ -20,6 +20,9 @@
 // `redaction.ts` is pure too, so importing it keeps this module free of I/O.
 import { locationIdentity } from './redaction.ts';
 import { apiEvidenceTexts, describeEndpoint, hasApi, pathMatchesTemplate, type ApiDiscovery, type ApiEndpoint } from './api-discovery.ts';
+import {
+  evidenceClassOf, strongestEvidence, validationEvidenceTexts, type ApiValidation, type EvidenceClass,
+} from './api-validation.ts';
 import { allowedTestLevels, DEFAULT_COVERAGE_MODE, testLevelOf, usesApiDocs, type CoverageMode, type TestLevel } from './coverage-mode.ts';
 
 export type SemanticErrorCode =
@@ -181,6 +184,8 @@ export interface TestCase {
   automationReason: string;
   /** At which level the case is exercised. Absent means UI — see `testLevelOf`. */
   testLevel?: TestLevel;
+  /** Host-owned: how real the API evidence behind an API-level case is. See `apiEvidenceOf`. */
+  apiEvidence?: EvidenceClass;
   [key: string]: unknown;
 }
 
@@ -193,6 +198,8 @@ export interface TestCase {
 export interface CoverageContext {
   mode: CoverageMode;
   api?: ApiDiscovery;
+  /** What the host observed when it called the API, when it did. Adds observed facts; never replaces the documentation. */
+  validation?: ApiValidation;
 }
 
 /** The documented operations a run may cite as evidence, by id. Empty in UI_ONLY and when there is no documentation. */
@@ -517,7 +524,11 @@ export function buildCorpus(
 ): Corpus {
   // Documented API operations are evidence too, when this run read them.
   const operations = [...apiOperations(context).values()];
-  const texts: string[] = [...extra, ...(operations.length > 0 ? apiEvidenceTexts(context!.api) : [])];
+  const texts: string[] = [
+    ...extra,
+    // ...and so is what the host saw when it called them: a status the API really returned may be stated.
+    ...(operations.length > 0 ? [...apiEvidenceTexts(context!.api), ...validationEvidenceTexts(context!.validation)] : []),
+  ];
   const routes = new Set<string>();
 
   if (discovery) {
@@ -1464,6 +1475,49 @@ export function testableRequirements(requirements: RequirementsAnalysis, context
   return [...(requirements.acceptancePoints ?? []), ...(requirements.businessRules ?? [])].filter(
     (r) => r?.testable !== false && inCoverageScope(r, context),
   );
+}
+
+/** The documented operations a test case rests on: the ones it cites, and the ones its cited requirements cite. */
+export function citedOperations(testCase: TestCase, requirements: RequirementsAnalysis | undefined, context: CoverageContext | undefined): string[] {
+  const operations = apiOperations(context);
+  if (operations.size === 0) return [];
+  const byId = new Map([...(requirements?.acceptancePoints ?? []), ...(requirements?.businessRules ?? [])].map((r) => [r.id, r]));
+  const out = new Set<string>();
+  for (const id of testCase.evidenceIds ?? []) {
+    if (operations.has(id)) out.add(id);
+    for (const upstream of byId.get(id)?.evidenceIds ?? []) if (operations.has(upstream)) out.add(upstream);
+  }
+  return [...out];
+}
+
+/**
+ * What an API-level case's evidence amounts to, derived by the host:
+ *
+ *   VALIDATED   an operation it rests on was called and matched its contract
+ *   OBSERVED    one was called and a real response captured, but not matched
+ *   DOCUMENTED  everything it rests on is declared and nothing was called
+ *
+ * Undefined for a UI-level case, or one that rests on no documented operation.
+ */
+export function apiEvidenceOf(testCase: TestCase, requirements: RequirementsAnalysis | undefined, context: CoverageContext | undefined): EvidenceClass | undefined {
+  if (testLevelOf(testCase) !== 'API') return undefined;
+  return strongestEvidence(citedOperations(testCase, requirements, context).map((id) => evidenceClassOf(context?.validation, id)));
+}
+
+/**
+ * The suite with `apiEvidence` set on every case by the host. Whatever a model
+ * wrote there is replaced: it is a fact about what the host executed, and a
+ * documentation-only scenario is marked as one whether or not anyone says so.
+ */
+export function stampApiEvidence(testCases: TestCases, requirements: RequirementsAnalysis | undefined, context: CoverageContext | undefined): TestCases {
+  return {
+    ...testCases,
+    testCases: (testCases.testCases ?? []).map((tc) => {
+      const { apiEvidence: _replaced, ...rest } = tc;
+      const evidence = apiEvidenceOf(tc, requirements, context);
+      return (evidence ? { ...rest, apiEvidence: evidence } : rest) as TestCase;
+    }),
+  };
 }
 
 /**

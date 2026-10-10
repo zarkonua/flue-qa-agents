@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../api/client.ts';
 import { STATUS_LABEL } from '../lib/review-state.ts';
 import { levelCounts, levelOf, matchesLevel, type LevelFilter } from '../lib/coverage.ts';
+import { EVIDENCE_HINT, EVIDENCE_LABEL } from '../lib/api-validation.ts';
 
 export function TestCasesPage() {
   const navigate = useNavigate();
@@ -82,7 +83,10 @@ export function TestCasesPage() {
             <tr key={r.id} data-testid={`case-row-${r.id}`}>
               <td><Link to={`/test-cases/${encodeURIComponent(r.id)}`}>{r.id}</Link></td>
               <td>{r.title}</td>
-              <td><span className={`badge level-${levelOf(r).toLowerCase()}`} data-testid={`case-level-${r.id}`}>{levelOf(r)}</span></td>
+              <td>
+                <span className={`badge level-${levelOf(r).toLowerCase()}`} data-testid={`case-level-${r.id}`}>{levelOf(r)}</span>
+                {r.apiEvidence && <span className={`badge evidence-${r.apiEvidence.toLowerCase()}`} title={EVIDENCE_HINT[r.apiEvidence]} data-testid={`case-evidence-${r.id}`}>{r.apiEvidence === 'DOCUMENTED' ? 'documentation only' : EVIDENCE_LABEL[r.apiEvidence].toLowerCase()}</span>}
+              </td>
               <td>{r.priority}</td>
               <td>{r.types.join(', ')}</td>
               <td>{r.covers.join(', ')}</td>

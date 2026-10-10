@@ -37,8 +37,9 @@ import { approvePhase1, inspectPhase1 } from '../lib/phase1-gate.ts';
 import { buildReviewModel } from '../lib/review-view.ts';
 import { runRoutes, RunsApiError, type HistoryProvider } from './runs-api.ts';
 import { COVERAGE_MODE_LABEL, TEST_LEVELS, testLevelOf } from '../lib/coverage-mode.ts';
-import { apiDiscoverySummary, describeEndpoint } from '../lib/api-discovery.ts';
-import { apiOperations } from '../lib/semantic-validate.ts';
+import { apiDiscoverySummary, describeEndpoint, type ApiDiscovery } from '../lib/api-discovery.ts';
+import { apiEvidenceBehaviors, apiValidationSummary, type ApiValidation } from '../lib/api-validation.ts';
+import { apiEvidenceOf, apiOperations, citedOperations } from '../lib/semantic-validate.ts';
 import { readCoverageContext, readRunConfig } from '../lib/qa-artifacts.ts';
 import { runControlRoutes, serveRunEvents } from './run-control-api.ts';
 import type { RunController } from '../run-control/run-controller.ts';
@@ -276,6 +277,60 @@ function coverageView() {
     recorded: config !== undefined,
     apiDocsUrl: config?.apiDocsUrl ?? null,
     api: { status: api.status, endpoints: api.endpoints, reason: api.reason ?? null },
+    // Whether the API was actually called, and what came of it — numbers only.
+    live: apiValidationSummary(context.validation ?? read<ApiValidation>('api-validation')),
+  };
+}
+
+/**
+ * The API page: every documented operation with what the host did about it —
+ * called or not, and why not — its real requests and responses, the mismatches,
+ * and which test cases rest on it. Read-only; the artifacts are host-written.
+ */
+function apiView(ws: Workspace) {
+  const config = readRunConfig();
+  const discovery = read<ApiDiscovery>('api-discovery');
+  const validation = read<ApiValidation>('api-validation');
+  const context = readCoverageContext();
+  const requirements = read<RequirementsAnalysis>('requirements-analysis');
+  const live = new Map((validation?.endpoints ?? []).map((e) => [e.id, e]));
+  const probes = new Map((validation?.probes ?? []).map((p) => [p.id, p]));
+  const findings = new Map((validation?.findings ?? []).map((f) => [f.id, f]));
+  // Which test cases rest on each operation — the seed of a coverage matrix.
+  const casesByOperation = new Map<string, { id: string; title: string; testLevel: string }[]>();
+  for (const tc of ws.readTestCases()?.testCases ?? []) {
+    for (const id of citedOperations(tc, requirements, context)) {
+      casesByOperation.set(id, [...(casesByOperation.get(id) ?? []), { id: tc.id, title: tc.title, testLevel: testLevelOf(tc) }]);
+    }
+  }
+  return {
+    coverageMode: context.mode,
+    apiDocsUrl: config?.apiDocsUrl ?? null,
+    documentation: discovery
+      ? { status: discovery.status, reason: discovery.reason ?? null, title: discovery.title ?? null, version: discovery.version ?? null, format: discovery.source?.format ?? null, authentication: discovery.authentication }
+      : null,
+    validation: validation
+      ? {
+        status: validation.status, reason: validation.reason ?? null, baseUrl: validation.baseUrl ?? null, baseUrlSource: validation.baseUrlSource ?? null,
+        environment: validation.environment ?? null, startedAt: validation.startedAt ?? null, finishedAt: validation.finishedAt ?? null,
+        authentication: validation.authentication, policy: validation.policy, summary: validation.summary,
+      }
+      : null,
+    endpoints: (discovery?.endpoints ?? []).map((e) => {
+      const l = live.get(e.id);
+      return {
+        id: e.id, method: e.method, path: e.path, summary: e.summary ?? null, secured: e.security.length > 0, deprecated: e.deprecated === true,
+        documentedStatuses: e.responses.map((r) => r.status),
+        // DOCUMENTED unless the host really called it: nothing is shown as validated that was not executed and checked.
+        evidence: l?.evidence ?? 'DOCUMENTED', execution: l?.execution ?? 'SKIPPED', safety: l?.safety ?? null,
+        skipReason: l?.skipReason ?? (validation ? null : 'NOT_ATTEMPTED'), skipDetail: l?.skipDetail ?? null,
+        validated: l?.validated ?? [], observed: l?.observed ?? [],
+        probes: (l?.probes ?? []).map((id) => probes.get(id)).filter((p) => p !== undefined),
+        findings: (l?.findings ?? []).map((id) => findings.get(id)).filter((f) => f !== undefined),
+        testCases: casesByOperation.get(e.id) ?? [],
+      };
+    }),
+    findings: validation?.findings ?? [],
   };
 }
 
@@ -380,11 +435,15 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
       }];
     }],
 
+    ['GET', /^\/api\/api-validation$/, async () => [200, apiView(ws)]],
+
     ['GET', /^\/api\/test-cases$/, async () => {
       const suite = ws.readTestCases();
       const p = read<AutomationPrioritization>('automation-prioritization');
       const allBugs = bugs(ws);
       const requests = await store.listRequests();
+      const requirementsNow = read<RequirementsAnalysis>('requirements-analysis');
+      const coverageNow = readCoverageContext();
       const rows = (suite?.testCases ?? []).map((tc) => {
         const prio = p?.cases.find((c) => c.testCaseId === tc.id);
         const open = requests.filter((r) => r.targetTestCaseId === tc.id && OPEN_STATUSES.has(r.status)).at(-1);
@@ -392,6 +451,8 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
           id: tc.id, title: tc.title, priority: tc.priority, types: tc.types ?? [], covers: tc.covers ?? [],
           // UI or API. A case that states none is UI — see testLevelOf().
           testLevel: testLevelOf(tc),
+          // Host-derived: how real the API evidence behind an API-level case is.
+          apiEvidence: apiEvidenceOf(tc, requirementsNow, coverageNow) ?? null,
           evidenceIds: tc.evidenceIds ?? [], executionMode: prio?.executionMode, automationPriority: prio?.automationPriority,
           automationStrategy: prio?.automationStrategy ?? null, strategyReason: prio?.strategyReason ?? null,
           pendingReview: open ? { id: open.id, status: open.status, operation: open.operation } : null,
@@ -447,7 +508,9 @@ export async function createUiServer(options: UiServerOptions): Promise<Server> 
       const suite = new Set((ws.readTestCases()?.testCases ?? []).map((tc) => tc.id));
       const discovery = read<DiscoveredBehavior>('discovered-behavior');
       const requirements = read<RequirementsAnalysis>('requirements-analysis');
-      const behaviors = new Map((discovery?.behaviors ?? []).map((b) => [b.id, b.statement]));
+      // A bug may rest on what the browser observed, or on a request the host sent (PRB-n) and the documentation (API-n).
+      const coverage = readCoverageContext();
+      const behaviors = new Map([...(discovery?.behaviors ?? []), ...apiEvidenceBehaviors(coverage.api, coverage.validation).behaviors].map((b) => [b.id, b.statement]));
       const statements = new Map([...(requirements?.acceptancePoints ?? []), ...(requirements?.businessRules ?? [])].map((r) => [r.id, r.statement]));
       const finding = read<DefectAnalysis>('defect-analysis')?.findings.find((f) => f.id === bug.origin.findingId);
       return [200, {

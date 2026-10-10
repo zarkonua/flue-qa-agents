@@ -24,10 +24,52 @@ const enc = encodeURIComponent;
 
 export type CoverageMode = 'AUTOMATIC' | 'UI_ONLY' | 'API_ONLY';
 export type TestLevel = 'UI' | 'API';
+export type EvidenceClass = 'DOCUMENTED' | 'OBSERVED' | 'VALIDATED';
+export type OperationSafety = 'SAFE' | 'UNSAFE_GET' | 'STATE_CHANGING' | 'DESTRUCTIVE';
+export interface ApiCheckView { name: string; outcome: 'PASS' | 'FAIL' | 'NOT_CHECKED'; detail?: string }
+export interface ApiProbeView {
+  id: string; endpointId: string; kind: string;
+  request: { method: string; url: string; headers: Record<string, string>; body?: string };
+  response?: { status: number; contentType?: string; headers: Record<string, string>; bodySample?: string; bodyTruncated?: boolean; durationMs: number };
+  error?: { code: string; message: string };
+  checks: ApiCheckView[]; evidence?: 'OBSERVED' | 'VALIDATED';
+}
+export interface ApiFindingView {
+  id: string; endpointId: string; probeId: string; classification: 'CONTRACT_VIOLATION' | 'POTENTIAL_ISSUE';
+  type: string; severity: 'HIGH' | 'MEDIUM' | 'LOW'; title: string; expected: string; actual: string;
+}
+export interface ApiEndpointView {
+  id: string; method: string; path: string; summary: string | null; secured: boolean; deprecated: boolean; documentedStatuses: string[];
+  evidence: EvidenceClass; execution: 'EXECUTED' | 'SKIPPED'; safety: OperationSafety | null; skipReason: string | null; skipDetail: string | null;
+  validated: string[]; observed: string[]; probes: ApiProbeView[]; findings: ApiFindingView[];
+  testCases: { id: string; title: string; testLevel: string }[];
+}
+export interface ApiValidationView {
+  coverageMode: CoverageMode; apiDocsUrl: string | null;
+  documentation: { status: string; reason: string | null; title: string | null; version: string | null; format: string | null } | null;
+  validation: {
+    status: 'COMPLETED' | 'PARTIAL' | 'UNAVAILABLE' | 'NOT_REQUESTED'; reason: string | null; baseUrl: string | null; baseUrlSource: string | null;
+    environment: string | null; startedAt: string | null; finishedAt: string | null;
+    authentication: { status: 'NOT_CONFIGURED' | 'READY' | 'FAILED'; method?: string; detail?: string };
+    policy: { allowedHosts: string[]; approvedOperations: string[]; maxRequests: number; requestsSent: number };
+    summary: Record<string, number>;
+  } | null;
+  endpoints: ApiEndpointView[]; findings: ApiFindingView[];
+}
+/** What live validation would call for some documentation — nothing has been sent. */
+export interface ApiPreview {
+  documentation: { status: string; reason: string | null; title: string | null; url: string | null; operations: number };
+  plan: {
+    baseUrl?: string; baseUrlSource?: string; allowed: boolean; reason?: string; allowedHosts: string[]; environment: string; protectedEnvironment: boolean;
+    operations: { id: string; method: string; path: string; summary?: string; safety: OperationSafety; secured: boolean; needsApproval: boolean }[];
+  } | null;
+  credentialsConfigured: boolean;
+}
 /** The suite's coverage mode and the API documentation read for it. */
 export interface CoverageModeView {
   mode: CoverageMode; label: string; recorded: boolean; apiDocsUrl: string | null;
   api: { status: 'AVAILABLE' | 'UNAVAILABLE' | 'NOT_REQUESTED'; endpoints: number; reason: string | null };
+  live?: { status: string; reason?: string; validated: number; observed: number; documented: number; contractViolations: number; potentialIssues: number; requests: number };
 }
 
 export interface Step { action: string; expected: string }
@@ -37,6 +79,8 @@ export interface TestCase {
   automationCandidate: boolean; automationReason: string; tags: string[];
   /** UI or API. Absent on a suite written before levels existed; read it through `levelOf`. */
   testLevel?: TestLevel;
+  /** Host-set on an API-level case: how real the API evidence behind it is. */
+  apiEvidence?: EvidenceClass;
 }
 export type RequestStatus = 'PENDING' | 'PROCESSING' | 'PROPOSAL_READY' | 'CHANGES_REQUESTED' | 'REJECTED' | 'APPLIED' | 'FAILED';
 export type Operation = 'update' | 'create' | 'delete';
@@ -93,6 +137,7 @@ export interface Overview {
 export interface CaseRow {
   id: string; title: string; priority: string; types: string[]; covers: string[]; evidenceIds: string[];
   testLevel: TestLevel;
+  apiEvidence: EvidenceClass | null;
   executionMode?: string; automationPriority?: string; automationStrategy: string | null; strategyReason: string | null; relatedBugIds: string[];
   pendingReview: { id: string; status: RequestStatus; operation: Operation } | null;
 }
@@ -150,6 +195,7 @@ export interface RunConfig {
   freshBrowser: { default: boolean };
   coverageModes: { id: CoverageMode; default: boolean }[];
   apiDocs: { default: string | null };
+  apiValidation: { default: boolean; baseUrl: string | null; environment: string; protectedEnvironment: boolean; credentialsConfigured: boolean; extraAllowedHosts: string[] };
   auxiliaryOrigins: string[];
   langfuse: { enabled: boolean; baseUrl?: string };
 }
@@ -158,7 +204,10 @@ export interface RunConfigResponse {
   activeRun: { runId: string; status: string; model: string; startedAt: string; cancelRequested: boolean } | null;
   lockHolder: { runId: string | null; model: string | null; command: string | null; startedAt: string | null } | null;
 }
-export interface StartRunRequest { pipeline: 'PHASE1_MANUAL'; target: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string }
+export interface StartRunRequest {
+  pipeline: 'PHASE1_MANUAL'; target: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string;
+  liveValidation?: boolean; apiBaseUrl?: string; approvedOperations?: string[];
+}
 
 /** One structured event from a run's event log — host-normalised and redacted. */
 export interface RunEvent {
@@ -208,6 +257,8 @@ export const api = {
   runs: (filters: RunFilters, limit: number, offset: number) => call<RunList>('GET', `/api/runs?${runQuery(filters, limit, offset)}`),
   run: (id: string) => call<RunDetail>('GET', `/api/runs/${enc(id)}`),
   runConfig: () => call<RunConfigResponse>('GET', '/api/run-config'),
+  apiValidation: () => call<ApiValidationView>('GET', '/api/api-validation'),
+  previewApiDocs: (apiDocsUrl: string, apiBaseUrl?: string) => call<ApiPreview>('POST', '/api/api-docs/preview', { apiDocsUrl, ...(apiBaseUrl ? { apiBaseUrl } : {}) }),
   startRun: (request: StartRunRequest) => call<{ runId: string; status: string }>('POST', '/api/runs', request),
   cancelRun: (id: string) => call<{ accepted: boolean }>('POST', `/api/runs/${enc(id)}/cancel`, {}),
   /** The URL of a run's event stream; the page opens it with EventSource. */

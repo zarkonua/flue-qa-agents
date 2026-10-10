@@ -60,6 +60,17 @@ required authentication.
   excluded, exactly as below.
 - When the message says no API documentation is available, or the run is UI only, cite
   behaviors only — an API id will be rejected.
+- When the message says the host also CALLED the API, read "api-validation" as well. Each
+  operation there has \`evidence\`: \`VALIDATED\` (called, and the response matched the
+  documentation), \`OBSERVED\` (called; a real response was captured but did not match, or
+  could not be checked), or \`DOCUMENTED\` (never called). You may state what a probe
+  actually returned for an operation you cite — a status the API really answered with. For a
+  \`DOCUMENTED\` operation you know only what the documentation declares: write the
+  requirement as what is documented, and never as observed behavior. A mismatch the host
+  recorded (APF-n) is not a requirement — where it leaves the expectation unclear, raise an
+  openQuestion.
+- In an API-only run the "discovered-behavior" artifact is empty by design: nothing was
+  explored in a browser, so every requirement rests on documented operations.
 
 The statement must say what the cited behavior says, phrased as expected behavior. It may
 not describe a different capability. If a behavior is about an error message, an acceptance

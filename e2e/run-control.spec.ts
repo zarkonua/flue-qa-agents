@@ -11,6 +11,8 @@ test.describe.configure({ mode: 'serial' });
 test.use({ baseURL: 'http://127.0.0.1:4557' });
 
 const FIXTURES = join(import.meta.dirname, '..', 'test', 'fixtures', 'phase1-approved');
+/** The fixture API e2e/serve-run-control-fixture.ts starts: real HTTP, its own OpenAPI document, one deliberate schema fault. */
+const FAKE_API = 'http://127.0.0.1:4559';
 const fixtureCount = (file: string, key: string) => (JSON.parse(readFileSync(join(FIXTURES, file), 'utf8'))[key] as unknown[]).length;
 
 async function startRun(page: Page, model: string, fresh = false) {
@@ -149,7 +151,7 @@ test('a run keeps the coverage mode it was started in: shown on the run and in t
   await page.goto('/runs/new');
   await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
   await page.getByTestId('coverage-mode').getByRole('radio', { name: /API only/ }).check();
-  await page.getByLabel('API documentation URL').fill('http://localhost:4444/api/doc?api_key=s3cr3t');
+  await page.getByLabel('API documentation URL').fill(`${FAKE_API}/docs?api_key=s3cr3t`);
   await page.getByRole('button', { name: 'Start Phase 1' }).click();
   await expect(page).toHaveURL(/\/runs\/\d{4}-\d{2}-\d{2}T[\d-]+Z\/live$/);
   const runId = /\/runs\/([^/]+)\/live$/.exec(page.url())![1];
@@ -157,9 +159,110 @@ test('a run keeps the coverage mode it was started in: shown on the run and in t
   await page.goto(`/runs/${runId}`);
   await expect(page.getByTestId('run-coverage-mode')).toHaveText('API only');
   // Stored and shown without its query — that is where a key would be.
-  await expect(page.getByTestId('run-api-docs')).toHaveText('http://localhost:4444/api/doc');
+  await expect(page.getByTestId('run-api-docs')).toHaveText(`${FAKE_API}/docs`);
   await page.goto('/runs');
   await expect(page.getByTestId(`run-coverage-${runId}`)).toHaveText('API only');
+});
+
+test('live API validation: preview, approve one operation, run, and read the results on the API page', async ({ page }) => {
+  await page.goto('/runs/new');
+  await expect(page.getByRole('button', { name: 'Start Phase 1' })).toBeEnabled();
+  // Live validation is offered only beside documentation to validate against.
+  await expect(page.getByTestId('live-validation')).toHaveCount(0);
+  await page.getByLabel('API documentation URL').fill(`${FAKE_API}/docs`);
+  const live = page.getByTestId('live-validation');
+  await expect(live.getByLabel('Live API validation')).toBeChecked();
+  await expect(live).toContainText('Credentials: configured on the host');
+  await expect(live).not.toContainText('fake-api-token');
+
+  // The preview reads the documentation and sends nothing to the API itself.
+  await page.getByTestId('api-preview').click();
+  const plan = page.getByTestId('api-plan');
+  await expect(plan).toContainText('Items API');
+  await expect(plan).toContainText('8 documented operation(s)');
+  await expect(plan).toContainText(FAKE_API);
+  await expect(plan).toContainText('3 read-only operation(s) are called by default');
+  // Nothing state-changing is approved until a person ticks it — one operation at a time.
+  const approvals = plan.getByRole('checkbox');
+  await expect(approvals).toHaveCount(5);
+  for (const box of await approvals.all()) await expect(box).not.toBeChecked();
+  await expect(plan).toContainText('DELETE /items/{id}');
+  await expect(plan).toContainText('Destructive');
+  await plan.getByLabel('Approve POST /items').check();
+  await expect(page.getByTestId('approved-count')).toContainText('1 state-changing operation(s) approved');
+
+  // A base URL on a host the workspace may not call is refused before anything is sent.
+  await page.getByLabel('API base URL').fill('https://api.production.example.com');
+  await page.getByTestId('api-preview').click();
+  await expect(page.getByTestId('api-plan-blocked')).toContainText('not a host this workspace may call');
+  await page.getByLabel('API base URL').fill('');
+  await page.getByTestId('api-preview').click();
+  await expect(page.getByTestId('api-plan-blocked')).toHaveCount(0);
+  await page.getByTestId('api-plan').getByLabel('Approve POST /items').check();
+
+  await page.getByRole('button', { name: 'Start Phase 1' }).click();
+  await expect(page).toHaveURL(/\/runs\/\d{4}-\d{2}-\d{2}T[\d-]+Z\/live$/);
+  const runId = /\/runs\/([^/]+)\/live$/.exec(page.url())![1];
+  await expect(page.getByTestId('live-status')).toHaveText('COMPLETED', { timeout: 30_000 });
+
+  // The API page: what is documented, what was really called, and what did not match.
+  await page.getByRole('link', { name: 'API', exact: true }).click();
+  await expect(page.getByTestId('api-unavailable')).toHaveCount(0);
+  await expect(page.getByTestId('api-summary')).toContainText('8documented operations');
+  await expect(page.getByTestId('api-violations')).toHaveText('1');
+  await expect(page.getByTestId('api-credentials')).toContainText('configured (TOKEN)');
+  await expect(page.getByTestId('api-run')).toContainText('POST /items');
+  await expect(page.getByTestId('api-run')).not.toContainText('fake-api-token');
+  const row = (key: string) => page.locator('tr[data-testid^="endpoint-"]').filter({ hasText: key });
+  // Validated only where a real response matched; the listing breaks its schema, so it is merely observed.
+  await expect(row('GET /health')).toHaveAttribute('data-evidence', 'VALIDATED');
+  await expect(row('GET /items').first()).toHaveAttribute('data-evidence', 'OBSERVED');
+  await expect(row('POST /items')).toContainText('Called');
+  // Not approved, so never called — and the page says so instead of implying it was checked.
+  await expect(row('DELETE /items/{id}')).toHaveAttribute('data-evidence', 'DOCUMENTED');
+  await expect(row('DELETE /items/{id}')).toContainText('Needs approval');
+  await expect(row('GET /session/logout')).toContainText('Needs approval');
+
+  // Filters, then the evidence behind one row: the real request and response, secrets redacted.
+  await page.getByTestId('api-filter-MISMATCH').click();
+  await expect(page.locator('tr[data-testid^="endpoint-"]')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Details' }).click();
+  const detail = page.locator('tr.endpoint-detail');
+  await expect(detail).toContainText('Contract violation');
+  await expect(detail).toContainText('does not match its documented schema');
+  await expect(detail).toContainText('With credentials');
+  await expect(detail).toContainText('→ 200');
+  await expect(detail).not.toContainText('fake-api-token');
+  await page.getByTestId('api-filter-DOCUMENTED').click();
+  await expect(page.locator('tr[data-testid^="endpoint-"]')).toHaveCount(4);
+  await expect(page.getByTestId('api-findings')).toContainText('Contract violation');
+
+  // The run keeps its own results: metrics on the run, and the raw artifact in its archive.
+  await page.goto(`/runs/${runId}`);
+  await expect(page.getByTestId('metric-api_contract_violations')).toHaveText('1');
+  await expect(page.getByTestId('metric-api_endpoints_documented_only')).toHaveText('4');
+  await page.getByRole('link', { name: 'Live API validation' }).click();
+  await expect(page.getByTestId('historical-artifact')).toContainText('"CONTRACT_VIOLATION"');
+  await expect(page.getByTestId('historical-artifact')).not.toContainText('fake-api-token');
+});
+
+test('live API validation off, or unavailable: the API page says why, and nothing is shown as validated', async ({ page }) => {
+  await page.goto('/runs/new');
+  await page.getByLabel('API documentation URL').fill(`${FAKE_API}/docs`);
+  await page.getByTestId('live-validation').getByLabel('Live API validation').uncheck();
+  await expect(page.getByTestId('api-preview')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Start Phase 1' }).click();
+  await expect(page.getByTestId('live-status')).toHaveText('COMPLETED', { timeout: 30_000 });
+  await page.getByRole('link', { name: 'API', exact: true }).click();
+  await expect(page.getByTestId('api-unavailable')).toContainText('The API was not called');
+  await expect(page.getByTestId('api-validated')).toHaveText('0');
+  await expect(page.getByTestId('api-documented-only')).toHaveText('8');
+
+  // Documentation that cannot be read: a useful message, not an empty page.
+  await page.goto('/runs/new');
+  await page.getByLabel('API documentation URL').fill(`${FAKE_API}/nothing-here`);
+  await page.getByTestId('api-preview').click();
+  await expect(page.getByTestId('api-preview-unavailable')).toContainText('could not be used');
 });
 
 test('a failed stage: FAILED, the stage and a sanitised reason, diagnostics on request', async ({ page }) => {

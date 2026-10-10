@@ -41,6 +41,8 @@ export const ARTIFACT_FILES = {
   RUN_METADATA: 'run-metadata.json',
   /** What the API documentation declared, as the host read it for this run. */
   API_DISCOVERY: 'api-discovery.json',
+  /** What the API did when the host called it, compared with its documentation. */
+  API_VALIDATION: 'api-validation.json',
   /** The run's configuration: its coverage mode and API documentation URL. */
   RUN_CONFIG: 'run-config.json',
   /** The run's structured event log (redacted), one JSON object per line. */

@@ -46,6 +46,8 @@ const READABLE_ARTIFACT_NAMES = [
   // What the API documentation declares, read by the host. Same asymmetry as
   // the browser evidence: a model may cite an operation, never add one.
   'api-discovery',
+  // What the API did when the host called it. Host-observed, so readable and never writable.
+  'api-validation',
 ] as const satisfies readonly QaArtifactName[];
 
 // Note: `phase1-approval.json` is deliberately absent from both lists. Approval

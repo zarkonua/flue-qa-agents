@@ -477,7 +477,10 @@ export function runAgent(agentPath, message, id, { extraEnv = {}, resume = false
     // the terminal unchanged, chunk by chunk.
     // Its own process group, so cancellation can stop the whole agent tree (npx and flue run) and
     // nothing else. stdin is ignored: `flue run -m` never reads it, and a background group must not.
-    const child = spawn('npx', args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv }, detached: true });
+    // API credentials are for the host's own requests (src/lib/api-validation.ts). No agent needs
+    // them, so no agent process is given them.
+    const { QA_API_AUTH_TOKEN: _t, QA_API_AUTH_USERNAME: _u, QA_API_AUTH_PASSWORD: _p, ...agentEnv } = process.env;
+    const child = spawn('npx', args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...agentEnv, ...extraEnv }, detached: true });
     activeAgent = child;
 
     const counter = attachToolCounter(child, process.stdout, process.stderr, onTool);

@@ -143,7 +143,7 @@
 <main>
   <header>
     <h1>Flue QA Agents — architecture</h1>
-    <p>A local-first QA workflow in two phases, with a human review workspace and approval gate between them. Host code sequences every stage; each AI agent runs as its own process, holds only narrow tools, and can write only its own schema- and semantically-validated JSON artifact. Models run on a local Ollama or on OpenRouter, selected by <code>QA_MODEL</code>.</p>
+    <p>A local-first QA workflow in two phases, with a human review workspace and approval gate between them. Host code sequences every stage; each AI agent runs as its own process, holds only narrow tools, and can write only its own schema- and semantically-validated JSON artifact. A run designs its tests at UI level, API level, or whichever fits each scenario; for the API, host code reads the product's OpenAPI documentation and calls the API itself, so agents work from evidence marked documented, observed or validated. Models run on a local Ollama or on OpenRouter, selected by <code>QA_MODEL</code>.</p>
     <p>Diagrams show structure, not configuration: no model name, context size or test count belongs here. Those live in <code>.env.example</code> and the <a href="https://github.com/zarkonua/flue-qa-agents/blob/main/docs/RUNBOOK.md">runbook</a>.</p>
     <div class="clegend" aria-label="Legend">
       <span class="grp">Legend</span>
@@ -167,6 +167,8 @@
 flowchart TD
     target[&quot;Target application&lt;br/&gt;TARGET_URL&quot;]
     browser[&quot;Playwright MCP&lt;br/&gt;confined browser&quot;]
+    apidocs[&quot;API documentation&lt;br/&gt;OpenAPI / Swagger · optional&quot;]
+    probe[&quot;API discovery + live validation&lt;br/&gt;host code · read-only unless approved&quot;]
 
     subgraph phase1 [&quot;Phase 1 · host-sequenced QA agents&quot;]
         agents[&quot;Product Discovery → Behavior Analyst → Test Designer&lt;br/&gt;→ Automation Prioritizer → Defect Analyzer&quot;]
@@ -174,6 +176,7 @@ flowchart TD
 
     subgraph store [&quot;QA_ARTIFACT_ROOT · outside this project&quot;]
         canonical[(&quot;Canonical QA artifacts&lt;br/&gt;+ bug reports&quot;)]
+        apievidence[(&quot;run-config · api-discovery · api-validation&lt;br/&gt;host-written · agents read only&quot;)]
         workflow[(&quot;Review workflow state&lt;br/&gt;requests · proposals · bug history&quot;)]
         approval[(&quot;phase1-approval.json&quot;)]
         archives[(&quot;Run archives&lt;br/&gt;runs/ · one per run, immutable&quot;)]
@@ -199,6 +202,10 @@ flowchart TD
 
     browser --&gt; target
     agents --&gt; browser
+    probe --&gt;|GET| apidocs
+    probe --&gt;|allowed hosts only| target
+    probe --&gt;|documented · observed · validated| apievidence
+    apievidence -.-&gt;|evidence| agents
     agents --&gt;|validated writes| canonical
     agents --&gt;|each run archived| archives
     archives -.-&gt;|indexed: stages · metrics · hashes| history
@@ -221,13 +228,13 @@ flowchart TD
     workspace -.-&gt;|traces| langfuse
 
     class agents,reviewer,phase2 agent
-    class api,ui host
-    class canonical,workflow,approval,archives,history artifact
+    class api,ui,probe host
+    class canonical,workflow,approval,archives,history,apievidence artifact
     class human person
     class gate gate
     class browser,ollama,openrouter runtime
     class target,repo entry
-    class langfuse optional
+    class langfuse,apidocs optional
     class phase1,workspace zone
     class store,llm band
 </pre></div>
@@ -235,19 +242,21 @@ flowchart TD
 
   <section id="phase1-flow">
     <h2>Phase 1</h2>
-    <p class="lede">A stage passes only if its artifact was written during that attempt and re-validates from disk. The run stops after stage 5; review and approval are separate, human-started steps.</p>
+    <p class="lede">A stage passes only if its artifact was written during that attempt and re-validates from disk. The run stops after stage 5; review and approval are separate, human-started steps. The coverage mode chosen for the run — Automatic, UI only, API only — and what the host learnt about the API reach every stage; in API only there is no browser stage, and the host records that nothing was explored.</p>
     <div class="board"><pre class="mermaid">
 %% Phase 1 (npm run qa:manual). Stage list: scripts/lib/phase1-stages.mjs.
 flowchart TD
     start([&quot;npm run qa:manual&quot;])
     pre[&quot;Preflight&lt;br/&gt;check TARGET_URL · run lock · archive previous run&lt;br/&gt;start confined MCP · build discovery surface&quot;]
+    apipre[&quot;API discovery + live validation&lt;br/&gt;host code · skipped in UI only&lt;br/&gt;read documentation · call the API within policy&quot;]
+    cfg[(&quot;run-config.json&lt;br/&gt;api-discovery.json · api-validation.json&lt;br/&gt;host-written&quot;)]
 
     s1[&quot;1 · Product Discovery&lt;br/&gt;browser&quot;]
     a1[(&quot;discovered-behavior.json&quot;)]
     s2[&quot;2 · Behavior Analyst&quot;]
     a2[(&quot;requirements-analysis.json&quot;)]
     s3[&quot;3 · Test Designer&quot;]
-    a3[(&quot;test-cases.json&quot;)]
+    a3[(&quot;test-cases.json&lt;br/&gt;testLevel UI / API · apiEvidence&quot;)]
     s4[&quot;4 · Automation Prioritizer&quot;]
     a4[(&quot;automation-prioritization.json&quot;)]
     s5[&quot;5 · Defect Analyzer&quot;]
@@ -261,6 +270,10 @@ flowchart TD
     approve{{&quot;Phase 1 approval&lt;br/&gt;a person · SHA-256 of all five artifacts + bug reports&quot;}}
 
     start --&gt; pre --&gt; s1
+    pre --&gt; apipre --&gt; cfg
+    cfg -. &quot;mode · documented operations · real responses&quot; .-&gt; s2
+    cfg -.-&gt; s3 &amp; s4 &amp; s5
+    pre -. &quot;API only: no browser stage&quot; .-&gt; s2
     s1 --&gt; a1
     a1 -. host replays EXPLORED pages .-&gt; ev
     a1 --&gt; s2 --&gt; a2
@@ -272,8 +285,8 @@ flowchart TD
     stop --&gt; review --&gt; approve
 
     class s1,s2,s3,s4,s5 agent
-    class pre,check host
-    class a1,a2,a3,a4,a5,ev artifact
+    class pre,apipre,check host
+    class a1,a2,a3,a4,a5,ev,cfg artifact
     class review person
     class approve gate
     class start,stop entry
@@ -407,11 +420,13 @@ flowchart TD
         semantic[&quot;Semantic validation&lt;br/&gt;against host-loaded evidence · ids must resolve&quot;]
         redact[&quot;Redaction&lt;br/&gt;credentials and one-time values&quot;]
         op[&quot;Host-controlled operation&lt;br/&gt;atomic write · base-hash check · run lock&quot;]
+        livecheck[&quot;Live API validation&lt;br/&gt;allowed hosts only · read-only by default&lt;br/&gt;credentials from host config, never stored&quot;]
     end
 
     subgraph people [&quot;Person&quot;]
         apply([&quot;Apply proposal / bug decision&quot;])
         approve([&quot;Phase 1 approval&lt;br/&gt;SHA-256 of canonical artifacts&quot;])
+        approveop([&quot;Approve a state-changing API operation&lt;br/&gt;per run · one operation at a time&quot;])
     end
 
     canonical[(&quot;Canonical state&lt;br/&gt;QA artifacts on disk&quot;)]
@@ -430,12 +445,15 @@ flowchart TD
     ui --&gt;|fixed operations| api
     api --&gt; op
     ui -. &quot;cannot name a path, file,&lt;br/&gt;command, script or agent&quot; .-x canonical
+    approveop --&gt; livecheck
+    livecheck --&gt;|api-validation.json · evidence class set by host| canonical
+    agent -. &quot;cannot send a request,&lt;br/&gt;see a credential, or mark anything validated&quot; .-x livecheck
     agent -. &quot;cannot read or write&quot; .-x approve
 
     class agent,output agent
-    class tools,schema,semantic,redact,op,api host
+    class tools,schema,semantic,redact,op,api,livecheck host
     class canonical artifact
-    class apply person
+    class apply,approveop person
     class approve gate
     class ui,phase2 entry
     class untrusted,host,people zone
@@ -482,14 +500,16 @@ flowchart TD
 
   <section id="run-control">
     <h2>Run control</h2>
-    <p class="lede">The workspace does not have its own Phase 1: the RunController forks the same runner the terminal uses, with argv and environment built from validated host configuration. Both write the same event log, history and archive; the Live Run page reads them.</p>
+    <p class="lede">The workspace does not have its own Phase 1: the RunController forks the same runner the terminal uses, with argv and environment built from validated host configuration. Both write the same event log, history and archive; the Live Run page reads them. New Run also carries the run's coverage mode, an API documentation URL, and — after a preview that sends nothing to the API — the state-changing operations a person approves.</p>
     <div class="board"><pre class="mermaid">
 %% Run control: the terminal and the workspace start the same Phase 1 runner.
 flowchart TD
     cli([&quot;Terminal&lt;br/&gt;npm run qa:manual&quot;])
     person([&quot;Person&quot;])
     subgraph workspace [&quot;QA Review Workspace · npm run qa:ui&quot;]
-        newrun[&quot;New Run&lt;br/&gt;choices from GET /api/run-config&quot;]
+        newrun[&quot;New Run&lt;br/&gt;choices from GET /api/run-config&lt;br/&gt;coverage mode · API docs URL · approvals&quot;]
+        preview[&quot;POST /api/api-docs/preview&lt;br/&gt;reads the documentation · calls nothing else&quot;]
+        apipage[&quot;API page&lt;br/&gt;operations · evidence · requests and responses · mismatches&quot;]
         controller[&quot;RunController&lt;br/&gt;validates · checks the run lock&lt;br/&gt;forks with fixed argv + env keys&quot;]
         live[&quot;Live Run&lt;br/&gt;stages · activity · metrics · artifacts&quot;]
         sse[&quot;GET /api/runs/:id/events&lt;br/&gt;SSE · resumes after Last-Event-ID&quot;]
@@ -509,11 +529,14 @@ flowchart TD
     runner --&gt; events --&gt; sse --&gt; live
     runner --&gt; history --&gt; live
     runner --&gt; archive
+    newrun -.-&gt; preview
+    runner --&gt;|api-validation.json| apipage
     runner -.-&gt; langfuse
 
     class runner,controller host
     class events,history,archive artifact
-    class person,newrun,live person
+    class person,newrun,live,apipage person
+    class preview host
     class cli entry
     class langfuse optional
     class workspace zone

@@ -133,6 +133,9 @@ npm run qa:manual -- --fresh-browser         # restart the MCP server: a signed-
 npm run qa:manual -- --coverage-mode ui      # automatic (default) | ui | api
 npm run qa:manual -- --coverage-mode api --api-docs http://localhost:4444/api/doc
 npm run qa:manual -- --api-docs https://example.test/openapi.yaml   # automatic, with API documentation
+npm run qa:manual -- --api-docs <url> --api-live off                 # documentation only: call nothing
+npm run qa:manual -- --api-docs <url> --api-base-url http://localhost:8080
+npm run qa:manual -- --api-docs <url> --api-approve "POST /api/notes, DELETE /api/notes/{id}"
 npm run qa:approve -- --accept-findings      # approve despite semantic findings; recorded
 npm run qa:automation -- --gate-only         # check prerequisites, start no agent
 npm run qa:automation -- --from repo-analyzer
@@ -149,6 +152,11 @@ with a correction naming what went wrong, odd attempts start fresh.
 | Automatic (default) | `automatic` | optional |
 | UI only | `ui` | ignored — never fetched |
 | API only | `api` | required |
+
+**API only runs without a browser.** Product Discovery is not in its plan, no Playwright MCP
+server is started, and the host writes an empty `discovered-behavior.json` saying the interface
+was not explored. The run starts at the Behavior Analyst, on the documentation and whatever live
+validation observed.
 
 The URL may be an OpenAPI 3 / Swagger 2 document (JSON or YAML) or a Swagger UI page. The host
 fetches it with one bounded GET (15 s, 5 MB; a Swagger UI page may lead to a few more, to the
@@ -171,6 +179,64 @@ API docs        : 9 operation(s), 6 schema(s), 1 auth scheme(s) — http://local
   or `--api-docs` explicitly to change them (the documentation is then read again).
 - The URL is stored and shown without its query string. Put a key the documentation needs in the
   URL only if you accept that it is sent to that host; it is never written to an artifact.
+
+### Live API validation
+
+After reading the documentation, and before any agent runs, the host calls the API and compares
+what comes back with what is documented. It prints what it did:
+
+```text
+API validation  : 3 request(s) to http://localhost:4444: 1 validated, 2 observed, 6 documented only (6 not called); 0 contract violation(s), 2 potential issue(s)
+API credentials : none configured — secured operations were only checked for refusing a request without credentials
+```
+
+| What a person chooses per run | CLI | Environment (default) |
+|---|---|---|
+| Call the API at all | `--api-live on\|off` | `QA_API_LIVE_VALIDATION` (on) |
+| Where the API is | `--api-base-url <url>` | `QA_API_BASE_URL` (from the documentation: `servers[0]`, else where the documentation is) |
+| State-changing operations to run | `--api-approve "METHOD /path, …"` | `QA_API_APPROVED_OPERATIONS` (none) |
+
+| Host configuration only — never from the workspace page | |
+|---|---|
+| `QA_API_ALLOWED_HOSTS` | extra `host[:port]` the API may be on, comma-separated. The documentation's host and the target's are always allowed |
+| `QA_API_ENVIRONMENT` | a name, default `test`. `production` (or `prod`, `live`): nothing state-changing is sent, approved or not |
+| `QA_API_AUTH_TOKEN` | a bearer token or API key, sent the way the documentation's security scheme says |
+| `QA_API_AUTH_USERNAME` · `QA_API_AUTH_PASSWORD` | HTTP basic when the documentation declares it; otherwise with… |
+| `QA_API_AUTH_LOGIN_PATH` | …the documented `POST` that turns them into a token (e.g. `/api/auth/signin`). The token is read from `token` / `access_token` / `jwt` in the response |
+| `QA_API_PATH_PARAMS` | JSON, values for path parameters of **read** requests: `{"id":"42"}` |
+| `QA_API_MAX_REQUESTS` · `QA_API_TIMEOUT_MS` | request budget (60, at most 500) and per-request timeout (10000) |
+
+What is sent, in order:
+
+1. **Reads** — every `GET`/`HEAD`/`OPTIONS` not named like an action. A secured operation is
+   called without credentials (it must refuse: 401/403) and, when credentials are configured, with
+   them. A path parameter with no known value is filled with one that should not exist, to check
+   a documented 404 — or the operation is skipped.
+2. **Approved `POST`s** — first with an empty body where the documentation requires fields (it
+   must be rejected), then with a body generated from the documented schema.
+3. **Reads of what step 2 created.**
+4. **Approved `PUT` / `PATCH`, then `DELETE`** — only against a resource step 2 created. Approving
+   a deletion without the creation runs nothing.
+
+Without credentials, an approved secured write is only checked for refusing the request.
+
+**When it cannot run** — a base URL on a host that is not allowed, a host that resolves to a
+link-local address, an API that does not answer — the run prints `API validation : UNAVAILABLE —
+<reason>` and continues on the documentation alone; every operation stays `DOCUMENTED`. A `429`
+or a used-up request budget ends the probing early with status `PARTIAL`, keeping what was learnt.
+
+**Localhost and containers.** The host process makes the requests, so an API on `localhost` is
+reachable whenever the documentation URL or `TARGET_URL` is on that host — nothing to configure.
+If you run this project inside a container, `localhost` is the container: point the documentation
+URL and `QA_API_BASE_URL` at the host instead (`http://host.docker.internal:<port>`, with
+`--add-host=host.docker.internal:host-gateway` on Linux, or run the container with
+`--network host`) and list that host in `QA_API_ALLOWED_HOSTS` if it is neither the documentation's
+nor the target's. A documentation whose `servers` entry names another host (often production) is
+**not** called unless you allow that host or override the base URL — that is deliberate.
+
+Results: the **API** page of the workspace (operations, evidence, each request and response,
+mismatches, the test cases resting on each operation), `api-validation.json`, and the run's
+metrics under **Runs**.
 
 ### The QA Review Workspace
 
@@ -290,6 +356,7 @@ Everything lands in `QA_ARTIFACT_ROOT` (default `../qa-workspace/.qa`, outside t
 | `discovery-evidence.json` | host, after discovery: console and network facts per explored page |
 | `run-config.json` | host, when a run starts at discovery: its coverage mode and API documentation URL |
 | `api-discovery.json` | host, before the first stage: what the API documentation declares, or why it is unavailable |
+| `api-validation.json` | host, before the first stage: every real request and response (redacted), the checks, the mismatches — or why the API was not called |
 | `repo-analysis.json` | Phase 2 stage 1 |
 | `automation-project-contract.json` | host, derived from `repo-analysis.json` |
 | `phase1-run.json` · `phase2-run.json` | run logs: stages, attempts, timings |
@@ -307,14 +374,17 @@ npm run qa:ui  →  New Run  →  Start Phase 1  →  Live Run  (→ Cancel Run)
   (`TARGET_URL`, `QA_UI_TARGETS`), the models (`QA_MODEL`, `QA_UI_MODELS`; an `openrouter/*` model
   is offered only when `OPENROUTER_API_KEY` is set — its value is never shown), the fresh-browser
   default (`QA_FRESH_BROWSER`), the coverage modes with their default (`QA_COVERAGE_MODE`), the
-  default API documentation URL (`QA_API_DOCS_URL`), and the helper origins and Langfuse state,
-  read-only. The API documentation URL is the one value a person may type; it is checked as an
+  default API documentation URL (`QA_API_DOCS_URL`), the live-validation defaults
+  (`QA_API_LIVE_VALIDATION`, `QA_API_BASE_URL`), the API environment and whether API credentials
+  are configured, and the helper origins and Langfuse state, read-only. The API documentation URL is the one value a person may type; it is checked as an
   http(s) URL without credentials and only ever fetched by host code. There is no authentication choice: there is no auth bootstrap on main, so
   discovery signs up or signs in through the product itself.
 - **Starting.** `POST /api/runs` → the RunController validates the choices, refuses if the run lock
   is held (by the workspace or a terminal run), and forks `scripts/qa-manual.mjs --run-id <id>
   [--fresh-browser]` with only `TARGET_URL`, `QA_MODEL`, `QA_FRESH_BROWSER`, `QA_COVERAGE_MODE` and
-  `QA_API_DOCS_URL` set from the chosen values (API only without a URL is refused with 400). It is the same runner as `npm run qa:manual`: same lock, stages, history, archive, traces.
+  `QA_API_DOCS_URL`, `QA_API_LIVE_VALIDATION`, `QA_API_BASE_URL` and `QA_API_APPROVED_OPERATIONS`
+  set from the chosen values (API only without a URL is refused with 400). `POST /api/api-docs/preview`
+  reads a documentation URL and returns what live validation would call — it sends nothing to the API. It is the same runner as `npm run qa:manual`: same lock, stages, history, archive, traces.
 - **Following.** The runner appends every event to `runs/<run-id>/events.jsonl` (redacted, at most
   5000 per run — past that only stages, artifacts, metrics and the end are kept). The Live Run page
   reads it over SSE (`GET /api/runs/<id>/events`), replaying at most 500 events on (re)connect and

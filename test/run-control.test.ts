@@ -116,7 +116,7 @@ describe('run configuration', () => {
     assert.deepEqual(validateStartRequest(ok, config), { ...ok, coverageMode: 'AUTOMATIC' });
     assert.deepEqual(
       validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: ' http://localhost:4444/api/doc#top ' }, config),
-      { ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: 'http://localhost:4444/api/doc' },
+      { ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: 'http://localhost:4444/api/doc', liveValidation: true, approvedOperations: [] },
     );
     // Automatic with an empty field: no documentation, and that is fine.
     assert.equal(validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: '' }, config).apiDocsUrl, undefined);
@@ -134,6 +134,41 @@ describe('run configuration', () => {
     const withDefault = readRunConfig({ ...process.env, QA_API_DOCS_URL: 'http://localhost:4444/api/doc' });
     assert.equal(validateStartRequest({ ...ok, coverageMode: 'API_ONLY' }, withDefault).apiDocsUrl, 'http://localhost:4444/api/doc');
     assert.equal(validateStartRequest({ ...ok, coverageMode: 'AUTOMATIC', apiDocsUrl: '' }, withDefault).apiDocsUrl, undefined, 'cleared in the form means none');
+  });
+
+  it('validates live API validation: the switch, the base URL, and each approved operation', () => {
+    const config = readRunConfig();
+    const ok = { pipeline: 'PHASE1_MANUAL', target: 'http://localhost:4444/', model: 'ollama/fake-complete', freshBrowser: false, coverageMode: 'AUTOMATIC', apiDocsUrl: 'http://localhost:4444/api/doc' } as const;
+    assert.deepEqual(config.apiValidation, { default: true, baseUrl: null, environment: 'test', protectedEnvironment: false, credentialsConfigured: false, extraAllowedHosts: [] });
+    // On by default beside documentation; nothing state-changing approved unless a person names it.
+    assert.equal(validateStartRequest(ok, config).liveValidation, true);
+    assert.deepEqual(validateStartRequest(ok, config).approvedOperations, []);
+    assert.equal(validateStartRequest({ ...ok, liveValidation: false }, config).liveValidation, false);
+    const approved = validateStartRequest({ ...ok, apiBaseUrl: ' http://localhost:4444/base/?x=1 ', approvedOperations: ['POST /api/notes', 'POST /api/notes', 'DELETE /api/notes/{id}'] }, config);
+    assert.equal(approved.apiBaseUrl, 'http://localhost:4444/base');
+    assert.deepEqual(approved.approvedOperations, ['POST /api/notes', 'DELETE /api/notes/{id}']);
+    for (const bad of [
+      { ...ok, apiBaseUrl: 'file:///etc/passwd' },
+      { ...ok, apiBaseUrl: 'http://user:pw@localhost:4444' },
+      { ...ok, approvedOperations: ['*'] },
+      { ...ok, approvedOperations: ['POST'] },
+      { ...ok, approvedOperations: ['post /api/notes'] },
+      { ...ok, approvedOperations: ['POST /api/notes; rm -rf /'] },
+      { ...ok, approvedOperations: ['DELETE http://evil.example/x'] },
+      { ...ok, liveValidation: false, approvedOperations: ['POST /api/notes'] },
+      { ...ok, liveValidation: 'yes' },
+    ]) assert.throws(() => validateStartRequest(bad as never, config), RunConfigError, JSON.stringify(bad));
+    // Without documentation there is nothing to validate: the live options are simply not part of the run.
+    const none = validateStartRequest({ ...ok, apiDocsUrl: '', liveValidation: true, approvedOperations: ['POST /api/notes'] }, config);
+    assert.ok(!('liveValidation' in none) && !('approvedOperations' in none));
+    // Production: nothing state-changing can be approved, whoever asks.
+    const prod = readRunConfig({ ...process.env, QA_API_ENVIRONMENT: 'production', QA_API_AUTH_TOKEN: 'secret-token-value', QA_API_ALLOWED_HOSTS: 'api.example.test, 10.0.0.5:8080' });
+    assert.equal(prod.apiValidation.protectedEnvironment, true);
+    assert.equal(prod.apiValidation.credentialsConfigured, true);
+    assert.deepEqual(prod.apiValidation.extraAllowedHosts, ['api.example.test', '10.0.0.5:8080']);
+    assert.doesNotMatch(JSON.stringify(prod), /secret-token-value/, 'whether credentials exist, never what they are');
+    assert.throws(() => validateStartRequest({ ...ok, approvedOperations: ['POST /api/notes'] }, prod), /Nothing state-changing is sent in the "production" environment/);
+    assert.equal(validateStartRequest(ok, prod).liveValidation, true, 'read-only validation is still allowed there');
   });
 
   it('refuses a target, model or pipeline the host did not configure', () => {
@@ -156,10 +191,19 @@ describe('run configuration', () => {
     assert.throws(() => runnerArgs('--help; rm -rf /', run));
     const env = runnerEnv(run, { PATH: '/bin', QA_MODEL: 'other', QA_API_DOCS_URL: 'http://leftover.example/doc' });
     // No API documentation chosen: the key is set empty, so the server's own environment cannot supply one.
-    assert.deepEqual(env, { PATH: '/bin', QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true', QA_COVERAGE_MODE: 'AUTOMATIC', QA_API_DOCS_URL: '' });
+    const noApi = { QA_API_LIVE_VALIDATION: 'false', QA_API_BASE_URL: '', QA_API_APPROVED_OPERATIONS: '' };
+    assert.deepEqual(env, { PATH: '/bin', QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true', QA_COVERAGE_MODE: 'AUTOMATIC', QA_API_DOCS_URL: '', ...noApi });
     assert.deepEqual(
       runnerEnv({ ...run, coverageMode: 'API_ONLY', apiDocsUrl: 'http://localhost:4444/api/doc' }, {}),
-      { QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true', QA_COVERAGE_MODE: 'API_ONLY', QA_API_DOCS_URL: 'http://localhost:4444/api/doc' },
+      { QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true', QA_COVERAGE_MODE: 'API_ONLY', QA_API_DOCS_URL: 'http://localhost:4444/api/doc', ...noApi },
+    );
+    // Live validation and approvals reach the runner only as this run's own choices — an approval
+    // left in the server's environment is overwritten, never inherited.
+    assert.deepEqual(
+      runnerEnv({ ...run, apiDocsUrl: 'http://localhost:4444/api/doc', liveValidation: true, apiBaseUrl: 'http://localhost:4444', approvedOperations: ['POST /api/notes', 'DELETE /api/notes/{id}'] },
+        { QA_API_APPROVED_OPERATIONS: 'DELETE /everything', QA_API_AUTH_TOKEN: 'host-secret' }),
+      { QA_MODEL: 'ollama/x', TARGET_URL: 'http://localhost:4444/', QA_FRESH_BROWSER: 'true', QA_COVERAGE_MODE: 'AUTOMATIC', QA_API_DOCS_URL: 'http://localhost:4444/api/doc',
+        QA_API_LIVE_VALIDATION: 'true', QA_API_BASE_URL: 'http://localhost:4444', QA_API_APPROVED_OPERATIONS: 'POST /api/notes,DELETE /api/notes/{id}', QA_API_AUTH_TOKEN: 'host-secret' },
     );
     // The real runner implements the same contract: it validates --run-id before doing anything else.
     const r = spawnSync(process.execPath, [join(PROJECT, 'scripts', 'qa-manual.mjs'), '--run-id', 'not-an-id', '--from', 'defects'], { cwd: PROJECT, encoding: 'utf8', env: process.env });
@@ -227,14 +271,14 @@ describe('RunController', () => {
   });
 
   it('carries the chosen coverage mode and API documentation URL to the runner, the history and the archive', async () => {
-    const run = start('ollama/fake-complete', { coverageMode: 'API_ONLY', apiDocsUrl: 'http://localhost:4444/api/doc?api_key=s3cr3t' });
+    const run = start('ollama/fake-complete', { coverageMode: 'API_ONLY', apiDocsUrl: 'http://127.0.0.1:9/api/doc?api_key=s3cr3t' });
     assert.equal(run.coverageMode, 'API_ONLY');
-    assert.equal(run.apiDocsUrl, 'http://localhost:4444/api/doc', 'shown without its query');
+    assert.equal(run.apiDocsUrl, 'http://127.0.0.1:9/api/doc', 'shown without its query');
     await controller.waitForExit(run.runId);
     const row = history().getRun(run.runId)!;
     assert.equal(row.status, 'COMPLETED');
     assert.equal(row.coverageMode, 'API_ONLY');
-    assert.equal(row.apiDocsUrl, 'http://localhost:4444/api/doc');
+    assert.equal(row.apiDocsUrl, 'http://127.0.0.1:9/api/doc');
     // The configuration is written beside the artifacts — what every later validation reads — and archived with the run.
     const live = JSON.parse(readFileSync(join(ROOT, 'run-config.json'), 'utf8'));
     assert.equal(live.coverageMode, 'API_ONLY');
@@ -246,10 +290,10 @@ describe('RunController', () => {
     // And the workspace API reports it on the run.
     const view = (await (await fetch(`${base}/api/runs/${run.runId}`)).json()) as any;
     assert.equal(view.run.coverageMode, 'API_ONLY');
-    assert.equal(view.run.apiDocsUrl, 'http://localhost:4444/api/doc');
+    assert.equal(view.run.apiDocsUrl, 'http://127.0.0.1:9/api/doc');
 
     // UI only: no API documentation reaches the runner, whatever the form held.
-    const ui = start('ollama/fake-complete', { coverageMode: 'UI_ONLY', apiDocsUrl: 'http://localhost:4444/api/doc' });
+    const ui = start('ollama/fake-complete', { coverageMode: 'UI_ONLY', apiDocsUrl: 'http://127.0.0.1:9/api/doc' });
     await controller.waitForExit(ui.runId);
     assert.equal(history().getRun(ui.runId)!.coverageMode, 'UI_ONLY');
     assert.equal(history().getRun(ui.runId)!.apiDocsUrl, null);

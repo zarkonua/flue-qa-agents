@@ -28,6 +28,18 @@
 //   --api-docs <url> the product's OpenAPI/Swagger document — JSON, YAML or a Swagger UI
 //                    page (or QA_API_DOCS_URL). Read by the host before any agent runs;
 //                    ignored in ui mode, required in api mode
+//   --api-live <on|off>
+//                    call the documented API and compare its real responses with the
+//                    documentation (default on, or QA_API_LIVE_VALIDATION). Read-only by default
+//   --api-base-url <url>
+//                    where the API is, when not where its documentation says (or QA_API_BASE_URL)
+//   --api-approve "<METHOD /path>, ..."
+//                    state-changing operations a person approves for this run — POST, PUT, PATCH,
+//                    DELETE, or a GET named like an action (or QA_API_APPROVED_OPERATIONS).
+//                    Nothing state-changing is ever sent without it
+//
+// In api mode there is no browser stage: discovery is skipped and the host records that
+// nothing was observed in the interface.
 
 import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -53,6 +65,7 @@ const { metricsFromArchive } = await import(resolve(ROOT, 'src/history/archive.t
 const { RUN_ID } = await import(resolve(ROOT, 'src/history/types.ts'));
 const coverageLib = await import(resolve(ROOT, 'src/lib/coverage-mode.ts'));
 const apiLib = await import(resolve(ROOT, 'src/lib/api-discovery.ts'));
+const liveLib = await import(resolve(ROOT, 'src/lib/api-validation.ts'));
 
 // ---------------------------------------------------------------------------
 // The Phase 1 stage list — a closed allowlist
@@ -102,7 +115,7 @@ if (startIndex < 0) {
 // A failed attempt costs only ~20s, so 4 attempts is cheap — ~98% of runs
 // complete under the measured rates, versus ~83% with 2.
 const attempts = Math.max(1, Number(option('attempts') ?? process.env.QA_STAGE_ATTEMPTS ?? 4));
-const plan = STAGES.slice(startIndex);
+let plan = STAGES.slice(startIndex);
 
 // A run started from the workspace is given its id by the RunController, so the
 // page can follow it from the first moment. From the terminal the id is the start time.
@@ -129,7 +142,10 @@ function rawOption(name) {
 // API documentation read for it — unless a flag on this command line says otherwise.
 const cliCoverageMode = rawOption('coverage-mode');
 const cliApiDocs = rawOption('api-docs');
-const configuresCoverage = startIndex === 0 || cliCoverageMode !== undefined || cliApiDocs !== undefined;
+const cliApiLive = rawOption('api-live');
+const cliApiBaseUrl = rawOption('api-base-url');
+const cliApiApprove = rawOption('api-approve');
+const configuresCoverage = startIndex === 0 || [cliCoverageMode, cliApiDocs, cliApiLive, cliApiBaseUrl, cliApiApprove].some((v) => v !== undefined);
 const previousConfig = qa.readRunConfig();
 let coverageMode = previousConfig?.coverageMode ?? coverageLib.DEFAULT_COVERAGE_MODE;
 let apiDocsUrl;
@@ -153,9 +169,46 @@ if (configuresCoverage) {
         console.error('The API documentation URL must be an http(s) URL without embedded credentials.');
         process.exit(EXIT.BAD_CONFIG);
       }
+    } else if (startIndex !== 0 && previousConfig?.apiDocsUrl) {
+      // Changing a live-validation option on a later stage re-reads the documentation the suite already uses.
+      apiDocsUrl = coverageLib.normalizeApiDocsUrl(previousConfig.apiDocsUrl);
     }
   }
 }
+
+// Live API validation: what a person chose for this run. Everything else about it —
+// credentials, extra hosts, the environment, limits — is host configuration (see liveValidationOptions).
+const fromEnv = (name) => (startIndex === 0 ? process.env[name]?.trim() || undefined : undefined);
+const liveChoice = { enabled: false, approvedOperations: [] };
+if (configuresCoverage && coverageLib.usesApiDocs(coverageMode)) {
+  const rawLive = cliApiLive ?? fromEnv('QA_API_LIVE_VALIDATION');
+  const enabled = rawLive === undefined ? true : liveLib.parseSwitch(rawLive);
+  if (enabled === undefined) {
+    console.error(`--api-live takes on or off; got "${String(rawLive).slice(0, 20)}".`);
+    process.exit(EXIT.BAD_CONFIG);
+  }
+  liveChoice.enabled = enabled;
+  const rawBase = cliApiBaseUrl ?? fromEnv('QA_API_BASE_URL');
+  if (rawBase !== undefined) {
+    liveChoice.baseUrl = liveLib.normalizeBaseUrl(rawBase);
+    if (!liveChoice.baseUrl) {
+      console.error('The API base URL must be an http(s) URL without embedded credentials.');
+      process.exit(EXIT.BAD_CONFIG);
+    }
+  }
+  const rawApprove = cliApiApprove ?? fromEnv('QA_API_APPROVED_OPERATIONS');
+  if (rawApprove !== undefined) {
+    liveChoice.approvedOperations = liveLib.parseApprovals(rawApprove);
+    const given = rawApprove.split(/[,\n]/).map((a) => a.trim()).filter(Boolean);
+    if (liveChoice.approvedOperations.length !== given.length) {
+      console.error('Each approved operation must look like "POST /path" — a method, a space, and the documented path.');
+      process.exit(EXIT.BAD_CONFIG);
+    }
+  }
+}
+
+// API only tests the API on its own: there is no browser stage in its plan.
+if (coverageMode === 'API_ONLY') plan = plan.filter((s) => !s.browser);
 
 // ---------------------------------------------------------------------------
 // Preconditions
@@ -278,12 +331,14 @@ function archive(path) {
 // test could rest on and the honest result is to stop here, with the previous
 // run's output still in place.
 let apiDiscovery = configuresCoverage ? undefined : qa.readCoverageContext().api;
+let apiValidation = configuresCoverage ? undefined : qa.readCoverageContext().validation;
 if (configuresCoverage) {
+  let apiSpec;
   if (!coverageLib.usesApiDocs(coverageMode)) {
     apiDiscovery = apiLib.notRequested('UI only: API documentation is not read in this mode');
   } else {
     if (apiDocsUrl) console.log(`\nAPI documentation: reading ${coverageLib.displayApiDocsUrl(apiDocsUrl)}`);
-    apiDiscovery = await apiLib.discoverApi(apiDocsUrl);
+    ({ discovery: apiDiscovery, spec: apiSpec } = await apiLib.discoverApiDocument(apiDocsUrl));
   }
   const summary = apiLib.apiDiscoverySummary(apiDiscovery);
   if (summary.status === 'AVAILABLE') {
@@ -301,8 +356,35 @@ if (configuresCoverage) {
     console.error(`\nPhase 1 not started: ${message}\nNothing was archived or changed. Fix the URL, or start the run in automatic or ui mode.\n`);
     process.exit(EXIT.FAILED);
   }
+
+  // Live validation: the host calls the documented API and compares what comes back with the
+  // documentation. It never stops a run — whatever cannot be called stays documentation-only.
+  if (!coverageLib.usesApiDocs(coverageMode)) {
+    apiValidation = liveLib.validationNotRequested('UI only: the API is neither read nor called in this mode');
+  } else if (!apiLib.hasApi(apiDiscovery)) {
+    apiValidation = liveLib.validationNotRequested('there is no API documentation to validate against');
+  } else if (!liveChoice.enabled) {
+    apiValidation = liveLib.validationNotRequested('live API validation was switched off for this run; the documentation is used alone');
+  } else {
+    console.log('API validation  : calling the documented API (read-only unless an operation was approved)…');
+    try {
+      apiValidation = await liveLib.validateApi(apiSpec, apiDiscovery, liveLib.liveValidationOptions(liveChoice, { docsUrl: apiDocsUrl, targetUrl: target }));
+    } catch (error) {
+      // Defensive: a bug in the prober must not take the run down with it.
+      apiValidation = { ...liveLib.validationNotRequested(''), status: 'UNAVAILABLE', reason: `live validation failed unexpectedly (${String(error?.message ?? error).split('\n')[0].slice(0, 160)})` };
+    }
+    const live = liveLib.apiValidationSummary(apiValidation);
+    emit({
+      type: 'LOG', level: live.status === 'COMPLETED' ? 'info' : 'warn',
+      message: live.status === 'UNAVAILABLE'
+        ? `Live API validation unavailable: ${live.reason}. Continuing with the documentation alone.`
+        : `Live API validation: ${live.requests} request(s) — ${live.validated} validated, ${live.observed} observed, ${live.documented} documented only; ` +
+          `${live.contractViolations} contract violation(s), ${live.potentialIssues} potential issue(s)${live.status === 'PARTIAL' ? ` (partial: ${live.reason})` : ''}`,
+    });
+  }
 }
 const apiSummary = apiLib.apiDiscoverySummary(apiDiscovery);
+const liveSummary = liveLib.apiValidationSummary(apiValidation);
 
 // Regenerating any stage invalidates the review and the approval of the old result.
 for (const stage of plan) archive(qa.qaArtifactPath(stage.artifact));
@@ -310,24 +392,47 @@ for (const stage of plan) archive(qa.qaArtifactPath(stage.artifact));
 if (plan.some((s) => s.key === 'defects')) archive(qa.BUGS_DIR);
 archive(qa.qaArtifactPath('test-cases-review'));
 archive(APPROVAL_PATH);
-// This run's own configuration and API discovery replace the previous run's.
+// This run's own configuration, API discovery and live results replace the previous run's.
 if (configuresCoverage) {
   archive(qa.qaArtifactPath('api-discovery'));
+  archive(qa.qaArtifactPath('api-validation'));
   archive(qa.qaArtifactPath('run-config'));
   qa.writeQaArtifact('api-discovery', apiDiscovery);
+  qa.writeQaArtifact('api-validation', apiValidation);
   qa.writeQaArtifact('run-config', {
     coverageMode,
     ...(apiDocsUrl ? { apiDocsUrl: coverageLib.displayApiDocsUrl(apiDocsUrl) } : {}),
     runId: stamp,
     writtenAt: runStarted.toISOString(),
+    apiValidation: {
+      enabled: liveChoice.enabled,
+      ...(liveChoice.baseUrl ? { baseUrl: liveChoice.baseUrl } : {}),
+      environment: process.env.QA_API_ENVIRONMENT?.trim() || 'test',
+      // What a person approved AND the documentation declares — the list the prober actually honoured.
+      approvedOperations: apiValidation?.policy?.approvedOperations ?? [],
+    },
   });
   if (apiSummary.status === 'AVAILABLE') emit({ type: 'ARTIFACT_CREATED', artifactType: 'API_DISCOVERY', count: apiSummary.endpoints, message: 'api-discovery.json created' });
+  if (liveSummary.status !== 'NOT_REQUESTED') emit({ type: 'ARTIFACT_CREATED', artifactType: 'API_VALIDATION', count: liveSummary.requests, message: 'api-validation.json created' });
+}
+
+// API only: no browser stage runs. What the interface would have shown is recorded as what it
+// is — nothing — by host code, so every later stage has the artifact it reads and nobody has to
+// guess. The previous run's browser evidence is moved aside with the rest: it is not this run's.
+if (coverageMode === 'API_ONLY' && startIndex === 0) {
+  for (const path of [qa.qaArtifactPath('discovered-behavior'), qa.qaArtifactPath('discovery-evidence'), surfaceLib.surfacePath(), ledgerLib.ledgerPath()]) archive(path);
+  qa.writeQaArtifact('discovered-behavior', {
+    product: `${apiDiscovery?.title ?? 'API'} (API only: the interface was not explored)`,
+    locations: [], areas: [], behaviors: [], openQuestions: [], conflicts: [],
+  });
+  emit({ type: 'LOG', message: 'Product Discovery skipped: API only runs without a browser' });
 }
 /** The run's configuration, as its record and its archive state it. */
 const coverageRecord = {
   coverageMode,
   apiDocsUrl: (configuresCoverage ? coverageLib.displayApiDocsUrl(apiDocsUrl) : previousConfig?.apiDocsUrl) ?? null,
   apiDiscovery: apiSummary,
+  apiValidation: liveSummary,
 };
 
 // ---------------------------------------------------------------------------
@@ -345,6 +450,20 @@ console.log(`API docs        : ${apiSummary.status === 'AVAILABLE'
   : apiSummary.status === 'UNAVAILABLE'
     ? `UNAVAILABLE — ${apiSummary.reason}. The run continues without API-level tests.`
     : coverageMode === 'UI_ONLY' ? 'not read (UI only)' : 'none given — test cases will be UI level'}`);
+if (coverageLib.usesApiDocs(coverageMode) && apiSummary.status === 'AVAILABLE') {
+  console.log(`API validation  : ${liveSummary.status === 'NOT_REQUESTED'
+    ? `off — ${apiValidation?.reason ?? 'documentation only'}`
+    : liveSummary.status === 'UNAVAILABLE'
+      ? `UNAVAILABLE — ${liveSummary.reason}. The run continues with the documentation alone.`
+      : `${liveSummary.requests} request(s) to ${liveSummary.baseUrl}: ${liveSummary.validated} validated, ${liveSummary.observed} observed, ` +
+        `${liveSummary.documented} documented only (${liveSummary.skipped} not called); ${liveSummary.contractViolations} contract violation(s), ` +
+        `${liveSummary.potentialIssues} potential issue(s)${liveSummary.status === 'PARTIAL' ? ` — PARTIAL: ${liveSummary.reason}` : ''}`}`);
+  if (liveSummary.status !== 'NOT_REQUESTED' && liveSummary.status !== 'UNAVAILABLE') {
+    console.log(`API credentials : ${apiValidation.authentication.status === 'READY' ? `configured (${apiValidation.authentication.method})`
+      : apiValidation.authentication.status === 'FAILED' ? `NOT USABLE — ${apiValidation.authentication.detail}`
+        : 'none configured — secured operations were only checked for refusing a request without credentials'}`);
+  }
+}
 if (existsSync(archiveDir)) console.log(`Archived        : previous artifacts moved to ${archiveDir}`);
 
 /** The files a run's archive keeps — whichever of them exist when it ends. */
@@ -353,7 +472,7 @@ function runFiles() {
     'discovered-behavior.json', 'requirements-analysis.json', 'test-cases.json',
     'automation-prioritization.json', 'discovery-surface.json', 'discovery-observations.json',
     'discovery-evidence.json', 'phase1-run.json', 'defect-analysis.json',
-    'api-discovery.json', 'run-config.json',
+    'api-discovery.json', 'api-validation.json', 'run-config.json',
     ...qa.listBugReportIds().map((id) => `bugs/${id}.json`),
   ];
 }
@@ -467,7 +586,7 @@ for (const stage of plan) {
   }
   const passed = await runStage({
     // Every stage is told the run's coverage mode and what API documentation there is.
-    stage: { ...stage, message: apiLib.briefStage(stage.key, stage.message, coverageMode, apiDiscovery) },
+    stage: { ...stage, message: apiLib.briefStage(stage.key, stage.message, coverageMode, apiDiscovery, liveSummary) },
     entry,
     attempts,
     idPrefix: 'p1',

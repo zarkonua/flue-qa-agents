@@ -33,7 +33,7 @@ export interface RunControlView {
 const LIVE_ARTIFACTS: Partial<Record<SingleArtifactType, QaArtifactName>> = {
   DISCOVERED_BEHAVIOR: 'discovered-behavior', REQUIREMENTS_ANALYSIS: 'requirements-analysis', TEST_CASES: 'test-cases',
   AUTOMATION_PRIORITIZATION: 'automation-prioritization', DEFECT_ANALYSIS: 'defect-analysis', DISCOVERY_EVIDENCE: 'discovery-evidence',
-  API_DISCOVERY: 'api-discovery',
+  API_DISCOVERY: 'api-discovery', API_VALIDATION: 'api-validation',
 };
 
 export class RunsApiError extends Error {
@@ -52,7 +52,7 @@ export type HistoryProvider = () => RunHistoryStore;
 /** Artifacts the viewer may open by type. Bug reports have their own routes; run bookkeeping is shown as data. */
 const VIEWABLE = new Set<SingleArtifactType>([
   'DISCOVERED_BEHAVIOR', 'REQUIREMENTS_ANALYSIS', 'TEST_CASES', 'AUTOMATION_PRIORITIZATION', 'DEFECT_ANALYSIS',
-  'TEST_CASE_REVIEW', 'REPO_ANALYSIS', 'AUTOMATION_PROJECT_CONTRACT', 'DISCOVERY_EVIDENCE', 'RUN_RECORD', 'API_DISCOVERY',
+  'TEST_CASE_REVIEW', 'REPO_ANALYSIS', 'AUTOMATION_PROJECT_CONTRACT', 'DISCOVERY_EVIDENCE', 'RUN_RECORD', 'API_DISCOVERY', 'API_VALIDATION',
 ]);
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?Z?)?$/;

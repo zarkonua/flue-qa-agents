@@ -49,6 +49,9 @@ export function OverviewPage() {
           {data.coverage?.testLevels ? ` · ${data.coverage.testLevels.UI ?? 0} UI, ${data.coverage.testLevels.API ?? 0} API test cases` : ''}
           {data.coverageMode.api.status === 'AVAILABLE' ? ` · API documentation: ${data.coverageMode.api.endpoints} operation(s)${data.coverageMode.apiDocsUrl ? ` from ${data.coverageMode.apiDocsUrl}` : ''}`
             : data.coverageMode.api.status === 'UNAVAILABLE' ? ` · API documentation unavailable: ${data.coverageMode.api.reason ?? 'unknown reason'}` : ''}
+          {data.coverageMode.live && (data.coverageMode.live.status === 'COMPLETED' || data.coverageMode.live.status === 'PARTIAL')
+            ? <> · <Link to="/api-validation">live validation</Link>: {data.coverageMode.live.validated} validated, {data.coverageMode.live.observed} observed, {data.coverageMode.live.documented} documented only, {data.coverageMode.live.contractViolations} contract violation(s)</>
+            : data.coverageMode.live?.status === 'UNAVAILABLE' ? <> · <Link to="/api-validation">live validation unavailable</Link></> : null}
         </p>
       )}
 

@@ -122,6 +122,13 @@
               "UI",
               "API"
             ]
+          },
+          "apiEvidence": {
+            "enum": [
+              "DOCUMENTED",
+              "OBSERVED",
+              "VALIDATED"
+            ]
           }
         },
         "additionalProperties": false

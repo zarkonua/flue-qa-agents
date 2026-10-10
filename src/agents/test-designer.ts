@@ -226,6 +226,30 @@ that case demonstrates something the first does not.
 
 When the message says no API documentation is available, every case is \`"UI"\`.
 
+### What an API suite covers
+For the operations the requirements rest on, design the scenarios the documentation actually
+supports — each one only where the document declares what it needs:
+
+- **positive** — a valid request and its documented success status and response fields;
+- **negative** — a documented rejection: a 4xx status the operation declares;
+- **validation / boundary** — a documented required field left out, a documented length,
+  range or enum limit met and exceeded;
+- **authentication** — an operation documented as secured, called without credentials
+  (\`security-functional\`);
+- **authorization** — only where the documentation declares a forbidden response (403) or
+  distinct permissions (\`permission\`);
+- **schema** — the documented response shape: required fields and their types.
+
+Do not write a scenario the documentation gives no basis for: no status code, limit or role it
+does not declare.
+
+### Real evidence and documentation-only scenarios
+When the message says the host called the API, read "api-validation". An operation whose
+\`evidence\` is \`VALIDATED\` or \`OBSERVED\` was really called, and you may use what its probe
+shows. One that is \`DOCUMENTED\` was never called: design from the documentation alone and do
+not describe how it "currently" behaves. The host marks this on every API case itself, in
+\`apiEvidence\` — do not set that field.
+
 ## Do not
 - Do not create Playwright or other automation code.
 - Do not invent API endpoints, parameters, fields or status codes.

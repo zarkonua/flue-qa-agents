@@ -68,7 +68,7 @@ export interface RunControllerOptions {
   graceMs?: { cancel: number; term: number };
   log?: (line: string) => void;
   now?: () => Date;
-  /** The environment the runner starts from (then TARGET_URL, QA_MODEL, QA_FRESH_BROWSER, QA_COVERAGE_MODE, QA_API_DOCS_URL are set). Default: this process's. */
+  /** The environment the runner starts from (then TARGET_URL, QA_MODEL, QA_FRESH_BROWSER, QA_COVERAGE_MODE, QA_API_DOCS_URL and the three QA_API_* run choices are set). Default: this process's. */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -90,6 +90,10 @@ export function runnerEnv(run: ValidatedRun, base: NodeJS.ProcessEnv = process.e
     QA_COVERAGE_MODE: run.coverageMode,
     // Always set, so a URL in the server's own environment never leaks into a run that chose none.
     QA_API_DOCS_URL: run.apiDocsUrl ?? '',
+    // Likewise always set: what this run may call, and what a person approved for it — nothing inherited.
+    QA_API_LIVE_VALIDATION: run.liveValidation ? 'true' : 'false',
+    QA_API_BASE_URL: run.apiBaseUrl ?? '',
+    QA_API_APPROVED_OPERATIONS: (run.approvedOperations ?? []).join(','),
   };
 }
 

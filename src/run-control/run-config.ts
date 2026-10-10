@@ -12,6 +12,14 @@
 //   QA_FRESH_BROWSER    the default of the fresh-browser switch
 //   QA_COVERAGE_MODE    the default coverage mode (automatic | ui | api)
 //   QA_API_DOCS_URL     the default API documentation URL
+//   QA_API_LIVE_VALIDATION  the default of the live-validation switch (on unless "false")
+//   QA_API_BASE_URL     the default API base URL override
+//   QA_API_ENVIRONMENT, QA_API_ALLOWED_HOSTS, and whether credentials are configured — shown read-only
+//
+// Approving a state-changing operation is the other thing a person does per run
+// rather than picks from host configuration: each approval names one documented
+// operation (`POST /notes`), is checked for shape here and against the
+// documentation by the runner, and is refused outright in a production environment.
 //
 // The API documentation URL is the one value a person types rather than picks:
 // where a product keeps its OpenAPI document is not something the host can
@@ -26,6 +34,7 @@ import { readObservabilityConfig } from '../observability/config.ts';
 import {
   COVERAGE_MODES, DEFAULT_COVERAGE_MODE, normalizeApiDocsUrl, parseCoverageMode, usesApiDocs, type CoverageMode,
 } from '../lib/coverage-mode.ts';
+import { credentialsConfigured, isProtectedEnvironment, normalizeBaseUrl, OPERATION_KEY, parseSwitch } from '../lib/api-validation.ts';
 
 export const PIPELINES = ['PHASE1_MANUAL'] as const;
 export type Pipeline = (typeof PIPELINES)[number];
@@ -40,6 +49,16 @@ export interface RunConfigView {
   coverageModes: { id: CoverageMode; default: boolean }[];
   /** The API documentation URL the form starts with, when the host configures one. */
   apiDocs: { default: string | null };
+  /** Live API validation: the switch's default, and the host configuration that bounds it — never a credential. */
+  apiValidation: {
+    default: boolean;
+    baseUrl: string | null;
+    environment: string;
+    /** True in a production environment: nothing state-changing can be approved. */
+    protectedEnvironment: boolean;
+    credentialsConfigured: boolean;
+    extraAllowedHosts: string[];
+  };
   auxiliaryOrigins: string[];
   langfuse: { enabled: boolean; baseUrl?: string };
 }
@@ -47,9 +66,21 @@ export interface RunConfigView {
 // There is no authentication bootstrap on main: discovery signs up or signs in through the
 // product's own UI, so a run has nothing like an auth mode to choose.
 // `coverageMode` and `apiDocsUrl` are optional: a client from before coverage modes sends neither and gets AUTOMATIC.
-export interface StartRequest { pipeline: Pipeline; target: string; model: string; freshBrowser: boolean; coverageMode?: CoverageMode; apiDocsUrl?: string }
-/** What the controller hands the runner: host-configured values, and a checked URL — never a raw string from the browser. */
-export interface ValidatedRun { pipeline: Pipeline; target: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string }
+export interface StartRequest {
+  pipeline: Pipeline; target: string; model: string; freshBrowser: boolean; coverageMode?: CoverageMode; apiDocsUrl?: string;
+  /** Call the documented API and compare its responses with the documentation. Default: the host's. */
+  liveValidation?: boolean;
+  apiBaseUrl?: string;
+  /** State-changing operations a person approved for this run, as `METHOD /path`. */
+  approvedOperations?: string[];
+}
+/** What the controller hands the runner: host-configured values, and checked ones — never a raw string from the browser. */
+export interface ValidatedRun {
+  pipeline: Pipeline; target: string; model: string; freshBrowser: boolean; coverageMode: CoverageMode; apiDocsUrl?: string;
+  liveValidation?: boolean; apiBaseUrl?: string; approvedOperations?: string[];
+}
+
+export const MAX_APPROVED_OPERATIONS = 100;
 
 export class RunConfigError extends Error {
   name = 'RunConfigError';
@@ -87,6 +118,14 @@ export function readRunConfig(env: NodeJS.ProcessEnv = process.env): RunConfigVi
     freshBrowser: { default: env.QA_FRESH_BROWSER === 'true' },
     coverageModes: COVERAGE_MODES.map((id) => ({ id, default: id === (parseCoverageMode(env.QA_COVERAGE_MODE) ?? DEFAULT_COVERAGE_MODE) })),
     apiDocs: { default: normalizeApiDocsUrl(env.QA_API_DOCS_URL) ?? null },
+    apiValidation: {
+      default: parseSwitch(env.QA_API_LIVE_VALIDATION) ?? true,
+      baseUrl: normalizeBaseUrl(env.QA_API_BASE_URL) ?? null,
+      environment: env.QA_API_ENVIRONMENT?.trim() || 'test',
+      protectedEnvironment: isProtectedEnvironment(env.QA_API_ENVIRONMENT),
+      credentialsConfigured: credentialsConfigured(env),
+      extraAllowedHosts: (env.QA_API_ALLOWED_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean),
+    },
     auxiliaryOrigins: aux,
     langfuse,
   };
@@ -122,5 +161,27 @@ export function validateStartRequest(request: StartRequest, config: RunConfigVie
       throw new RunConfigError('API only needs an API documentation URL: without one there is no documented operation to test.');
     }
   }
-  return { pipeline: request.pipeline, target: target.url, model: model.id, freshBrowser: request.freshBrowser, coverageMode, ...(apiDocsUrl ? { apiDocsUrl } : {}) };
+  // Live validation only exists beside documentation to validate against.
+  const live: Pick<ValidatedRun, 'liveValidation' | 'apiBaseUrl' | 'approvedOperations'> = {};
+  if (apiDocsUrl) {
+    if (request.liveValidation !== undefined && typeof request.liveValidation !== 'boolean') throw new RunConfigError('liveValidation must be true or false.');
+    live.liveValidation = request.liveValidation ?? config.apiValidation.default;
+    const rawBase = request.apiBaseUrl?.trim();
+    if (rawBase) {
+      live.apiBaseUrl = normalizeBaseUrl(rawBase);
+      if (!live.apiBaseUrl) throw new RunConfigError('The API base URL must be an http(s) URL without embedded credentials.');
+    } else if (request.apiBaseUrl === undefined && config.apiValidation.baseUrl) {
+      live.apiBaseUrl = config.apiValidation.baseUrl;
+    }
+    const approvals = request.approvedOperations ?? [];
+    if (!Array.isArray(approvals) || approvals.length > MAX_APPROVED_OPERATIONS || approvals.some((a) => typeof a !== 'string' || !OPERATION_KEY.test(a))) {
+      throw new RunConfigError('Each approved operation must name one documented operation, as "POST /path".');
+    }
+    if (approvals.length > 0 && !live.liveValidation) throw new RunConfigError('Operations can only be approved when live API validation is on.');
+    if (approvals.length > 0 && config.apiValidation.protectedEnvironment) {
+      throw new RunConfigError(`Nothing state-changing is sent in the "${config.apiValidation.environment}" environment, so no operation can be approved.`);
+    }
+    live.approvedOperations = [...new Set(approvals)];
+  }
+  return { pipeline: request.pipeline, target: target.url, model: model.id, freshBrowser: request.freshBrowser, coverageMode, ...(apiDocsUrl ? { apiDocsUrl } : {}), ...live };
 }

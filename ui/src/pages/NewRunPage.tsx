@@ -4,6 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { api, type CoverageMode } from '../api/client.ts';
 import { apiDocsProblem, COVERAGE_MODES, showsApiDocs } from '../lib/coverage.ts';
 import { formatWhen } from '../lib/runs.ts';
+import { ApiValidationOptions, type LiveChoice } from '../components/ApiValidationOptions.tsx';
 
 /**
  * Start a Phase 1 run. Every choice comes from the host (GET /api/run-config);
@@ -17,6 +18,7 @@ export function NewRunPage() {
   const [freshBrowser, setFreshBrowser] = useState(false);
   const [coverageMode, setCoverageMode] = useState<CoverageMode>('AUTOMATIC');
   const [apiDocsUrl, setApiDocsUrl] = useState('');
+  const [live, setLive] = useState<LiveChoice>({ enabled: true, baseUrl: '', approved: [] });
   const [touched, setTouched] = useState(false);
 
   // Defaults from the host, once.
@@ -27,6 +29,7 @@ export function NewRunPage() {
     setFreshBrowser(data.config.freshBrowser.default);
     setCoverageMode(data.config.coverageModes.find((m) => m.default)?.id ?? 'AUTOMATIC');
     setApiDocsUrl(data.config.apiDocs.default ?? '');
+    setLive({ enabled: data.config.apiValidation.default, baseUrl: data.config.apiValidation.baseUrl ?? '', approved: [] });
   }, [data, touched]);
 
   const start = useMutation({
@@ -34,6 +37,8 @@ export function NewRunPage() {
     mutationFn: () => api.startRun({
       pipeline: 'PHASE1_MANUAL', target, model, freshBrowser, coverageMode,
       ...(showsApiDocs(coverageMode) ? { apiDocsUrl: apiDocsUrl.trim() } : {}),
+      // Live validation exists only beside documentation; approvals only beside live validation.
+      ...(liveOffered ? { liveValidation: live.enabled, apiBaseUrl: live.enabled ? live.baseUrl.trim() : '', approvedOperations: live.enabled ? live.approved : [] } : {}),
     }),
     onSuccess: ({ runId }) => navigate(`/runs/${runId}/live`),
   });
@@ -45,6 +50,7 @@ export function NewRunPage() {
   const touch = <T,>(set: (v: T) => void) => (v: T) => { setTouched(true); set(v); };
   const offered = COVERAGE_MODES.filter((m) => config.coverageModes.some((c) => c.id === m.id));
   const docsProblem = apiDocsProblem(coverageMode, apiDocsUrl);
+  const liveOffered = showsApiDocs(coverageMode) && apiDocsUrl.trim() !== '' && !docsProblem;
 
   return (
     <>
@@ -85,7 +91,7 @@ export function NewRunPage() {
         {showsApiDocs(coverageMode) && (
           <label>API documentation URL <span className="muted">({coverageMode === 'API_ONLY' ? 'required for API only' : 'optional'})</span>
             <input type="url" aria-label="API documentation URL" data-testid="api-docs-url" value={apiDocsUrl} maxLength={500}
-              placeholder="https://example.test/openapi.json" onChange={(e) => touch(setApiDocsUrl)(e.target.value)} />
+              placeholder="https://example.test/openapi.json" onChange={(e) => { touch(setApiDocsUrl)(e.target.value); setLive((l) => ({ ...l, approved: [] })); }} />
             <span className="muted small">
               An OpenAPI / Swagger document — JSON or YAML — or a Swagger UI page. The host reads it before the agents run.
               {coverageMode === 'AUTOMATIC' ? ' Without one, or if it cannot be read, the run continues with UI-level test cases only.' : ''}
@@ -93,6 +99,7 @@ export function NewRunPage() {
             {docsProblem && touched && <span className="notice bad small" data-testid="api-docs-problem">{docsProblem}</span>}
           </label>
         )}
+        {liveOffered && <ApiValidationOptions docsUrl={apiDocsUrl} config={config.apiValidation} choice={live} onChange={(next) => { setTouched(true); setLive(next); }} />}
         <label className="check">
           <input type="checkbox" aria-label="Fresh browser" checked={freshBrowser} onChange={(e) => touch(setFreshBrowser)(e.target.checked)} />
           Fresh browser — restart the browser server so the run starts signed out

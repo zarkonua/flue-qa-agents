@@ -37,6 +37,7 @@ const { QA_MODEL } = await import(resolve(ROOT, 'src/config/env.ts'));
 const reconcileLib = await import(resolve(ROOT, 'src/lib/bug-reconciliation.ts'));
 const { defaultStore, REVIEWS_DIR } = await import(resolve(ROOT, 'src/review/workspace.ts'));
 const apiLib = await import(resolve(ROOT, 'src/lib/api-discovery.ts'));
+const liveLib = await import(resolve(ROOT, 'src/lib/api-validation.ts'));
 
 /** The stages a changed test suite invalidates, in dependency order. */
 export const REFRESH_STAGES = STAGES.filter((s) => s.key === 'prioritization' || s.key === 'defects');
@@ -198,7 +199,7 @@ export async function refreshDependents({ runStageFn = runStage, attempts = 4, o
       try {
         passed = await runStageFn({
           // The same coverage briefing a full run gives these stages, from the suite's own configuration.
-          stage: { ...stage, message: apiLib.briefStage(stage.key, stage.message, coverage.mode, coverage.api) },
+          stage: { ...stage, message: apiLib.briefStage(stage.key, stage.message, coverage.mode, coverage.api, coverage.validation ? liveLib.apiValidationSummary(coverage.validation) : undefined) },
           entry, attempts, idPrefix: 'refresh', stamp, artifactProblem, qaArtifactPath: qa.qaArtifactPath, trace,
           onProgress: () => stageHistory.attempts(entry.attempts.length),
         });

@@ -38,6 +38,7 @@ import {
   urlsIn,
   type Behavior,
   type Corpus,
+  type CoverageContext,
   type DiscoveredBehavior,
   type EvidencedItem,
   type RequirementsAnalysis,
@@ -149,7 +150,16 @@ export interface DefectContext {
   testCases?: TestCases;
   /** Host-configured test-infrastructure origins; never product. */
   auxiliaryOrigins?: string[];
+  /**
+   * The run's API documentation and live results. `discovery` already carries
+   * them as behaviors (see `apiEvidenceBehaviors`); this is for the fact checks.
+   */
+  coverage?: CoverageContext;
 }
+
+/** What a bug report says it was seen in, when every source is a request the host sent rather than a page. */
+export const API_ENVIRONMENT = 'none (HTTP request)';
+const API_SOURCE = /^(API|PRB)-\d+$/;
 
 export const BUG_ID_PATTERN = /^BUG-[0-9]{3,}$/;
 
@@ -243,7 +253,7 @@ function corpusFor(f: Sourced, ctx: DefectContext): Corpus {
     .map((id) => l.testCases.get(id))
     .filter((t): t is TestCase => t !== undefined)
     .flatMap((t) => [t.title, t.expectedResult, ...t.preconditions, ...t.steps.flatMap((s) => [s.action, s.expected])]);
-  return buildCorpus(ctx.discovery, ctx.requirements, extra);
+  return buildCorpus(ctx.discovery, ctx.requirements, extra, ctx.coverage);
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +368,23 @@ function checkThreshold(
       value: f.sourceBehaviorIds.join(', '),
       details: 'Every cited behavior belongs to trusted test infrastructure. That can support a flow; on its own it is not a product bug.',
     });
+  }
+  // An API response is only proof of a defect when the host itself found it contradicting the
+  // documentation. A probe the host called a potential issue — an undocumented refusal, a slow
+  // answer — may be a gap in the documentation, and a model may not settle that as CONFIRMED.
+  const probes = f.sourceBehaviorIds.filter((id) => /^PRB-\d+$/.test(id));
+  if (confirmed && probes.length > 0 && probes.length === observed.length) {
+    const violations = new Set((ctx.coverage?.validation?.findings ?? []).filter((x) => x.classification === 'CONTRACT_VIOLATION').map((x) => x.probeId));
+    if (!probes.some((id) => violations.has(id))) {
+      errors.push({
+        code: 'UNSUPPORTED_EXPECTED',
+        path: `${base}.classification`,
+        value: 'CONFIRMED_DEFECT',
+        details:
+          `The host did not find a contract violation in ${probes.join(', ')} — at most a potential issue, which may be a gap in the ` +
+          'documentation rather than a defect. Classify it POTENTIAL_DEFECT, or cite a probe the host recorded a CONTRACT_VIOLATION for.',
+      });
+    }
   }
   if (confirmed && !SUPPORTED_BASIS.has(basis)) {
     errors.push({
@@ -575,7 +602,8 @@ export function buildBugReports(
         actual: f.actual ?? '',
         expectedBasis: expectedBasisOf(f, ctx),
         evidence: derivedEvidence(f, ctx),
-        environment: { target: env.target, browser: env.browser ?? PHASE1_BROWSER },
+        // A defect seen only in the API's own responses was not seen in a browser.
+        environment: { target: env.target, browser: f.sourceBehaviorIds.every((id) => API_SOURCE.test(id)) ? API_ENVIRONMENT : env.browser ?? PHASE1_BROWSER },
         review: { decision: 'PENDING' },
       };
       return bug;

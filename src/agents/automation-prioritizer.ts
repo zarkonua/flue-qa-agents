@@ -60,6 +60,12 @@ gives the run's coverage mode. The strategy must agree with the level:
 \`UNKNOWN\` and omitting the field stay acceptable for either. Do not change a case's level:
 you classify the suite as it is. In a UI-only run nothing is automated through an API.
 
+API cases carry a host-set \`apiEvidence\`: \`VALIDATED\` or \`OBSERVED\` means the operation
+was really called in this run; \`DOCUMENTED\` means it never was. A documentation-only case is
+still worth automating, but say so in \`blockingFactors\` — its expected results have not been
+seen to hold — and where it needs credentials or an approved state-changing request that
+this run did not have, name that too.
+
 ### Never invent a capability
 Claiming \`API\` or \`UI_API\` asserts this product has an API surface someone observed.
 Claiming \`VISUAL\` asserts that appearance itself must be compared. The host checks both

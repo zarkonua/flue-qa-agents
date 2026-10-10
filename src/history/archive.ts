@@ -117,6 +117,18 @@ export function metricsFromArchive(dir: string): Record<string, number> {
     put('api_schemas', count(apiDocs.schemas));
   }
 
+  // Live validation: only when the API was actually called.
+  const live = readArchived(dir, ARTIFACT_FILES.API_VALIDATION);
+  const summary = live && (live.status === 'COMPLETED' || live.status === 'PARTIAL') ? (live.summary as Json | undefined) : undefined;
+  if (summary) {
+    put('api_requests', Number(summary.requests));
+    put('api_endpoints_validated', Number(summary.validated));
+    put('api_endpoints_observed', Number(summary.observed));
+    put('api_endpoints_documented_only', Number(summary.documented));
+    put('api_contract_violations', Number(summary.contractViolations));
+    put('api_potential_issues', Number(summary.potentialIssues));
+  }
+
   const prioritization = readArchived(dir, ARTIFACT_FILES.AUTOMATION_PRIORITIZATION);
   if (prioritization && Array.isArray(prioritization.cases)) {
     const cases = prioritization.cases as Json[];

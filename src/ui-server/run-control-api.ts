@@ -2,6 +2,7 @@
 //
 //   GET  /api/run-config            what a run may be started with (host configuration; nothing secret)
 //   POST /api/runs                  start a Phase 1 run            { pipeline, target, model, freshBrowser, coverageMode?, apiDocsUrl? }
+//   POST /api/api-docs/preview      read API documentation and say what live validation would call  { apiDocsUrl, apiBaseUrl? }
 //   POST /api/runs/:runId/cancel    cancel a run this workspace started
 //   GET  /api/runs/:runId/events    the run's structured events, as Server-Sent Events
 //
@@ -20,7 +21,10 @@ import type { RunHistoryStore } from '../history/run-history-store.ts';
 import { RUN_ID } from '../history/types.ts';
 import { isFinal, readEventLog, type RunEvent } from '../run-control/events.ts';
 import { PIPELINES, RunConfigError } from '../run-control/run-config.ts';
-import { COVERAGE_MODES, MAX_API_DOCS_URL } from '../lib/coverage-mode.ts';
+import { COVERAGE_MODES, displayApiDocsUrl, MAX_API_DOCS_URL, normalizeApiDocsUrl } from '../lib/coverage-mode.ts';
+import { discoverApiDocument, hasApi } from '../lib/api-discovery.ts';
+import { normalizeBaseUrl, OPERATION_KEY, planApiValidation } from '../lib/api-validation.ts';
+import { MAX_APPROVED_OPERATIONS } from '../run-control/run-config.ts';
 import { RunConflictError, type RunController } from '../run-control/run-controller.ts';
 import { RunsApiError } from './runs-api.ts';
 
@@ -35,6 +39,13 @@ const StartBody = v.strictObject({
   // Optional, so a client from before coverage modes still starts an AUTOMATIC run.
   coverageMode: v.optional(v.picklist(COVERAGE_MODES)),
   apiDocsUrl: v.optional(v.pipe(v.string(), v.maxLength(MAX_API_DOCS_URL))),
+  liveValidation: v.optional(v.boolean()),
+  apiBaseUrl: v.optional(v.pipe(v.string(), v.maxLength(MAX_API_DOCS_URL))),
+  approvedOperations: v.optional(v.pipe(v.array(v.pipe(v.string(), v.regex(OPERATION_KEY))), v.maxLength(MAX_APPROVED_OPERATIONS))),
+});
+const PreviewBody = v.strictObject({
+  apiDocsUrl: v.pipe(v.string(), v.maxLength(MAX_API_DOCS_URL)),
+  apiBaseUrl: v.optional(v.pipe(v.string(), v.maxLength(MAX_API_DOCS_URL))),
 });
 const EmptyBody = v.strictObject({});
 
@@ -82,6 +93,26 @@ export function runControlRoutes(deps: { controller?: RunController; readBody: R
         }
         throw error;
       }
+    }],
+
+    // Reads the documentation — one bounded GET by host code, exactly what starting a run does —
+    // and reports what live validation would call. Nothing is sent to the API itself.
+    ['POST', /^\/api\/api-docs\/preview$/, async (_m, req) => {
+      const body = await deps.readBody(req, PreviewBody);
+      const config = controller().config();
+      const docsUrl = normalizeApiDocsUrl(body.apiDocsUrl);
+      if (!docsUrl) throw new RunsApiError(400, 'The API documentation URL must be an http(s) URL without embedded credentials.');
+      const rawBase = body.apiBaseUrl?.trim();
+      const baseUrl = rawBase ? normalizeBaseUrl(rawBase) : config.apiValidation.baseUrl ?? undefined;
+      if (rawBase && !baseUrl) throw new RunsApiError(400, 'The API base URL must be an http(s) URL without embedded credentials.');
+      const { discovery, spec } = await discoverApiDocument(docsUrl);
+      const documentation = { status: discovery.status, reason: discovery.reason ?? null, title: discovery.title ?? null, url: displayApiDocsUrl(docsUrl), operations: discovery.endpoints.length };
+      if (!hasApi(discovery) || !spec) return [200, { documentation, plan: null, credentialsConfigured: config.apiValidation.credentialsConfigured }];
+      const plan = planApiValidation(spec, discovery, {
+        docsUrl, baseUrlOverride: baseUrl, targetUrl: config.targets.find((t) => t.default)?.url,
+        allowedHosts: [...config.targets.map((t) => t.url), ...config.apiValidation.extraAllowedHosts], environment: config.apiValidation.environment,
+      });
+      return [200, { documentation, plan, credentialsConfigured: config.apiValidation.credentialsConfigured }];
     }],
 
     ['POST', /^\/api\/runs\/([^/]+)\/cancel$/, async (m, req) => {
